@@ -1,0 +1,43 @@
+---
+
+name: Terraform modules release
+on:
+  workflow_call:
+    inputs:
+      AWS_REGION:
+        type: string
+      S3_BUCKET:
+        type: string
+      NAMESPACE:
+        type: string
+      NAME:
+        type: string
+      PROVIDER:
+        type: string
+      VERSION:
+        type: string
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+jobs:
+  release:
+    name: Module registry release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: unfor19/install-aws-cli-action@v1.0.3
+      - name: Create archive
+        run: tar ${exclude_args} -cvzf module.tgz ./*
+        env:
+          exclude_args: --exclude='./github' --exclude="./examples" --exclude="./tests" --exclude='./*.y*'
+      - name: Push module to the s3
+        run: aws s3 cp ./module.tgz s3://$BUCKET/${OBJECT_PATH}/${OBJECT}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_REGION: ${{ inputs.AWS_REGION }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY}}
+          BUCKET: ${{ inputs.S3_BUCKET }}
+          OBJECT_PATH: modules/${{ inputs.NAMESPACE }}/${{ inputs.NAME }}/${{ inputs.PROVIDER }}/${{ inputs.VERSION }}
+          OBJECT: ${{ inputs.NAMESPACE }}-${{ inputs.NAME }}-${{ inputs.PROVIDER }}-${{ inputs.VERSION }}.tar.gz
