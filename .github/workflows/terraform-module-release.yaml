@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - run: echo "VERSION=${GITHUB_REF#refs/*/}" >> $GITHUB_ENV
+      - run: echo "VERSION=${GITHUB_REF#refs/*/v}" >> $GITHUB_ENV
       - uses: unfor19/install-aws-cli-action@v1.0.3
       - name: Create archive
         run: tar ${exclude_args} -cvzf module.tgz ./*
