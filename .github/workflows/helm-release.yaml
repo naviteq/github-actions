@@ -1,0 +1,44 @@
+---
+
+name: Helm release
+on:
+  workflow_call:
+    inputs:
+      CHART_LOCATION:
+        type: string
+      UPDATE_BRANCH:
+        type: string
+      ENVIRONMENT:
+        type: string
+
+jobs:
+  helm:
+    name: Update Chart.yaml file for version\appVersion
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Update versions
+        env:
+          CHART: ${{ inputs.CHART_LOCATION }}
+          ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" == "tag" ]
+          then
+            APP_VERSION="${GITHUB_REF_NAME##*/}"
+            echo "Updating Chart.yaml"
+            sed -i "s#^version:.*#version: ${APP_VERSION/v/}#g" $CHART/Chart.yaml
+            sed -i "s#^appVersion:.*#appVersion: ${APP_VERSION}#g" $CHART/Chart.yaml
+            cat $CHART/Chart.yaml
+          else
+            echo "Updating $CHART/values/$ENVIRONMENT.yaml"
+            APP_VERSION="sha-$(echo ${GITHUB_SHA} | cut -c1-7)"
+            sed -i "s#^  tag:.*#  tag: ${APP_VERSION}#g" $CHART/values/$ENVIRONMENT.yaml
+            cat $CHART/values/$ENVIRONMENT.yaml | head -10
+          fi
+      - name: Commit file to branch
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "Bumped up version and appVersion [skip ci]"
+          branch: ${{ inputs.UPDATE_BRANCH }}
+          commit_user_name: Naviteq Automation
+          commit_user_email: naviteq-automation@naviteq.io

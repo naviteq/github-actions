@@ -1,0 +1,88 @@
+---
+
+name: Terraform modules testing
+on:
+  workflow_call:
+    inputs:
+      AWS_REGION:
+        type: string
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: true
+      AWS_SECRET_ACCESS_KEY:
+        required: true
+jobs:
+  format:
+    name: Format check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.2.4
+      - uses: actions/setup-python@v3
+        with:
+          python-version: '3.9'
+      - name: Python format
+        uses: psf/black@stable
+        with:
+          version: 22.6.0
+      - name: Terraform Format
+        run: terraform fmt --check --recursive --diff
+  tflint:
+    name: TFLint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/cache@v2
+        with:
+          path: ~/.tflint.d/plugins
+          key: tflint-${{ hashFiles('.tflint.hcl') }}
+      - uses: terraform-linters/setup-tflint@v1
+        with:
+          tflint_version: v0.38.1
+      - name: Run TFLint
+        run: |
+          tflint --init
+          tflint -f compact
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: TFSec
+        uses: aquasecurity/tfsec-action@v1.0.2
+      - name: Run Checkov action
+        uses: bridgecrewio/checkov-action@v12.1347.0
+  test:
+    name: Module testing (PyTest)
+    runs-on: ubuntu-latest
+    needs:
+      - format
+      - tflint
+      - security
+    steps:
+      - uses: actions/checkout@v3
+      - uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.2.4
+          terraform_wrapper: false
+      - uses: actions/setup-python@v3
+        with:
+          python-version: '3.9'
+      - uses: syphar/restore-virtualenv@v1
+        id: cache-virtualenv
+        with:
+          requirement_files: tests/requirements.txt
+      - uses: syphar/restore-pip-download-cache@v1
+        if: steps.cache-virtualenv.outputs.cache-hit != 'true'
+      - run: pip install -r tests/requirements.txt
+        if: steps.cache-virtualenv.outputs.cache-hit != 'true'
+      - run: pip install -r tests/requirements.txt
+      - name: Tests run
+        run: |
+          python -m pytest -vvv
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ inputs.AWS_REGION }}
