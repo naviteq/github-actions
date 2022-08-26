@@ -6,6 +6,10 @@ on:
     inputs:
       AWS_REGION:
         type: string
+      TEST_EXTRA_COMMANDS:
+        type: string
+        required: false
+        default: ""
     secrets:
       AWS_ACCESS_KEY_ID:
         required: true
@@ -85,8 +89,11 @@ jobs:
       - name: Tests run
         run: |
 
+          # Just for cases when we need to do something before run
+          eval ${EXTRA_COMMANDS}
           python -m pytest -vvv
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ inputs.AWS_REGION }}
+          EXTRA_COMMANDS: ${{ inputs.TEST_EXTRA_COMMANDS }}
