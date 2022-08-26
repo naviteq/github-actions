@@ -24,6 +24,8 @@ jobs:
       - uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: 1.2.4
+          cli_config_credentials_hostname: 'terraform.naviteq.io'
+          cli_config_credentials_token: ${{ secrets.NAVITEQ_TF_TOKEN }}
       - uses: actions/setup-python@v3
         with:
           python-version: '3.9'
@@ -97,3 +99,4 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ inputs.AWS_REGION }}
           EXTRA_COMMANDS: ${{ inputs.TEST_EXTRA_COMMANDS }}
+          TF_TOKEN_terraform_naviteq_io:  ${{ secrets.NAVITEQ_TF_TOKEN }}
