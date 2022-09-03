@@ -63,6 +63,9 @@ jobs:
           additional_args: --config-file=./.tfsec.yml
       - name: Run Checkov action
         uses: bridgecrewio/checkov-action@v12.1347.0
+        with:
+          quiet: true
+          compact: true
   test:
     name: Module testing (PyTest)
     runs-on: ubuntu-latest
