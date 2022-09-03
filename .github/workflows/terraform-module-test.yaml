@@ -60,7 +60,7 @@ jobs:
       - name: TFSec
         uses: aquasecurity/tfsec-action@v1.0.2
         with:
-          additional_args: --config-file=./.tfsec.yml --verbose
+          additional_args: --config-file=./.tfsec.yml
       - name: Run Checkov action
         uses: bridgecrewio/checkov-action@v12.1347.0
   test:
