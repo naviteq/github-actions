@@ -65,7 +65,6 @@ jobs:
         uses: bridgecrewio/checkov-action@v12.1347.0
         with:
           quiet: true
-          compact: true
   test:
     name: Module testing (PyTest)
     runs-on: ubuntu-latest
