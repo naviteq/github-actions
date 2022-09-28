@@ -99,6 +99,7 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           AWS_REGION: ${{ inputs.AWS_REGION }}
           EXTRA_COMMANDS: ${{ inputs.TEST_EXTRA_COMMANDS }}
           TF_TOKEN_terraform_naviteq_io:  ${{ secrets.NAVITEQ_TF_TOKEN }}
