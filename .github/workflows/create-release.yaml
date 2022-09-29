@@ -2,6 +2,8 @@
 
 name: Create GitHub release
 on:
+  push:
+    branches: [main]
   workflow_call:
     secrets:
       PROJECT_GITHUB_TOKEN:
@@ -10,6 +12,9 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      changelog: ${{ steps.tag_version.outputs.changelog }}
+      slack: ${{ secrets.SLACK_GITHUB_INTEGRATION_WEBHOOK }}
     steps:
       - uses: actions/checkout@v3
       - name: Bump version and push tag
@@ -23,3 +28,13 @@ jobs:
           tag: ${{ steps.tag_version.outputs.new_tag }}
           name: Release ${{ steps.tag_version.outputs.new_tag }}
           body: ${{ steps.tag_version.outputs.changelog }}
+  notify:
+    if: needs.release.outputs.slack != ''
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: slackapi/slack-github-action@v1.22.0
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_GITHUB_INTEGRATION_WEBHOOK }}
+        with:
+          slack-message: "GitHub build result: ${{ job.status }}\n${{ github.event.pull_request.html_url || github.event.head_commit.url }}\nChangelog: ${{ needs.release.outputs.changelog }}"
