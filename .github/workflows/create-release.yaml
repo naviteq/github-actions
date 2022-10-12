@@ -4,10 +4,6 @@ name: Create GitHub release
 on:
   push:
     branches: [main]
-  workflow_call:
-    secrets:
-      PROJECT_GITHUB_TOKEN:
-        required: true
 
 jobs:
   release:
