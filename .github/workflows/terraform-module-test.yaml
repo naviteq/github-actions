@@ -10,6 +10,10 @@ on:
         type: string
         required: false
         default: ""
+      PRE_PIP_COMMANDS:
+        type: string
+        required: false
+        default: ""
     secrets:
       AWS_ACCESS_KEY_ID:
         required: true
@@ -88,6 +92,10 @@ jobs:
           requirement_files: tests/requirements.txt
       - uses: syphar/restore-pip-download-cache@v1
         if: steps.cache-virtualenv.outputs.cache-hit != 'true'
+      - run: eval ${PRE_PIP_COMMANDS}
+        if: ${{ inputs.PRE_PIP_COMMANDS }} != ""
+        env:
+          PRE_PIP_COMMANDS: ${{ inputs.PRE_PIP_COMMANDS }}
       - run: pip install -r tests/requirements.txt
         if: steps.cache-virtualenv.outputs.cache-hit != 'true'
       - name: Tests run
