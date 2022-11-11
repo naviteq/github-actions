@@ -19,7 +19,26 @@ on:
         required: true
       AWS_SECRET_ACCESS_KEY:
         required: true
+      RUNNERS_PAT_TOKEN:
+        required: false
 jobs:
+  prepare:
+    name: Preparation
+    runs-on: ubuntu-latest
+    outputs:
+      runners: ${{ steps.vars.outputs.github_runners }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Outputs preparation
+        id: vars
+        env:
+          GH_TOKEN: ${{ secrets.RUNNERS_PAT_TOKEN }}
+        run: |
+          github_runners='ubuntu-latest'
+          runners=$(gh api repos/${{ github.repository }}/actions/runners | jq .total_count || echo 0) && echo $runners
+          org_runners=$(gh api /orgs/naviteq/actions/runners | jq .total_count || echo 0) && echo $org_runners
+          ([[ "$runners" -gt 0 ]] || [[ "$org_runners" -gt 0 ]]) && github_runners="self-hosted"
+          echo "github_runners=${github_runners}" >> $GITHUB_OUTPUT
   format:
     name: Format check
     runs-on: ubuntu-latest
@@ -72,8 +91,9 @@ jobs:
   test:
     name: Module testing (PyTest)
     concurrency: tf-test-${{ github.ref }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.prepare.outputs.runners }}
     needs:
+      - prepare
       - format
       - tflint
       - security

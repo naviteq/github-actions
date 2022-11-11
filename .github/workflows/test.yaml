@@ -4,18 +4,16 @@ name: Test
 on:
   push:
 jobs:
-  test-runner:
-    name: test
-    runs-on: oracle
-    continue-on-error: true
-    timeout-minutes: 1
-    steps:
-      - uses: actions/checkout@v3
-  test-result:
+  test:
     name: test result
-    needs: [test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - run: |
-          echo ${{ needs.test-runner.result }}
+      - env:
+          GH_TOKEN: ${{ secrets.RUNNERS_PAT_TOKEN }}
+        run: |
+          github_runners='ubuntu-latest'
+          runners=$(gh api repos/${{ github.repository }}/actions/runners | jq .total_count || echo 0) && echo $runners
+          org_runners=$(gh api /orgs/naviteq/actions/runners | jq .total_count || echo 0) && echo $org_runners
+          ([[ "$runners" -gt 0 ]] || [[ "$org_runners" -gt 0 ]]) && github_runners="self-hosted"
+          echo $github_runners
