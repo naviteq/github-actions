@@ -1,0 +1,21 @@
+---
+
+name: Test
+on:
+  push:
+jobs:
+  test-runner:
+    name: test
+    runs-on: oracle
+    continue-on-error: true
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@v3
+  test-result:
+    name: test result
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: |
+          echo ${{ needs.test-runner.result }}
