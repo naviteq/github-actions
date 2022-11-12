@@ -131,3 +131,4 @@ jobs:
           AWS_REGION: ${{ inputs.AWS_REGION }}
           EXTRA_COMMANDS: ${{ inputs.TEST_EXTRA_COMMANDS }}
           TF_TOKEN_terraform_naviteq_io:  ${{ secrets.NAVITEQ_TF_TOKEN }}
+          TF_VAR_runners_pat_token: ${{ secrets.RUNNERS_PAT_TOKEN }}
