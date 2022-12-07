@@ -4,19 +4,19 @@ name: Docker build
 on:
   workflow_call:
     inputs:
-      OCI_REGISTRY:
+      REGISTRY:
         type: string
-      OCI_IMAGE:
+      IMAGE:
+        type: string
+      USERNAME:
         type: string
     secrets:
-      OCI_USERNAME:
-        required: true
-      OCI_TOKEN:
+      TOKEN:
         required: true
 
 jobs:
   build:
-    name: Docker build and push to the OCR
+    name: Docker build and push to the OCI registry
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -24,17 +24,17 @@ jobs:
         uses: docker/setup-qemu-action@v1
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v1
-      - name: Login to OCIR
+      - name: Login to OCI registry
         uses: docker/login-action@v1 
         with:
-          registry: ${{ inputs.OCI_REGISTRY }}
-          username: ${{ secrets.OCI_USERNAME }}
-          password: ${{ secrets.OCI_TOKEN }}
+          registry: ${{ inputs.REGISTRY }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.TOKEN }}
       - name: Prepare Docker meta
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ${{ inputs.OCI_REGISTRY }}/${{ inputs.OCI_IMAGE }}
+          images: ${{ inputs.REGISTRY }}/${{ inputs.IMAGE }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -47,4 +47,4 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
-    
+          labels: ${{ steps.meta.outputs.labels }}
