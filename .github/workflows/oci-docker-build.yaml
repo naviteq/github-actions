@@ -28,7 +28,7 @@ jobs:
         uses: docker/login-action@v1 
         with:
           registry: ${{ inputs.REGISTRY }}
-          username: ${{ secrets.USERNAME }}
+          username: ${{ inputs.USERNAME }}
           password: ${{ secrets.TOKEN }}
       - name: Prepare Docker meta
         id: meta
