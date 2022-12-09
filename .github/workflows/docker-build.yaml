@@ -1,0 +1,72 @@
+---
+
+name: Docker build
+on:
+  workflow_call:
+    inputs:
+      REGISTRY:
+        type: string
+      IMAGE:
+        type: string
+      USERNAME:
+        type: string
+    secrets:
+      TOKEN:
+        required: true
+
+jobs:
+  build:
+    name: Docker build and push to registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v1
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      - name: Login to registry
+        uses: docker/login-action@v1 
+        with:
+          registry: ${{ inputs.REGISTRY }}
+          username: ${{ inputs.USERNAME }}
+          password: ${{ secrets.TOKEN }}
+      - name: Prepare Docker meta
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ inputs.REGISTRY }}/${{ inputs.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=ref,event=pr
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ inputs.image }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-${{ inputs.image }}-${{ github.ref_name }}-${{ github.sha }}
+            ${{ runner.os }}-buildx-${{ inputs.image }}-${{ github.ref_name }}-
+      - name: Build and push
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # This is a horrible wall of text, excuse me in advance. Can't add readable comments because YAML doesn't support comments in multi-line strings.
+          #
+          # mode=max               | will cache intermediate steps too, invaluable for multi-stage builds
+          # oci-mediatypes=true    | needed for zstd compression, true by default
+          # compression=zstd       | better than gzip
+          # compression-level=3    | more or less optiomal for zstd, maybe 4 is better; higher gives very diminishing returns
+          # force-compression=true | will increate overall compression rate but will take some CPU time and IO; I like it but it is not a silver bullet
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true
+          cache-from: type=local,src=/tmp/.buildx-cache
+      - name: Move cache
+        shell: bash
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
