@@ -57,5 +57,6 @@ jobs:
           # force-compression=true | will increate overall compression rate but will take some CPU time and IO; I like it but it is not a silver bullet
           #
           # Last line takes the least specific tag; if our image has tags `pr-6` and `sha-40d3328`, then `pr-6-cache` tag will be used.
-          cache-to: type=registry,mode=max,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true,ref=${{ fromJSON(steps.meta.outputs.json).tags[0] }}-cache
-          cache-from: type=registry,ref=${{ fromJSON(steps.meta.outputs.json).tags[0] }}-cache
+          # cache-to: type=registry,mode=max,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true,ref=${{ fromJSON(steps.meta.outputs.json).tags[0] }}-cache
+          cache-to: type=inline
+          cache-from: type=registry,ref=${{ fromJSON(steps.meta.outputs.json).tags[0] }}
