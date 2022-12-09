@@ -41,6 +41,14 @@ jobs:
             type=ref,event=pr
             type=semver,pattern={{major}}.{{minor}}
             type=sha
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ inputs.image }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-${{ inputs.image }}-${{ github.ref_name }}-${{ github.sha }}
+            ${{ runner.os }}-buildx-${{ inputs.image }}-${{ github.ref_name }}-
       - name: Build and push
         uses: docker/build-push-action@v2
         with:
@@ -55,8 +63,10 @@ jobs:
           # compression=zstd       | better than gzip
           # compression-level=3    | more or less optiomal for zstd, maybe 4 is better; higher gives very diminishing returns
           # force-compression=true | will increate overall compression rate but will take some CPU time and IO; I like it but it is not a silver bullet
-          #
-          # Last line takes the least specific tag; if our image has tags `pr-6` and `sha-40d3328`, then `pr-6-cache` tag will be used.
-          # cache-to: type=registry,mode=max,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true,ref=${{ fromJSON(steps.meta.outputs.json).tags[0] }}-cache
-          cache-to: type=inline
-          cache-from: type=registry,ref=${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max,oci-mediatypes=true,compression=zstd,compression-level=3,force-compression=true
+          cache-from: type=local,src=/tmp/.buildx-cache
+      - name: Move cache
+        shell: bash
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
