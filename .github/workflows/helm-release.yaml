@@ -18,17 +18,17 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: Update versions
+        working-directory: ${{ inputs.CHART_LOCATION }}
         env:
-          CHART: ${{ inputs.CHART_LOCATION }}
           ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
         run: |
           if [ "$GITHUB_REF_TYPE" == "tag" ]
           then
             APP_VERSION="${GITHUB_REF_NAME##*/}"
             echo "Updating Chart.yaml"
-            sed -i "s#^version:.*#version: ${APP_VERSION/v/}#g" $CHART/Chart.yaml
-            sed -i "s#^appVersion:.*#appVersion: ${APP_VERSION}#g" $CHART/Chart.yaml
-            cat $CHART/Chart.yaml
+            sed -i "s#^version:.*#version: ${APP_VERSION/v/}#g" Chart.yaml
+            sed -i "s#^appVersion:.*#appVersion: ${APP_VERSION}#g" Chart.yaml
+            cat Chart.yaml
           fi
       - name: Commit file to branch
         uses: stefanzweifel/git-auto-commit-action@v4
