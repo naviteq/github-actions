@@ -1,0 +1,25 @@
+---
+
+name: Helm build
+on:
+  workflow_call:
+    inputs:
+      CHART_LOCATION:
+        type: string
+
+jobs:
+  helm:
+    name: Build Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: azure/setup-helm@v3
+        with:
+          version: v3.10.0
+      - name: Lint Helm chart
+        working-directory: ${{ inputs.CHART_LOCATION }}
+        run: helm lint .
+      - name: Build Helm chart
+        working-directory: ${{ inputs.CHART_LOCATION }}
+        run: helm package .
+      # TODO: Add optional push step
