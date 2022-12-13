@@ -29,11 +29,6 @@ jobs:
             sed -i "s#^version:.*#version: ${APP_VERSION/v/}#g" $CHART/Chart.yaml
             sed -i "s#^appVersion:.*#appVersion: ${APP_VERSION}#g" $CHART/Chart.yaml
             cat $CHART/Chart.yaml
-          else
-            echo "Updating $CHART/values/$ENVIRONMENT.yaml"
-            APP_VERSION="sha-$(echo ${GITHUB_SHA} | cut -c1-7)"
-            sed -i "s#^  tag:.*#  tag: ${APP_VERSION}#g" $CHART/values/$ENVIRONMENT.yaml
-            cat $CHART/values/$ENVIRONMENT.yaml | head -10
           fi
       - name: Commit file to branch
         uses: stefanzweifel/git-auto-commit-action@v4
