@@ -34,7 +34,6 @@ jobs:
           fi
 
       - name: Update versions
-        if: ${{ github.ref_type == 'tag' }}
         working-directory: ${{ inputs.CHART_LOCATION }}
         env:
           ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
@@ -45,6 +44,10 @@ jobs:
           sed -i "s#^appVersion:.*#appVersion: ${APP_VERSION}#g" Chart.yaml
           cat Chart.yaml
 
+      - name: Build Helm chart
+        working-directory: ${{ inputs.CHART_LOCATION }}
+        run: helm package .
+
       - name: Commit file to branch
         if: ${{ github.ref_type == 'tag' }}
         uses: stefanzweifel/git-auto-commit-action@v4
@@ -53,8 +56,4 @@ jobs:
           branch: ${{ inputs.UPDATE_BRANCH }}
           commit_user_name: Naviteq Automation
           commit_user_email: naviteq-automation@naviteq.io
-
-      - name: Build Helm chart
-        working-directory: ${{ inputs.CHART_LOCATION }}
-        run: helm package .
       # TODO: Add optional push step
