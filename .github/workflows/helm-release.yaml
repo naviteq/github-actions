@@ -10,6 +10,12 @@ on:
         type: string
       ENVIRONMENT:
         type: string
+      PUSH_TO_GITHUB:
+        type: boolean
+        default: false
+    secrets:
+      PROJECT_GITHUB_TOKEN:
+        required: false
 
 jobs:
   helm:
@@ -19,6 +25,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0 # needed for tags
+          ref: ${{ github.head_ref }}
       - uses: azure/setup-helm@v3
         with:
           version: v3.10.0
@@ -62,4 +69,22 @@ jobs:
           branch: ${{ inputs.UPDATE_BRANCH }}
           commit_user_name: Naviteq Automation
           commit_user_email: naviteq-automation@naviteq.io
-      # TODO: Add optional push step
+
+      - name: Checkout Helm repo museum
+        if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
+        uses: actions/checkout@v3
+        with:
+          path: ../helm-charts
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.PROJECT_GITHUB_TOKEN }}
+      - name: Copy Helm chart to museum
+        if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
+        run: cp ${{ inputs.CHART_LOCATION }}/*.tgz ../helm-charts
+      - name: Publish Helm charts
+        if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          repository: ../helm-charts
+          commit_message: "Updated from CI"
+          commit_user_name: Naviteq Automation
+          commit_user_email: naviteq-automation@naviteq.io
