@@ -13,32 +13,47 @@ on:
 
 jobs:
   helm:
-    name: Update Chart.yaml file for version\appVersion
+    name: Update Chart.yaml file for version\appVersion and build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Update versions
+      - uses: azure/setup-helm@v3
+        with:
+          version: v3.10.0
+
+      - name: Lint Helm chart
+        working-directory: ${{ inputs.CHART_LOCATION }}
         env:
-          CHART: ${{ inputs.CHART_LOCATION }}
           ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
         run: |
-          if [ "$GITHUB_REF_TYPE" == "tag" ]
+          if [[ -n "$ENVIRONMENT" ]]
           then
-            APP_VERSION="${GITHUB_REF_NAME##*/}"
-            echo "Updating Chart.yaml"
-            sed -i "s#^version:.*#version: ${APP_VERSION/v/}#g" $CHART/Chart.yaml
-            sed -i "s#^appVersion:.*#appVersion: ${APP_VERSION}#g" $CHART/Chart.yaml
-            cat $CHART/Chart.yaml
+            helm lint -f values/$ENVIRONMENT.yaml
           else
-            echo "Updating $CHART/values/$ENVIRONMENT.yaml"
-            APP_VERSION="sha-$(echo ${GITHUB_SHA} | cut -c1-7)"
-            sed -i "s#^  tag:.*#  tag: ${APP_VERSION}#g" $CHART/values/$ENVIRONMENT.yaml
-            cat $CHART/values/$ENVIRONMENT.yaml | head -10
+            helm lint .
           fi
+
+      - name: Update versions
+        working-directory: ${{ inputs.CHART_LOCATION }}
+        env:
+          ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
+        run: |
+          APP_VERSION="${GITHUB_REF_NAME##*/}"
+          echo "Updating Chart.yaml"
+          sed -i "s#^version:.*#version: ${APP_VERSION/v/}#g" Chart.yaml
+          sed -i "s#^appVersion:.*#appVersion: ${APP_VERSION}#g" Chart.yaml
+          cat Chart.yaml
+
+      - name: Build Helm chart
+        working-directory: ${{ inputs.CHART_LOCATION }}
+        run: helm package .
+
       - name: Commit file to branch
+        if: ${{ github.ref_type == 'tag' }}
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
           commit_message: "Bumped up version and appVersion [skip ci]"
           branch: ${{ inputs.UPDATE_BRANCH }}
           commit_user_name: Naviteq Automation
           commit_user_email: naviteq-automation@naviteq.io
+      # TODO: Add optional push step
