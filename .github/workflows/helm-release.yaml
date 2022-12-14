@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # needed for tags
       - uses: azure/setup-helm@v3
         with:
           version: v3.10.0
@@ -35,10 +37,14 @@ jobs:
 
       - name: Update versions
         working-directory: ${{ inputs.CHART_LOCATION }}
-        env:
-          ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
         run: |
-          APP_VERSION="${GITHUB_REF_NAME##*/}"
+          if [[ "$GITHUB_REF_TYPE" == "branch" ]]
+          then
+            LATEST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
+            APP_VERSION="$LATEST_TAG-pre+$(echo ${GITHUB_SHA} | cut -c1-7)" 
+          else
+            APP_VERSION="${GITHUB_REF_NAME##*/}"
+          fi
           echo "Updating Chart.yaml"
           sed -i "s#^version:.*#version: ${APP_VERSION/v/}#g" Chart.yaml
           sed -i "s#^appVersion:.*#appVersion: ${APP_VERSION}#g" Chart.yaml
