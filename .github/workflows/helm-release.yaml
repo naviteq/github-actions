@@ -77,8 +77,8 @@ jobs:
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
         uses: actions/checkout@v3
         with:
+          repository: naviteq/helm-charts
           path: helm-charts
-          ref: ${{ github.head_ref }}
           token: ${{ secrets.TOKEN }}
       - name: Copy Helm chart to museum
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
