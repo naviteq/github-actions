@@ -26,6 +26,7 @@ jobs:
         with:
           fetch-depth: 0 # needed for tags
           ref: ${{ github.head_ref }}
+          token: ${{ secrets.PROJECT_GITHUB_TOKEN }}
       - uses: azure/setup-helm@v3
         with:
           version: v3.10.0
