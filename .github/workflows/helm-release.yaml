@@ -25,6 +25,7 @@ jobs:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0 # needed for tags
+          path: caller
           ref: ${{ github.head_ref }}
           token: ${{ secrets.TOKEN }}
       - uses: azure/setup-helm@v3
@@ -32,7 +33,7 @@ jobs:
           version: v3.10.0
 
       - name: Lint Helm chart
-        working-directory: ${{ inputs.CHART_LOCATION }}
+        working-directory: caller/${{ inputs.CHART_LOCATION }}
         env:
           ENVIRONMENT: ${{ inputs.ENVIRONMENT }}
         run: |
@@ -44,7 +45,7 @@ jobs:
           fi
 
       - name: Update versions
-        working-directory: ${{ inputs.CHART_LOCATION }}
+        working-directory: caller/${{ inputs.CHART_LOCATION }}
         run: |
           if [[ "$GITHUB_REF_TYPE" == "branch" ]]
           then
@@ -59,13 +60,14 @@ jobs:
           cat Chart.yaml
 
       - name: Build Helm chart
-        working-directory: ${{ inputs.CHART_LOCATION }}
+        working-directory: caller/${{ inputs.CHART_LOCATION }}
         run: helm package .
 
       - name: Commit file to branch
         if: ${{ github.ref_type == 'tag' }}
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
+          repository: helm-charts
           commit_message: "Bumped up version and appVersion [skip ci]"
           branch: ${{ inputs.UPDATE_BRANCH }}
           commit_user_name: Naviteq Automation
@@ -75,17 +77,17 @@ jobs:
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
         uses: actions/checkout@v3
         with:
-          path: ../helm-charts
+          path: helm-charts
           ref: ${{ github.head_ref }}
           token: ${{ secrets.TOKEN }}
       - name: Copy Helm chart to museum
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
-        run: cp ${{ inputs.CHART_LOCATION }}/*.tgz ../helm-charts
+        run: cp caller/${{ inputs.CHART_LOCATION }}/*.tgz helm-charts
       - name: Publish Helm charts
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          repository: ../helm-charts
+          repository: helm-charts
           commit_message: "Updated from CI"
           commit_user_name: Naviteq Automation
           commit_user_email: naviteq-automation@naviteq.io
