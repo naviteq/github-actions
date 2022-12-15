@@ -67,7 +67,7 @@ jobs:
         if: ${{ github.ref_type == 'tag' }}
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          repository: helm-charts
+          repository: caller
           commit_message: "Bumped up version and appVersion [skip ci]"
           branch: ${{ inputs.UPDATE_BRANCH }}
           commit_user_name: Naviteq Automation
