@@ -47,6 +47,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: |
-            ${{ steps.ecr.outputs.registry }}/${{ inputs.IMAGE }}:latest
+            ${{ inputs.REGISTRY }}/${{ inputs.IMAGE }}:latest
             type=gha,scope=${{ github.ref_name }}-${{ inputs.IMAGE }}
           cache-to: type=gha,mode=max,scope=${{ github.ref_name }}-${{ inputs.IMAGE }}
