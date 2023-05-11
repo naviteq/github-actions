@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.2.9
+          terraform_version: 1.4.6
           cli_config_credentials_hostname: 'terraform.naviteq.io'
           cli_config_credentials_token: ${{ secrets.NAVITEQ_TF_TOKEN }}
       - uses: actions/setup-python@v3
@@ -71,10 +71,9 @@ jobs:
           key: tflint-${{ hashFiles('.tflint.hcl') }}
       - uses: terraform-linters/setup-tflint@v1
         with:
-          tflint_version: v0.38.1
+          tflint_version: v0.46.1
       - name: Run TFLint
         run: |
-
           tflint --init
           tflint -f compact
   security:
@@ -84,9 +83,10 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - name: TFSec
-        uses: aquasecurity/tfsec-action@v1.0.2
+        uses: aquasecurity/tfsec-action@v1.0.3
         with:
           additional_args: --config-file=./.tfsec.yml
+          version: 1.28.1
       - name: Run Checkov action
         uses: bridgecrewio/checkov-action@v12.1347.0
         with:
@@ -104,7 +104,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.2.9
+          terraform_version: 1.4.6
           terraform_wrapper: false
       - uses: actions/setup-python@v3
         with:
@@ -124,7 +124,6 @@ jobs:
         # if: steps.cache-virtualenv.outputs.cache-hit != 'true'
       - name: Tests run
         run: |
-
           # Just for cases when we need to do something before run
           eval ${EXTRA_COMMANDS}
           python -m pytest -vvv
