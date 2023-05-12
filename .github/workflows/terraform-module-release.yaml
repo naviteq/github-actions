@@ -14,11 +14,6 @@ on:
         type: string
       PROVIDER:
         type: string
-    secrets:
-      AWS_ACCESS_KEY_ID:
-        required: true
-      AWS_SECRET_ACCESS_KEY:
-        required: true
 jobs:
   release:
     name: Module registry release
@@ -31,12 +26,14 @@ jobs:
         run: tar ${exclude_args} -cvzf module.tgz ./*
         env:
           exclude_args: --exclude='./github' --exclude="./examples" --exclude="./tests" --exclude='./*.y*'
+      - uses: aws-actions/configure-aws-credentials@v1.7.0
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+          role-session-name: github-${{ github.repository_id }}-${{ github.triggering_actor }}
+          aws-region: ${{ inputs.AWS_REGION }}
       - name: Push module to the s3
         run: aws s3 cp ./module.tgz s3://$BUCKET/${OBJECT_PATH}/${OBJECT}
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_REGION: ${{ inputs.AWS_REGION }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY}}
           BUCKET: ${{ inputs.S3_BUCKET }}
           OBJECT_PATH: modules/${{ inputs.NAMESPACE }}/${{ inputs.NAME }}/${{ inputs.PROVIDER }}/${{ env.VERSION }}
           OBJECT: ${{ inputs.NAMESPACE }}-${{ inputs.NAME }}-${{ inputs.PROVIDER }}-${{ env.VERSION }}.tar.gz
