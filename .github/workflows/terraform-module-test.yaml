@@ -15,11 +15,11 @@ on:
         required: false
         default: ""
     secrets:
-      AWS_ACCESS_KEY_ID:
-        required: true
-      AWS_SECRET_ACCESS_KEY:
+      AWS_IAM_ROLE:
         required: true
       RUNNERS_PAT_TOKEN:
+        required: false
+      NAVITEQ_TF_TOKEN:
         required: false
 jobs:
   prepare:
@@ -41,7 +41,7 @@ jobs:
           echo "github_runners=${github_runners}" >> $GITHUB_OUTPUT
   format:
     name: Format check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: [prepare]
     steps:
       - uses: actions/checkout@v3
@@ -86,7 +86,7 @@ jobs:
         uses: aquasecurity/tfsec-action@v1.0.3
         with:
           additional_args: --config-file=./.tfsec.yml
-          version: 1.28.1
+          version: v1.28.1
       - name: Run Checkov action
         uses: bridgecrewio/checkov-action@v12.1347.0
         with:
@@ -114,24 +114,23 @@ jobs:
         with:
           requirement_files: tests/requirements.txt
       - uses: syphar/restore-pip-download-cache@v1
-      # TODO: Solve issue with self-hosted runners and cache
-      #   if: steps.cache-virtualenv.outputs.cache-hit != 'true'
+        if: steps.cache-virtualenv.outputs.cache-hit != 'true'
       - run: eval ${PRE_PIP_COMMANDS}
         if: ${{ inputs.PRE_PIP_COMMANDS }} != ""
         env:
           PRE_PIP_COMMANDS: ${{ inputs.PRE_PIP_COMMANDS }}
       - run: pip install -r tests/requirements.txt
-        # if: steps.cache-virtualenv.outputs.cache-hit != 'true'
+        if: steps.cache-virtualenv.outputs.cache-hit != 'true'
+      - uses: aws-actions/configure-aws-credentials@v1.7.0
+        with:
+          role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+          role-session-name: github-${{ github.repository_id }}-${{ github.triggering_actor }}
+          aws-region: ${{ inputs.AWS_REGION }}
       - name: Tests run
         run: |
-          # Just for cases when we need to do something before run
-          eval ${EXTRA_COMMANDS}
+          if [ -n "${TEST_EXTRA_COMMANDS}" ]; then eval ${TEST_EXTRA_COMMANDS}; fi
           python -m pytest -vvv
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          AWS_REGION: ${{ inputs.AWS_REGION }}
-          EXTRA_COMMANDS: ${{ inputs.TEST_EXTRA_COMMANDS }}
+          TEST_EXTRA_COMMANDS: ${{ inputs.TEST_EXTRA_COMMANDS }}
           TF_TOKEN_terraform_naviteq_io:  ${{ secrets.NAVITEQ_TF_TOKEN }}
           TF_VAR_runners_pat_token: ${{ secrets.RUNNERS_PAT_TOKEN }}
