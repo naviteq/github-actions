@@ -14,6 +14,10 @@ on:
         type: string
         required: false
         default: ""
+      EXTRA_ENV_VARS:
+        type: string
+        required: false
+        default: ""
     secrets:
       AWS_IAM_ROLE:
         required: true
@@ -129,8 +133,9 @@ jobs:
       - name: Tests run
         run: |
           if [ -n "${TEST_EXTRA_COMMANDS}" ]; then eval ${TEST_EXTRA_COMMANDS}; fi
+          if [ -n "${EXTRA_ENV_VARS}" ]; then export ${EXTRA_ENV_VARS}; fi
           python -m pytest -vvv
         env:
           TEST_EXTRA_COMMANDS: ${{ inputs.TEST_EXTRA_COMMANDS }}
+          EXTRA_ENV_VARS: ${{ inputs.EXTRA_ENV_VARS }}
           TF_TOKEN_terraform_naviteq_io:  ${{ secrets.NAVITEQ_TF_TOKEN }}
-          TF_VAR_runners_pat_token: ${{ secrets.RUNNERS_PAT_TOKEN }}
