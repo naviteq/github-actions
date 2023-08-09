@@ -73,9 +73,9 @@ jobs:
         with:
           path: ~/.tflint.d/plugins
           key: tflint-${{ hashFiles('.tflint.hcl') }}
-      - uses: terraform-linters/setup-tflint@v1
+      - uses: terraform-linters/setup-tflint@v3
         with:
-          tflint_version: v0.46.1
+          tflint_version: v0.47.0
       - name: Run TFLint
         run: |
           tflint --init
@@ -84,6 +84,9 @@ jobs:
     name: Security
     runs-on: ${{ needs.prepare.outputs.runners }}
     needs: [prepare]
+    env:
+      CHECKOV_ENABLE_MODULES_FOREACH_HANDLING: "False"
+      CHECKOV_NEW_TF_PARSER: "0"
     steps:
       - uses: actions/checkout@v3
       - name: TFSec
@@ -92,7 +95,7 @@ jobs:
           additional_args: --config-file=./.tfsec.yml
           version: v1.28.1
       - name: Run Checkov action
-        uses: bridgecrewio/checkov-action@v12.2339.0
+        uses: bridgecrewio/checkov-action@v12.2455.0
         with:
           quiet: true
   test:
@@ -112,7 +115,7 @@ jobs:
           terraform_wrapper: false
       - uses: actions/setup-python@v3
         with:
-          python-version: '3.9'
+          python-version: '3.11'
       - uses: syphar/restore-virtualenv@v1
         id: cache-virtualenv
         with:
@@ -125,7 +128,7 @@ jobs:
           PRE_PIP_COMMANDS: ${{ inputs.PRE_PIP_COMMANDS }}
       - run: pip install -r tests/requirements.txt
         if: steps.cache-virtualenv.outputs.cache-hit != 'true'
-      - uses: aws-actions/configure-aws-credentials@v1.7.0
+      - uses: aws-actions/configure-aws-credentials@v2
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
           role-session-name: github-${{ github.repository_id }}-${{ github.triggering_actor }}
