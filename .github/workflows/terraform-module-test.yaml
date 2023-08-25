@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.4.6
+          terraform_version: 1.5.6
           cli_config_credentials_hostname: 'terraform.naviteq.io'
           cli_config_credentials_token: ${{ secrets.NAVITEQ_TF_TOKEN }}
       - uses: actions/setup-python@v3
