@@ -131,6 +131,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v2
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+          role-duration-seconds: 14400
           role-session-name: github-${{ github.repository_id }}-${{ github.triggering_actor }}
           aws-region: ${{ inputs.AWS_REGION }}
       - name: Tests run
