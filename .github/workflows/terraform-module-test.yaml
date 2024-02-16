@@ -26,27 +26,9 @@ on:
       NAVITEQ_TF_TOKEN:
         required: false
 jobs:
-  prepare:
-    name: Preparation
-    runs-on: ubuntu-latest
-    outputs:
-      runners: ${{ steps.vars.outputs.github_runners }}
-    steps:
-      - uses: actions/checkout@v3
-      - name: Outputs preparation
-        id: vars
-        env:
-          GH_TOKEN: ${{ secrets.RUNNERS_PAT_TOKEN }}
-        run: |
-          github_runners='ubuntu-latest'
-          runners=$(gh api repos/${{ github.repository }}/actions/runners | jq .total_count || echo 0) && echo $runners
-          org_runners=$(gh api /orgs/naviteq/actions/runners | jq .total_count || echo 0) && echo $org_runners
-          ([[ "$runners" -gt 0 ]] || [[ "$org_runners" -gt 0 ]]) && github_runners="self-hosted"
-          echo "github_runners=${github_runners}" >> $GITHUB_OUTPUT
   format:
     name: Format check
     runs-on: ubuntu-22.04
-    needs: [prepare]
     steps:
       - uses: actions/checkout@v3
       - uses: hashicorp/setup-terraform@v2
@@ -65,8 +47,9 @@ jobs:
         run: terraform fmt --check --recursive --diff
   tflint:
     name: TFLint
-    runs-on: ${{ needs.prepare.outputs.runners }}
-    needs: [prepare]
+    runs-on:
+      - terraform
+      - aws
     steps:
       - uses: actions/checkout@v3
       - uses: actions/cache@v2
@@ -81,9 +64,9 @@ jobs:
           tflint --init
           tflint -f compact
   security:
-    name: Security
-    runs-on: ${{ needs.prepare.outputs.runners }}
-    needs: [prepare]
+    runs-on:
+      - terraform
+      - aws
     env:
       CHECKOV_ENABLE_MODULES_FOREACH_HANDLING: "False"
       CHECKOV_NEW_TF_PARSER: "0"
@@ -102,9 +85,10 @@ jobs:
   test:
     name: Module testing (PyTest)
     concurrency: tf-test-${{ github.ref }}
-    runs-on: ${{ needs.prepare.outputs.runners }}
+    runs-on:
+      - terraform
+      - aws
     needs:
-      - prepare
       - format
       - tflint
       - security
