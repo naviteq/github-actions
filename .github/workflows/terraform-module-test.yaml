@@ -94,6 +94,7 @@ jobs:
         with:
           additional_args: --config-file=./.tfsec.yml
           version: v1.28.1
+          github_token: ${{ github.token }}
       - name: Run Checkov action
         uses: bridgecrewio/checkov-action@v12.2455.0
         with:
