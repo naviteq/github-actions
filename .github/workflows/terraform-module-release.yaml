@@ -14,6 +14,9 @@ on:
         type: string
       PROVIDER:
         type: string
+    secrets:
+      AWS_IAM_ROLE:
+        required: true
 jobs:
   release:
     name: Module registry release
