@@ -123,7 +123,7 @@ jobs:
         run: |
           if [ -n "${TEST_EXTRA_COMMANDS}" ]; then eval ${TEST_EXTRA_COMMANDS}; fi
           if [ -n "${EXTRA_ENV_VARS}" ]; then export ${EXTRA_ENV_VARS}; fi
-          python -m pytest -vvv
+          python -m pytest --show-capture=all --log-cli-level=debug
         env:
           TEST_EXTRA_COMMANDS: ${{ inputs.TEST_EXTRA_COMMANDS }}
           EXTRA_ENV_VARS: ${{ inputs.EXTRA_ENV_VARS }}
