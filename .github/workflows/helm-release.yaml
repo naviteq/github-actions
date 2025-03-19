@@ -72,7 +72,7 @@ jobs:
         working-directory: ${{ inputs.CHART_LOCATION }}
         run: |
           helm package .
-          mv ${{ inputs.CHART_LOCATION }}/*.tgz helm-charts
+          mv *.tgz helm-charts
 
       - name: Publish Helm charts
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
