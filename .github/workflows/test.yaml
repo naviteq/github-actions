@@ -6,13 +6,13 @@ on:
 jobs:
   test:
     name: test result
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v3
       - env:
           GH_TOKEN: ${{ secrets.RUNNERS_PAT_TOKEN }}
         run: |
-          github_runners='ubuntu-latest'
+          github_runners='ubuntu-24.04'
           runners=$(gh api repos/${{ github.repository }}/actions/runners | jq .total_count || echo 0) && echo $runners
           org_runners=$(gh api /orgs/naviteq/actions/runners | jq .total_count || echo 0) && echo $org_runners
           ([[ "$runners" -gt 0 ]] || [[ "$org_runners" -gt 0 ]]) && github_runners="self-hosted"

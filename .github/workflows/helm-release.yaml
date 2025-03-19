@@ -20,16 +20,17 @@ on:
 jobs:
   helm:
     name: Update Chart.yaml file for version\appVersion and build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v3
         with:
           fetch-depth: 0 # needed for tags
           ref: ${{ github.head_ref }}
           token: ${{ secrets.TOKEN }}
+
       - uses: azure/setup-helm@v3
         with:
-          version: v3.10.0
+          version: v3.17.2
 
       - name: Lint Helm chart
         working-directory: ${{ inputs.CHART_LOCATION }}
@@ -42,6 +43,14 @@ jobs:
           else
             helm lint .
           fi
+
+      - name: Checkout Helm repo museum
+        if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
+        uses: actions/checkout@v3
+        with:
+          repository: naviteq/helm-charts
+          path: helm-charts
+          token: ${{ secrets.TOKEN }}
 
       - name: Update versions
         working-directory: ${{ inputs.CHART_LOCATION }}
@@ -59,8 +68,21 @@ jobs:
           cat Chart.yaml
 
       - name: Build Helm chart
+        if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
         working-directory: ${{ inputs.CHART_LOCATION }}
-        run: helm package .
+        run: |
+          helm package .
+          mv ${{ inputs.CHART_LOCATION }}/*.tgz helm-charts
+
+      - name: Publish Helm charts
+        if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          repository: helm-charts
+          commit_message: "Updated from CI"
+          commit_user_name: Naviteq Automation
+          commit_user_email: naviteq-automation@naviteq.io
+          file_pattern: "*.tgz"
 
       - name: Commit file to branch
         if: ${{ github.ref_type == 'tag' }}
@@ -70,22 +92,4 @@ jobs:
           branch: ${{ inputs.UPDATE_BRANCH }}
           commit_user_name: Naviteq Automation
           commit_user_email: naviteq-automation@naviteq.io
-
-      - name: Checkout Helm repo museum
-        if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
-        uses: actions/checkout@v3
-        with:
-          repository: naviteq/helm-charts
-          path: helm-charts
-          token: ${{ secrets.TOKEN }}
-      - name: Copy Helm chart to museum
-        if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
-        run: cp ${{ inputs.CHART_LOCATION }}/*.tgz helm-charts
-      - name: Publish Helm charts
-        if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
-        uses: stefanzweifel/git-auto-commit-action@v4
-        with:
-          repository: helm-charts
-          commit_message: "Updated from CI"
-          commit_user_name: Naviteq Automation
-          commit_user_email: naviteq-automation@naviteq.io
+          file_pattern: "*.yaml"

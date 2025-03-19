@@ -20,7 +20,7 @@ on:
 jobs:
   release:
     name: Module registry release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v3
       - run: echo "VERSION=${GITHUB_REF#refs/*/v}" >> $GITHUB_ENV
