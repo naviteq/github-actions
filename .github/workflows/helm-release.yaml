@@ -69,9 +69,8 @@ jobs:
 
       - name: Build Helm chart
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
-        working-directory: ${{ inputs.CHART_LOCATION }}
         run: |
-          helm package .
+          helm package ${{ inputs.CHART_LOCATION }}
           mv *.tgz helm-charts
 
       - name: Publish Helm charts
