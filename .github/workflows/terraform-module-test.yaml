@@ -30,19 +30,19 @@ jobs:
     name: Format check
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v3
-      - uses: hashicorp/setup-terraform@v2
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.5.6
           cli_config_credentials_hostname: 'terraform.naviteq.io'
           cli_config_credentials_token: ${{ secrets.NAVITEQ_TF_TOKEN }}
-      - uses: actions/setup-python@v3
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.9'
       - name: Python format
-        uses: psf/black@stable
+        uses: psf/black@25.1.0
         with:
-          version: 22.6.0
+          version: 25.1.0
       - name: Terraform Format
         run: terraform fmt --check --recursive --diff
   tflint:
@@ -51,12 +51,12 @@ jobs:
       - terraform
       - aws
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/cache@v2
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
         with:
           path: ~/.tflint.d/plugins
           key: tflint-${{ hashFiles('.tflint.hcl') }}
-      - uses: terraform-linters/setup-tflint@v3
+      - uses: terraform-linters/setup-tflint@v4
         with:
           tflint_version: v0.47.0
       - name: Run TFLint
@@ -71,7 +71,7 @@ jobs:
       CHECKOV_ENABLE_MODULES_FOREACH_HANDLING: "False"
       CHECKOV_NEW_TF_PARSER: "0"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: TFSec
         uses: aquasecurity/tfsec-action@v1.0.3
         with:
@@ -93,12 +93,12 @@ jobs:
       - tflint
       - security
     steps:
-      - uses: actions/checkout@v3
-      - uses: hashicorp/setup-terraform@v2
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.5.6
           terraform_wrapper: false
-      - uses: actions/setup-python@v3
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - uses: syphar/restore-virtualenv@v1
@@ -113,7 +113,7 @@ jobs:
           PRE_PIP_COMMANDS: ${{ inputs.PRE_PIP_COMMANDS }}
       - run: pip install -r tests/requirements.txt
         if: steps.cache-virtualenv.outputs.cache-hit != 'true'
-      - uses: aws-actions/configure-aws-credentials@v2
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
           role-duration-seconds: 14400

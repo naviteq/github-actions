@@ -22,7 +22,7 @@ jobs:
     name: Module registry release
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - run: echo "VERSION=${GITHUB_REF#refs/*/v}" >> $GITHUB_ENV
       - uses: unfor19/install-aws-cli-action@v1.0.3
       - name: Create archive
