@@ -91,4 +91,4 @@ jobs:
           branch: ${{ inputs.UPDATE_BRANCH }}
           commit_user_name: Naviteq Automation
           commit_user_email: naviteq-automation@naviteq.io
-          file_pattern: "*.yaml"
+          file_pattern: "**/*.yaml"
