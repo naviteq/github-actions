@@ -11,7 +11,7 @@ permissions:
 jobs:
   guard_non_main:
     name: Guard non-main
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Block main branch
         shell: bash
@@ -21,8 +21,8 @@ jobs:
             exit 1
           fi
 
-  case_inputs_coverage_no_push:
-    name: Case - Inputs coverage (no push)
+  case_inputs_coverage:
+    name: Case - Inputs coverage
     needs: guard_non_main
     uses: ./.github/workflows/docker-build.yaml
     with:
