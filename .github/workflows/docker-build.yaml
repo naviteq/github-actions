@@ -3,34 +3,117 @@
 name: Docker build
 on:
   workflow_call:
+    outputs:
+      tag-names:
+        description: Generated docker tag names without image base name
+        value: ${{ jobs.build.outputs.tag-names }}
+      tags:
+        description: Generated image tags
+        value: ${{ jobs.build.outputs.tags }}
+      digest:
+        description: Built image digest
+        value: ${{ jobs.build.outputs.digest }}
+      imageid:
+        description: Built image ID
+        value: ${{ jobs.build.outputs.imageid }}
+      metadata:
+        description: Build metadata JSON
+        value: ${{ jobs.build.outputs.metadata }}
+      scan_artifact_name:
+        description: Security scan artifact name
+        value: ${{ jobs.build.outputs.scan_artifact_name }}
+      sbom_artifact_name:
+        description: SBOM artifact name
+        value: ${{ jobs.build.outputs.sbom_artifact_name }}
     inputs:
       DOCKER_CONTEXT:
         description: Docker build context
         type: string
+        required: false
         default: '.'
       DOCKER_PUSH:
         description: Do we should push the image or not
         type: boolean
+        required: false
         default: true
       REGISTRY:
         description: Registry URL
         type: string
+        required: false
         default: ''
       USERNAME:
         description: Registry Username
         type: string
+        required: false
         default: ''
       IMAGE:
         description: Image name
         type: string
+        required: false
       AWS_REGION:
         description: AWS Region
         type: string
         required: false
       DOCKER_PLATFORMS:
-        description: Target Docker platforms to build the image for
+        description: Target Docker platforms (e.g. linux/amd64,linux/arm64 or linux/arm/v7)
         type: string
+        required: false
         default: "linux/amd64,linux/arm64"
+      RUNNER:
+        description: GitHub Actions runner to use for the build job
+        type: string
+        required: false
+        default: "ubuntu-22.04"
+      DOCKERFILE:
+        description: Path to Dockerfile (relative to context). Leave empty to use default {context}/Dockerfile
+        type: string
+        required: false
+        default: ''
+      BUILD_ARGS:
+        description: Docker build arguments (multiline KEY=value format)
+        type: string
+        required: false
+        default: ''
+      TAG_FLAVOR_SUFFIX:
+        description: Tag flavor suffix applied to all generated tags (e.g. -arm64, -debug)
+        type: string
+        required: false
+        default: ''
+      TAG_FLAVOR_PREFIX:
+        description: Tag flavor prefix applied to all generated tags
+        type: string
+        required: false
+        default: ''
+      CUSTOM_TAGS:
+        description: Custom tags (newline separated)
+        type: string
+        required: false
+        default: ''
+      SECURITY_SCAN_ENABLED:
+        description: Enable container vulnerability scan
+        type: boolean
+        required: false
+        default: false
+      SECURITY_SCAN_SEVERITY:
+        description: Comma-separated severities to scan and display (UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL)
+        type: string
+        required: false
+        default: 'CRITICAL'
+      SECURITY_SCAN_EXIT_CODE:
+        description: Exit code used by vulnerability scanner (use 0 to never fail)
+        type: string
+        required: false
+        default: '1'
+      SBOM_ENABLED:
+        description: Enable SBOM generation
+        type: boolean
+        required: false
+        default: false
+      SLACK_NOTIFY_ON_SUCCESS:
+        description: Send Slack notification on successful build
+        type: boolean
+        required: false
+        default: false
     secrets:
       TOKEN:
         description: Registry Token
@@ -38,32 +121,54 @@ on:
       AWS_IAM_ROLE:
         description: AWS IAM Role to assume 
         required: false
+      BUILD_SECRETS:
+        description: Build secrets (multiline KEY=value format)
+        required: false
+      SLACK_WEBHOOK:
+        description: Slack incoming webhook URL
+        required: false
 
 jobs:
   build:
     name: Docker build and push to registry
-    runs-on: ubuntu-22.04
+    runs-on: ${{ inputs.RUNNER }}
+    outputs:
+      tag-names: ${{ steps.meta.outputs.tag-names }}
+      tags: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.build_push.outputs.digest }}
+      imageid: ${{ steps.build_push.outputs.imageid }}
+      metadata: ${{ steps.build_push.outputs.metadata }}
+      scan_artifact_name: docker-build-trivy-scan-report
+      sbom_artifact_name: docker-build-cyclonedx-sbom
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       # Auth
       ## AWS
-      - uses: aws-actions/configure-aws-credentials@v4
-        if: inputs.AWS_REGION != ''
+      - uses: aws-actions/configure-aws-credentials@v6
+        if: inputs.DOCKER_PUSH && inputs.AWS_REGION != ''
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
           role-session-name: github-${{ github.repository_id }}-${{ github.triggering_actor }}
           aws-region: ${{ inputs.AWS_REGION }}
       - name: Login to Amazon ECR
-        if: inputs.AWS_REGION != ''
+        if: inputs.DOCKER_PUSH && inputs.AWS_REGION != ''
         id: ecr
         uses: aws-actions/amazon-ecr-login@v2
+      ## GHCR
+      - name: Login to GitHub Container Registry
+        if: inputs.DOCKER_PUSH && inputs.REGISTRY == 'ghcr.io' && inputs.AWS_REGION == ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ inputs.USERNAME != '' && inputs.USERNAME || github.actor }}
+          password: ${{ secrets.TOKEN }}
       ## Other
       - name: Login to registry (using username and token)
-        if: inputs.USERNAME != ''
+        if: inputs.DOCKER_PUSH && inputs.REGISTRY != '' && inputs.REGISTRY != 'ghcr.io' && inputs.USERNAME != ''
         uses: docker/login-action@v3
         with:
           registry: ${{ inputs.REGISTRY }}
@@ -73,22 +178,137 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ inputs.AWS_REGION != '' && steps.ecr.outputs.registry || inputs.REGISTRY }}/${{ inputs.IMAGE }}
+          images: ${{ inputs.AWS_REGION != '' && steps.ecr.outputs.registry || inputs.REGISTRY }}/${{ inputs.IMAGE != '' && inputs.IMAGE || github.repository }}
+          flavor: |
+            latest=false
+            prefix=${{ inputs.TAG_FLAVOR_PREFIX }}
+            suffix=${{ inputs.TAG_FLAVOR_SUFFIX }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=ref,event=pr
+            # Default branch push: add sha-<shortsha>
+            type=sha,prefix=${{ inputs.TAG_FLAVOR_PREFIX }}sha-,format=short,enable={{is_default_branch}}
+            # Feature branch push: add sha-<shortsha>
+            type=sha,prefix=${{ inputs.TAG_FLAVOR_PREFIX }}sha-,format=short,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/') }}
+            # Pull requests: add sha-<shortsha>
+            type=sha,prefix=${{ inputs.TAG_FLAVOR_PREFIX }}sha-,format=short,enable=${{ github.event_name == 'pull_request' }}
+            # Feature branches: feature/<name> -> <name>
+            type=match,pattern=^feature/(.+)$,group=1,value=${{ github.ref_name }},enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/') }}
+            # Pull requests: PR #123 -> pr-123
+            type=ref,event=pr,enable=${{ github.event_name == 'pull_request' }}
+            # Version tag vX.Y.Z -> X.Y.Z
+            type=semver,pattern={{version}}
+            # Version tag vX.Y.Z -> X.Y
             type=semver,pattern={{major}}.{{minor}}
-            type=sha
+            # Optional major tag from vX.Y.Z -> X
+            type=semver,pattern={{major}}
+            # Scheduled workflow: nightly tag
+            type=schedule,pattern=nightly
+            # Scheduled workflow: UTC date tag YYYYMMDD
+            type=schedule,pattern={{date 'YYYYMMDD'}}
+            # User-provided custom tags
+            ${{ inputs.CUSTOM_TAGS }}
       - name: Build and push
+        id: build_push
         uses: docker/build-push-action@v6
         with:
           platforms: ${{ inputs.DOCKER_PLATFORMS }}
           context: ${{ inputs.DOCKER_CONTEXT }}
+          file: ${{ inputs.DOCKERFILE }}
           push: ${{ inputs.DOCKER_PUSH }}
+          build-args: ${{ inputs.BUILD_ARGS }}
+          secrets: ${{ secrets.BUILD_SECRETS }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            ${{ inputs.REGISTRY }}/${{ inputs.IMAGE }}:latest
-            type=gha,scope=${{ github.ref_name }}-${{ inputs.IMAGE }}
+          attests: |
+            type=provenance,mode=max
+            type=sbom
+          cache-from: type=gha,scope=${{ github.ref_name }}-${{ inputs.IMAGE }}
           cache-to: type=gha,mode=max,scope=${{ github.ref_name }}-${{ inputs.IMAGE }}
+      - name: Run Trivy vulnerability scanner
+        id: security_scan
+        if: ${{ inputs.SECURITY_SCAN_ENABLED && inputs.DOCKER_PUSH }}
+        uses: aquasecurity/trivy-action@master
+        env:
+          TRIVY_EXIT_ON_EOL: "1"
+        with:
+          image-ref: "${{ fromJSON(steps.meta.outputs.json).tags[0] }}"
+          hide-progress: true
+          format: "table"
+          output: "scan-report.txt"
+          exit-code: "${{ inputs.SECURITY_SCAN_EXIT_CODE }}"
+          vuln-type: "os,library"
+          severity: "${{ inputs.SECURITY_SCAN_SEVERITY }}"
+      - name: Generate SBOM (CycloneDX)
+        if: ${{ always() && inputs.SBOM_ENABLED && inputs.DOCKER_PUSH }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: "${{ fromJSON(steps.meta.outputs.json).tags[0] }}"
+          hide-progress: true
+          format: "cyclonedx"
+          output: "sbom.json"
+          exit-code: "0"
+      - name: Publish Trivy Output to Summary
+        if: ${{ always() && inputs.SECURITY_SCAN_ENABLED && inputs.DOCKER_PUSH && hashFiles('scan-report.txt') != '' }}
+        run: |
+          if [[ -s scan-report.txt ]]; then
+            {
+              echo "### Security Output"
+              echo "<details><summary>Click to expand</summary>"
+              echo ""
+              echo '```terraform'
+              cat scan-report.txt
+              echo '```'
+              echo "</details>"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+      - name: Upload scan report artifact
+        if: ${{ always() && inputs.SECURITY_SCAN_ENABLED && inputs.DOCKER_PUSH && hashFiles('scan-report.txt') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: docker-build-trivy-scan-report
+          path: scan-report.txt
+      - name: Upload SBOM artifact
+        if: ${{ always() && inputs.SBOM_ENABLED && inputs.DOCKER_PUSH && hashFiles('sbom.json') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: docker-build-cyclonedx-sbom
+          path: sbom.json
+      - name: Check Slack webhook
+        id: check_slack_webhook
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          if [[ -n "${SLACK_WEBHOOK}" ]]; then
+            echo true
+            echo "has_webhook=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo false
+            echo "has_webhook=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Send Slack notification
+        if: ${{ always() && steps.check_slack_webhook.outputs.has_webhook == 'true' && (job.status != 'success' || inputs.SLACK_NOTIFY_ON_SUCCESS) }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "Docker build ${{ job.status }}: ${{ github.repository }}"
+            attachments:
+              - color: "${{ job.status == 'success' && '#2eb886' || (job.status == 'cancelled' && '#9ca3af' || '#e01e5a') }}"
+                blocks:
+                  - type: section
+                    text:
+                      type: mrkdwn
+                      text: "*Docker build ${{ job.status }}*"
+                  - type: section
+                    fields:
+                      - type: mrkdwn
+                        text: "*Repository:*\n${{ github.repository }}"
+                      - type: mrkdwn
+                        text: "*Ref:*\n${{ github.ref_type }}: ${{ github.ref_name }}"
+                      - type: mrkdwn
+                        text: "*Image:*\n${{ inputs.IMAGE != '' && inputs.IMAGE || github.repository }}"
+                      - type: mrkdwn
+                        text: "*Run:*\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

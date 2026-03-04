@@ -1,0 +1,54 @@
+---
+
+name: Docker Build Test
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  guard_non_main:
+    name: Guard non-main
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Block main branch
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            echo "Tests must be run from a non-main branch. Main branch is blocked by DoD."
+            exit 1
+          fi
+
+  case_inputs_coverage_no_push:
+    name: Case - Inputs coverage (no push)
+    needs: guard_non_main
+    uses: ./.github/workflows/docker-build.yaml
+    with:
+      RUNNER: ubuntu-latest
+      REGISTRY: ghcr.io
+      USERNAME: ${{ github.actor }}
+      IMAGE: ${{ github.repository }}
+      DOCKER_CONTEXT: '.'
+      DOCKER_PLATFORMS: linux/amd64,linux/arm64
+      DOCKERFILE: .github/testdata/Dockerfile.green
+      BUILD_ARGS: |
+        TEST_ARG=enabled
+        TEST_ARG_2=enabled
+      TAG_FLAVOR_PREFIX: 'prefix-'
+      TAG_FLAVOR_SUFFIX: '-suffix'
+      CUSTOM_TAGS: |
+        test-custom-tag
+      DOCKER_PUSH: true
+      SECURITY_SCAN_ENABLED: true
+      SECURITY_SCAN_SEVERITY: CRITICAL
+      SECURITY_SCAN_EXIT_CODE: '0'
+      SBOM_ENABLED: true
+      SLACK_NOTIFY_ON_SUCCESS: false
+    secrets:
+      TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUILD_SECRETS: |
+        smoke_secret=plain-text-value
+        smoke_secret_2=plain-text-value-2
+      # SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK}}
