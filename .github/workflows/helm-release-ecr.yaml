@@ -1,0 +1,114 @@
+name: Helm Release ECR
+
+on:
+  workflow_call:
+    inputs:
+      chart_path:
+        description: Path to Helm chart directory
+        type: string
+        required: true
+      ecr_registry:
+        description: ECR registry host
+        type: string
+        required: true
+      ecr_repo:
+        description: ECR repository path
+        type: string
+        required: true
+      aws_region:
+        description: AWS region (required when push_chart is true)
+        type: string
+        required: false
+        default: ""
+      aws_role_to_assume:
+        description: AWS IAM role ARN for OIDC (required when push_chart is true)
+        type: string
+        required: false
+        default: ""
+      push_chart:
+        description: Push packaged chart to ECR
+        type: boolean
+        required: false
+        default: true
+      bump_version_in_git:
+        description: Commit bumped chart version files to current branch
+        type: boolean
+        required: false
+        default: true
+      lint_enabled:
+        description: Run helm lint before package
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      token:
+        description: Git token for checkout and optional commit push
+        required: false
+    outputs:
+      chart_name:
+        description: Chart name
+        value: ${{ jobs.release.outputs.chart_name }}
+      chart_version:
+        description: Chart version
+        value: ${{ jobs.release.outputs.chart_version }}
+      app_version:
+        description: Chart appVersion
+        value: ${{ jobs.release.outputs.app_version }}
+      package_file:
+        description: Packaged chart file path
+        value: ${{ jobs.release.outputs.package_file }}
+      sha256:
+        description: SHA256 checksum of package
+        value: ${{ jobs.release.outputs.sha256 }}
+      upload_identifier:
+        description: Pushed OCI reference
+        value: ${{ jobs.release.outputs.upload_identifier }}
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    outputs:
+      chart_name: ${{ steps.core.outputs.chart_name }}
+      chart_version: ${{ steps.core.outputs.chart_version }}
+      app_version: ${{ steps.core.outputs.app_version }}
+      package_file: ${{ steps.core.outputs.package_file }}
+      sha256: ${{ steps.core.outputs.sha256 }}
+      upload_identifier: ${{ steps.core.outputs.upload_identifier }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate ECR auth inputs
+        if: ${{ inputs.push_chart }}
+        env:
+          AWS_REGION: ${{ inputs.aws_region }}
+          AWS_ROLE_TO_ASSUME: ${{ inputs.aws_role_to_assume }}
+        run: |
+          if [[ -z "$AWS_REGION" || -z "$AWS_ROLE_TO_ASSUME" ]]; then
+            echo "aws_region and aws_role_to_assume are required when push_chart=true"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ inputs.push_chart }}
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ inputs.aws_role_to_assume }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Login to Amazon ECR
+        if: ${{ inputs.push_chart }}
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Run OCI core
+        id: core
+        uses: ./.github/actions/helm-release-oci
+        with:
+          chart_path: ${{ inputs.chart_path }}
+          oci_registry: ${{ inputs.ecr_registry }}
+          oci_repo: ${{ inputs.ecr_repo }}
+          push_chart: ${{ inputs.push_chart }}
+          bump_version_in_git: ${{ inputs.bump_version_in_git }}
+          lint_enabled: ${{ inputs.lint_enabled }}

@@ -1,0 +1,90 @@
+name: Helm Release GitHub
+
+on:
+  workflow_call:
+    inputs:
+      chart_path:
+        description: Path to Helm chart directory
+        type: string
+        required: true
+      ghcr_registry:
+        description: GitHub OCI registry host
+        type: string
+        required: false
+        default: ghcr.io
+      ghcr_repo:
+        description: GitHub OCI repository path
+        type: string
+        required: true
+      push_chart:
+        description: Push packaged chart to GHCR
+        type: boolean
+        required: false
+        default: true
+      bump_version_in_git:
+        description: Commit bumped chart version files to current branch
+        type: boolean
+        required: false
+        default: true
+      lint_enabled:
+        description: Run helm lint before package
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      token:
+        description: Token for GHCR login (required when push_chart is true)
+        required: false
+    outputs:
+      chart_name:
+        description: Chart name
+        value: ${{ jobs.release.outputs.chart_name }}
+      chart_version:
+        description: Chart version
+        value: ${{ jobs.release.outputs.chart_version }}
+      app_version:
+        description: Chart appVersion
+        value: ${{ jobs.release.outputs.app_version }}
+      package_file:
+        description: Packaged chart file path
+        value: ${{ jobs.release.outputs.package_file }}
+      sha256:
+        description: SHA256 checksum of package
+        value: ${{ jobs.release.outputs.sha256 }}
+      upload_identifier:
+        description: Pushed OCI reference
+        value: ${{ jobs.release.outputs.upload_identifier }}
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    outputs:
+      chart_name: ${{ steps.core.outputs.chart_name }}
+      chart_version: ${{ steps.core.outputs.chart_version }}
+      app_version: ${{ steps.core.outputs.app_version }}
+      package_file: ${{ steps.core.outputs.package_file }}
+      sha256: ${{ steps.core.outputs.sha256 }}
+      upload_identifier: ${{ steps.core.outputs.upload_identifier }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Login to GitHub Registry
+        if: ${{ inputs.push_chart }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.ghcr_registry }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.token }}
+
+      - name: Run OCI core
+        id: core
+        uses: ./.github/actions/helm-release-oci
+        with:
+          chart_path: ${{ inputs.chart_path }}
+          oci_registry: ${{ inputs.ghcr_registry }}
+          oci_repo: ${{ inputs.ghcr_repo }}
+          push_chart: ${{ inputs.push_chart }}
+          bump_version_in_git: ${{ inputs.bump_version_in_git }}
+          lint_enabled: ${{ inputs.lint_enabled }}
