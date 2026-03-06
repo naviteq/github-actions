@@ -1,0 +1,6 @@
+apiVersion: v2
+name: test-museum
+description: Test chart for helm-release-oci workflow
+type: application
+version: 1.11.1-pre+38f4e1d
+appVersion: v1.11.1-pre+38f4e1d

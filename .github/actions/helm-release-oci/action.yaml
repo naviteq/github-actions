@@ -1,0 +1,184 @@
+name: Helm Release OCI Core
+description: Common Helm OCI release logic without provider-specific authentication
+
+inputs:
+  chart_path:
+    description: Path to Helm chart directory
+    required: true
+  oci_registry:
+    description: OCI registry host
+    required: true
+  oci_repo:
+    description: OCI repository path
+    required: true
+  push_chart:
+    description: Push packaged chart to OCI registry
+    required: false
+    default: "true"
+  bump_version_in_git:
+    description: Commit bumped chart version files to current branch
+    required: false
+    default: "true"
+  lint_enabled:
+    description: Run helm lint before package
+    required: false
+    default: "true"
+
+outputs:
+  chart_name:
+    description: Chart name
+    value: ${{ steps.meta.outputs.chart_name }}
+  chart_version:
+    description: Chart version
+    value: ${{ steps.meta.outputs.chart_version }}
+  app_version:
+    description: Chart appVersion
+    value: ${{ steps.meta.outputs.app_version }}
+  package_file:
+    description: Packaged chart file path
+    value: ${{ steps.package.outputs.package_file }}
+  sha256:
+    description: SHA256 checksum of package
+    value: ${{ steps.package.outputs.sha256 }}
+  upload_identifier:
+    description: Pushed OCI reference
+    value: ${{ steps.upload_meta.outputs.upload_identifier }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: v3.18.3
+
+    - name: Validate chart
+      shell: bash
+      env:
+        CHART_PATH: ${{ inputs.chart_path }}
+      run: |
+        if [[ ! -d "$CHART_PATH" ]]; then
+          echo "Chart path does not exist: $CHART_PATH"
+          exit 1
+        fi
+        if [[ ! -f "$CHART_PATH/Chart.yaml" ]]; then
+          echo "Chart.yaml not found in: $CHART_PATH"
+          exit 1
+        fi
+
+    - name: Lint chart
+      if: ${{ inputs.lint_enabled == 'true' }}
+      shell: bash
+      run: helm lint "${{ inputs.chart_path }}"
+
+    - name: Update versions
+      shell: bash
+      working-directory: ${{ inputs.chart_path }}
+      run: |
+        if [[ "$GITHUB_REF_TYPE" == "branch" ]]
+        then
+          if git show-ref --tags --quiet; then
+            LATEST_TAG=$(git describe --tags "$(git rev-list --tags --max-count=1)")
+          else
+            LATEST_TAG="v0.0.0"
+          fi
+          APP_VERSION="$LATEST_TAG-pre+$(echo ${GITHUB_SHA} | cut -c1-7)"
+        else
+          APP_VERSION="${GITHUB_REF_NAME##*/}"
+        fi
+        echo "Updating Chart.yaml"
+        sed -i "s#^[[:space:]]*version:.*#version: ${APP_VERSION/v/}#g" Chart.yaml
+        sed -i "s#^[[:space:]]*appVersion:.*#appVersion: ${APP_VERSION}#g" Chart.yaml
+        cat Chart.yaml
+
+    - name: Read chart metadata
+      id: meta
+      shell: bash
+      env:
+        CHART_FILE: ${{ inputs.chart_path }}/Chart.yaml
+      run: |
+        CHART_NAME=$(sed -n 's/^[[:space:]]*name:[[:space:]]*//p' "$CHART_FILE" | head -n1)
+        CHART_VERSION=$(sed -n 's/^[[:space:]]*version:[[:space:]]*//p' "$CHART_FILE" | head -n1)
+        APP_VERSION=$(sed -n 's/^[[:space:]]*appVersion:[[:space:]]*//p' "$CHART_FILE" | head -n1)
+        echo "chart_name=$CHART_NAME" >> "$GITHUB_OUTPUT"
+        echo "chart_version=$CHART_VERSION" >> "$GITHUB_OUTPUT"
+        echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+
+    - name: Package chart
+      id: package
+      shell: bash
+      run: |
+        PACKAGE_FILE=$(helm package "${{ inputs.chart_path }}" | awk '{print $NF}')
+        SHA256=$(sha256sum "$PACKAGE_FILE" | awk '{print $1}')
+        echo "package_file=$PACKAGE_FILE" >> "$GITHUB_OUTPUT"
+        echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+
+    # Intentional: version bump commit runs only when chart push is enabled.
+    - name: Commit file to branch
+      if: ${{ github.ref_type == 'branch' && inputs.push_chart == 'true' && inputs.bump_version_in_git == 'true' }}
+      uses: stefanzweifel/git-auto-commit-action@v7
+      with:
+        commit_message: "Helm bumped up version and appVersion [skip ci]"
+        commit_user_name: Naviteq Automation
+        commit_user_email: naviteq-automation@naviteq.io
+        file_pattern: "${{ inputs.chart_path }}/Chart.yaml"
+
+    - name: Push chart
+      id: push
+      if: ${{ inputs.push_chart == 'true' }}
+      shell: bash
+      env:
+        PACKAGE_FILE: ${{ steps.package.outputs.package_file }}
+      run: |
+        helm push "$PACKAGE_FILE" "oci://${{ inputs.oci_registry }}/${{ inputs.oci_repo }}"
+
+    - name: Upload metadata
+      id: upload_meta
+      shell: bash
+      env:
+        CHART_NAME: ${{ steps.meta.outputs.chart_name }}
+        CHART_VERSION: ${{ steps.meta.outputs.chart_version }}
+        PUSH_CHART: ${{ inputs.push_chart }}
+      run: |
+        if [[ "$PUSH_CHART" == "true" ]]; then
+          OCI_TAG="${CHART_VERSION//+/_}"
+          echo "upload_identifier=oci://${{ inputs.oci_registry }}/${{ inputs.oci_repo }}/$CHART_NAME:$OCI_TAG" >> "$GITHUB_OUTPUT"
+        else
+          echo "upload_identifier=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Step summary
+      if: ${{ always() }}
+      shell: bash
+      env:
+        REF_TYPE: ${{ github.ref_type }}
+        REF_NAME: ${{ github.ref_name }}
+        OCI_REGISTRY: ${{ inputs.oci_registry }}
+        OCI_REPO: ${{ inputs.oci_repo }}
+        PUSH_CHART: ${{ inputs.push_chart }}
+        BUMP_VERSION_IN_GIT: ${{ inputs.bump_version_in_git }}
+        CHART_NAME: ${{ steps.meta.outputs.chart_name }}
+        CHART_VERSION: ${{ steps.meta.outputs.chart_version }}
+        APP_VERSION: ${{ steps.meta.outputs.app_version }}
+        PACKAGE_FILE: ${{ steps.package.outputs.package_file }}
+        SHA256: ${{ steps.package.outputs.sha256 }}
+        UPLOAD_IDENTIFIER: ${{ steps.upload_meta.outputs.upload_identifier }}
+      run: |
+        {
+          echo "## Helm Release OCI"
+          echo ""
+          echo "- Ref: \`$REF_TYPE/$REF_NAME\`"
+          echo "- Target: \`oci://$OCI_REGISTRY/$OCI_REPO\`"
+          echo "- Chart: \`$CHART_NAME\`"
+          echo "- Chart version: \`$CHART_VERSION\`"
+          echo "- App version: \`$APP_VERSION\`"
+          echo "- Package file: \`$PACKAGE_FILE\`"
+          echo "- SHA256: \`$SHA256\`"
+          echo "- Push chart: \`$PUSH_CHART\`"
+          echo "- Bump version in git: \`$BUMP_VERSION_IN_GIT\`"
+          if [[ "$PUSH_CHART" == "true" ]]; then
+            echo "- Upload identifier: \`$UPLOAD_IDENTIFIER\`"
+          else
+            echo "- Upload identifier: \`(skipped)\`"
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"

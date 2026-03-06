@@ -22,15 +22,15 @@ jobs:
     name: Update Chart.yaml file for version\appVersion and build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0 # needed for tags
           ref: ${{ github.head_ref }}
           token: ${{ secrets.TOKEN }}
 
-      - uses: azure/setup-helm@v3
+      - uses: azure/setup-helm@v4
         with:
-          version: v3.17.2
+          version: v3.18.3
 
       - name: Lint Helm chart
         working-directory: ${{ inputs.CHART_LOCATION }}
@@ -46,7 +46,7 @@ jobs:
 
       - name: Checkout Helm repo museum
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: naviteq/helm-charts
           path: helm-charts
@@ -75,7 +75,7 @@ jobs:
 
       - name: Publish Helm charts
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
-        uses: stefanzweifel/git-auto-commit-action@v4
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           repository: helm-charts
           commit_message: "Updated from CI"
@@ -85,7 +85,7 @@ jobs:
 
       - name: Commit file to branch
         if: ${{ github.ref_type == 'tag' }}
-        uses: stefanzweifel/git-auto-commit-action@v4
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: "Bumped up version and appVersion [skip ci]"
           branch: ${{ inputs.UPDATE_BRANCH }}
