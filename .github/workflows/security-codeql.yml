@@ -33,9 +33,6 @@ jobs:
         with:
           languages: ${{ inputs.language }}
           queries: security-extended
-          config: |
-            paths-ignore:
-              - security-test-fixtures/**
 
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4
