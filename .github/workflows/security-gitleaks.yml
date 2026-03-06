@@ -11,6 +11,8 @@ jobs:
   gitleaks:
     name: Secret Scan
     runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: "8.30.0"
 
     steps:
       - uses: actions/checkout@v4
@@ -21,9 +23,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
-          VERSION="$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)"
-          VERSION_NO_V="${VERSION#v}"
 
           ARCH="$(uname -m)"
           case "$ARCH" in
@@ -38,13 +37,20 @@ jobs:
           esac
 
           OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-          ASSET="gitleaks_${VERSION_NO_V}_${OS}_${ASSET_ARCH}.tar.gz"
-          URL="https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/${ASSET}"
+          ASSET="gitleaks_${GITLEAKS_VERSION}_${OS}_${ASSET_ARCH}.tar.gz"
+          CHECKSUMS="gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          BASE_URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
 
-          echo "Downloading $URL"
-          curl -fsSL "$URL" -o gitleaks.tar.gz
-          tar -xzf gitleaks.tar.gz
+          echo "Downloading ${BASE_URL}/${ASSET}"
+          curl -fsSL "${BASE_URL}/${ASSET}" -o "${ASSET}"
+          curl -fsSL "${BASE_URL}/${CHECKSUMS}" -o "${CHECKSUMS}"
+
+          grep " ${ASSET}$" "${CHECKSUMS}" > "${ASSET}.sha256"
+          sha256sum -c "${ASSET}.sha256"
+
+          tar -xzf "${ASSET}"
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+
           gitleaks version
 
       - name: Run Gitleaks scan
