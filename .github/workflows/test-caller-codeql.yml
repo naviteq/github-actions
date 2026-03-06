@@ -1,0 +1,35 @@
+name: Security / CodeQL Runner
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      language:
+        description: CodeQL language to scan
+        required: true
+        default: python
+        type: choice
+        options:
+          - python
+          - javascript
+          - java
+          - csharp
+          - go
+          - ruby
+          - cpp
+          - swift
+
+jobs:
+  codeql-auto:
+    if: github.event_name != 'workflow_dispatch'
+    uses: ./.github/workflows/security-codeql.yml
+    with:
+      language: ${{ vars.CODEQL_LANGUAGE || 'python' }}
+
+  codeql-manual:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/security-codeql.yml
+    with:
+      language: ${{ inputs.language }}

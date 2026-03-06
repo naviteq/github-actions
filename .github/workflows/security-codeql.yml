@@ -1,39 +1,42 @@
 name: Security / CodeQL (SAST)
 
 on:
-  pull_request:
-  push:
-    branches: [main]
-  schedule:
-    - cron: "0 3 * * 1"
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      language:
+        description: CodeQL language to scan
+        required: true
+        type: string
+        # Available CodeQL languages:
+        # python
+        # javascript
+        # java
+        # csharp
+        # go
+        # ruby
+        # cpp
+        # swift
+
+permissions:
+  contents: read
+  security-events: write
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    name: Analyze (${{ inputs.language }})
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      security-events: write
-
-    strategy:
-      fail-fast: false
-      matrix:
-        # Keep ONLY languages actually in your repo.
-        language: [ "python" ]
-
     steps:
       - uses: actions/checkout@v4
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: ${{ matrix.language }}
-          # Optional, but often increases findings:
+          languages: ${{ inputs.language }}
           queries: security-extended
+          config: |
+            paths-ignore:
+              - security-test-fixtures/**
 
-      # Autobuild works for many langs; if it fails you’ll switch to manual build steps.
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4
 
