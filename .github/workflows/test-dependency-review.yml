@@ -1,7 +1,6 @@
 name: Security / Dependency Review Runner
 
 on:
-  pull_request:
   workflow_dispatch:
 
 permissions:
