@@ -3,7 +3,7 @@ description: Common Helm OCI release logic without provider-specific authenticat
 
 inputs:
   chart_path:
-    description: Path to Helm chart directory
+    description: Path to Helm chart directory (must contain Chart.yaml)
     required: true
   oci_registry:
     description: OCI registry host
@@ -19,10 +19,18 @@ inputs:
     description: Commit bumped chart version files to current branch
     required: false
     default: "true"
+  bump_version_git_branch:
+    description: Optional branch name for bump commit target (defaults to current ref name)
+    required: false
+    default: ""
   lint_enabled:
     description: Run helm lint before package
     required: false
     default: "true"
+  lint_values_file:
+    description: Optional values file for helm lint (path is resolved from chart_path working directory)
+    required: false
+    default: ""
 
 outputs:
   chart_name:
@@ -66,10 +74,19 @@ runs:
           exit 1
         fi
 
-    - name: Lint chart
+    - name: Lint Helm chart
       if: ${{ inputs.lint_enabled == 'true' }}
       shell: bash
-      run: helm lint "${{ inputs.chart_path }}"
+      working-directory: ${{ inputs.chart_path }}
+      env:
+        VALUES: ${{ inputs.lint_values_file }}
+      run: |
+        if [[ -n "$VALUES" ]]
+        then
+          helm lint -f $VALUES
+        else
+          helm lint .
+        fi
 
     - name: Update versions
       shell: bash
@@ -115,9 +132,10 @@ runs:
 
     # Intentional: version bump commit runs only when chart push is enabled.
     - name: Commit file to branch
-      if: ${{ github.ref_type == 'branch' && inputs.push_chart == 'true' && inputs.bump_version_in_git == 'true' }}
+      if: ${{ inputs.push_chart == 'true' && inputs.bump_version_in_git == 'true' }}
       uses: stefanzweifel/git-auto-commit-action@v7
       with:
+        branch: ${{ inputs.bump_version_git_branch != '' && inputs.bump_version_git_branch || github.ref_name }}
         commit_message: "Helm bumped up version and appVersion [skip ci]"
         commit_user_name: Naviteq Automation
         commit_user_email: naviteq-automation@naviteq.io

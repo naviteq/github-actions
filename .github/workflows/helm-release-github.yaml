@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       chart_path:
-        description: Path to Helm chart directory
+        description: Path to Helm chart directory (must contain Chart.yaml)
         type: string
         required: true
       ghcr_registry:
@@ -26,11 +26,21 @@ on:
         type: boolean
         required: false
         default: true
+      bump_version_git_branch:
+        description: Optional branch name for bump commit target
+        type: string
+        required: false
+        default: ""
       lint_enabled:
         description: Run helm lint before package
         type: boolean
         required: false
         default: true
+      lint_values_file:
+        description: Optional values file for helm lint (path is resolved from chart_path)
+        type: string
+        required: false
+        default: ""
     secrets:
       token:
         description: Token for GHCR login (required when push_chart is true)
@@ -87,4 +97,6 @@ jobs:
           oci_repo: ${{ inputs.ghcr_repo }}
           push_chart: ${{ inputs.push_chart }}
           bump_version_in_git: ${{ inputs.bump_version_in_git }}
+          bump_version_git_branch: ${{ inputs.bump_version_git_branch }}
           lint_enabled: ${{ inputs.lint_enabled }}
+          lint_values_file: ${{ inputs.lint_values_file }}
