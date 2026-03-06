@@ -1,0 +1,60 @@
+---
+
+name: Helm Release OCI Test
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  guard_non_main:
+    name: Guard non-main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Block main branch
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            echo "Tests must be run from a non-main branch. Main branch is blocked by DoD."
+            exit 1
+          fi
+
+  case_github_wrapper_no_push:
+    name: Case - GitHub wrapper (no push)
+    needs: guard_non_main
+    uses: ./.github/workflows/helm-release-github.yaml
+    with:
+      chart_path: .github/testdata/helm-chart
+      ghcr_repo: ${{ github.repository }}
+      push_chart: true
+      bump_version_in_git: true
+      lint_enabled: true
+    secrets:
+      token: ${{ secrets.GITHUB_TOKEN }}
+
+  case_ecr_wrapper_no_push:
+    name: Case - ECR wrapper (no push)
+    needs: guard_non_main
+    uses: ./.github/workflows/helm-release-ecr.yaml
+    with:
+      chart_path: .github/testdata/helm-chart
+      ecr_registry: 000000000000.dkr.ecr.eu-west-1.amazonaws.com
+      ecr_repo: test/charts
+      push_chart: false
+      bump_version_in_git: false
+      lint_enabled: true
+
+  case_gar_wrapper_no_push:
+    name: Case - GAR wrapper (no push)
+    needs: guard_non_main
+    uses: ./.github/workflows/helm-release-gar.yaml
+    with:
+      chart_path: .github/testdata/helm-chart
+      gar_registry: europe-west1-docker.pkg.dev
+      gar_repo: test-project/test-repo
+      push_chart: false
+      bump_version_in_git: false
+      lint_enabled: true

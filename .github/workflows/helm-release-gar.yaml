@@ -1,0 +1,115 @@
+name: Helm Release Google Artifact Registry (GAR)
+
+on:
+  workflow_call:
+    inputs:
+      chart_path:
+        description: Path to Helm chart directory
+        type: string
+        required: true
+      gar_registry:
+        description: GAR registry host
+        type: string
+        required: true
+      gar_repo:
+        description: GAR repository path
+        type: string
+        required: true
+      gcp_workload_identity_provider:
+        description: GCP Workload Identity Provider resource name (required when push_chart is true)
+        type: string
+        required: false
+        default: ""
+      gcp_service_account:
+        description: GCP service account email (required when push_chart is true)
+        type: string
+        required: false
+        default: ""
+      push_chart:
+        description: Push packaged chart to GAR
+        type: boolean
+        required: false
+        default: true
+      bump_version_in_git:
+        description: Commit bumped chart version files to current branch
+        type: boolean
+        required: false
+        default: true
+      lint_enabled:
+        description: Run helm lint before package
+        type: boolean
+        required: false
+        default: true
+    outputs:
+      chart_name:
+        description: Chart name
+        value: ${{ jobs.release.outputs.chart_name }}
+      chart_version:
+        description: Chart version
+        value: ${{ jobs.release.outputs.chart_version }}
+      app_version:
+        description: Chart appVersion
+        value: ${{ jobs.release.outputs.app_version }}
+      package_file:
+        description: Packaged chart file path
+        value: ${{ jobs.release.outputs.package_file }}
+      sha256:
+        description: SHA256 checksum of package
+        value: ${{ jobs.release.outputs.sha256 }}
+      upload_identifier:
+        description: Pushed OCI reference
+        value: ${{ jobs.release.outputs.upload_identifier }}
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    outputs:
+      chart_name: ${{ steps.core.outputs.chart_name }}
+      chart_version: ${{ steps.core.outputs.chart_version }}
+      app_version: ${{ steps.core.outputs.app_version }}
+      package_file: ${{ steps.core.outputs.package_file }}
+      sha256: ${{ steps.core.outputs.sha256 }}
+      upload_identifier: ${{ steps.core.outputs.upload_identifier }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate GAR auth inputs
+        if: ${{ inputs.push_chart }}
+        env:
+          WIP: ${{ inputs.gcp_workload_identity_provider }}
+          SA: ${{ inputs.gcp_service_account }}
+        run: |
+          if [[ -z "$WIP" || -z "$SA" ]]; then
+            echo "gcp_workload_identity_provider and gcp_service_account are required when push_chart=true"
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        id: gcp_auth
+        if: ${{ inputs.push_chart }}
+        uses: google-github-actions/auth@v3
+        with:
+          token_format: access_token
+          workload_identity_provider: ${{ inputs.gcp_workload_identity_provider }}
+          service_account: ${{ inputs.gcp_service_account }}
+
+      - name: Login to GAR
+        if: ${{ inputs.push_chart }}
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ inputs.gar_registry }}
+          username: oauth2accesstoken
+          password: ${{ steps.gcp_auth.outputs.access_token }}
+
+      - name: Run OCI core
+        id: core
+        uses: ./.github/actions/helm-release-oci
+        with:
+          chart_path: ${{ inputs.chart_path }}
+          oci_registry: ${{ inputs.gar_registry }}
+          oci_repo: ${{ inputs.gar_repo }}
+          push_chart: ${{ inputs.push_chart }}
+          bump_version_in_git: ${{ inputs.bump_version_in_git }}
+          lint_enabled: ${{ inputs.lint_enabled }}
