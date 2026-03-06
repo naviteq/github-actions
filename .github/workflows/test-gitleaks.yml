@@ -1,0 +1,15 @@
+name: Security / Gitleaks Runner
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    uses: ./.github/workflows/security-gitleaks.yml
