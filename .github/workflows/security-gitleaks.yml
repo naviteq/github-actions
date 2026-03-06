@@ -1,0 +1,58 @@
+name: Security / Gitleaks (Secrets)
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: "8.30.0"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64) ASSET_ARCH="x64" ;;
+            aarch64|arm64) ASSET_ARCH="arm64" ;;
+            armv7l) ASSET_ARCH="armv7" ;;
+            armv6l) ASSET_ARCH="armv6" ;;
+            *)
+              echo "Unsupported architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+
+          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          ASSET="gitleaks_${GITLEAKS_VERSION}_${OS}_${ASSET_ARCH}.tar.gz"
+          CHECKSUMS="gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          BASE_URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+
+          echo "Downloading ${BASE_URL}/${ASSET}"
+          curl -fsSL "${BASE_URL}/${ASSET}" -o "${ASSET}"
+          curl -fsSL "${BASE_URL}/${CHECKSUMS}" -o "${CHECKSUMS}"
+
+          grep " ${ASSET}$" "${CHECKSUMS}" > "${ASSET}.sha256"
+          sha256sum -c "${ASSET}.sha256"
+
+          tar -xzf "${ASSET}"
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+
+          gitleaks version
+
+      - name: Run Gitleaks scan
+        run: |
+          gitleaks git --verbose --exit-code 1
