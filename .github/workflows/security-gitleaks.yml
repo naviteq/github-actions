@@ -18,10 +18,34 @@ jobs:
           fetch-depth: 0
 
       - name: Install Gitleaks
+        shell: bash
         run: |
-          curl -sSL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_$(uname -s)_$(uname -m).tar.gz -o gitleaks.tar.gz
+          set -euo pipefail
+
+          VERSION="$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest | jq -r .tag_name)"
+          VERSION_NO_V="${VERSION#v}"
+
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64) ASSET_ARCH="x64" ;;
+            aarch64|arm64) ASSET_ARCH="arm64" ;;
+            armv7l) ASSET_ARCH="armv7" ;;
+            armv6l) ASSET_ARCH="armv6" ;;
+            *)
+              echo "Unsupported architecture: $ARCH"
+              exit 1
+              ;;
+          esac
+
+          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          ASSET="gitleaks_${VERSION_NO_V}_${OS}_${ASSET_ARCH}.tar.gz"
+          URL="https://github.com/gitleaks/gitleaks/releases/download/${VERSION}/${ASSET}"
+
+          echo "Downloading $URL"
+          curl -fsSL "$URL" -o gitleaks.tar.gz
           tar -xzf gitleaks.tar.gz
-          sudo mv gitleaks /usr/local/bin/
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
 
       - name: Run Gitleaks scan
         run: |
