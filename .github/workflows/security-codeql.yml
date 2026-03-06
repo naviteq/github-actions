@@ -1,0 +1,41 @@
+name: Security / CodeQL (SAST)
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: CodeQL language to scan
+        required: true
+        type: string
+        # Available CodeQL languages:
+        # python
+        # javascript
+        # java
+        # csharp
+        # go
+        # ruby
+        # cpp
+        # swift
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (${{ inputs.language }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ inputs.language }}
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
