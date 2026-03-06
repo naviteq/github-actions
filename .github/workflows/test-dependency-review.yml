@@ -1,0 +1,9 @@
+name: Security / Dependency Review Runner
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  dependency-review:
+    uses: ./.github/workflows/security-dependency-review.yml
