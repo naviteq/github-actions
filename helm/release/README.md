@@ -14,12 +14,14 @@ Legacy note:
 
 
 ## OCI Core Action Inputs
-- `chart_path` (`string`, required): Path to Helm chart directory.
+- `chart_path` (`string`, required): Path to Helm chart directory (must contain `Chart.yaml`).
 - `oci_registry` (`string`, required): OCI registry host.
 - `oci_repo` (`string`, required): OCI repository path.
 - `push_chart` (`boolean`, optional, default `true`): Push packaged chart to OCI registry.
 - `bump_version_in_git` (`boolean`, optional, default `true`): Commit bumped chart version files to current branch.
+- `bump_version_git_branch` (`string`, optional, default `""`): Override target branch for bump commit. If empty, uses current ref name.
 - `lint_enabled` (`boolean`, optional, default `true`): Run `helm lint` before package.
+- `lint_values_file` (`string`, optional, default `""`): Optional values file for helm lint (path is resolved from `chart_path`).
 
 Note:
 - Version bump commit is intentionally tied to `push_chart=true`.
@@ -40,7 +42,9 @@ Inputs:
 - `ghcr_repo` (required)
 - `push_chart` (optional, default `true`)
 - `bump_version_in_git` (optional, default `true`)
+- `bump_version_git_branch` (optional, default empty)
 - `lint_enabled` (optional, default `true`)
+- `lint_values_file` (optional, default empty)
 
 Secrets:
 - `token` (required when `push_chart=true`): token used for GHCR login.
@@ -71,6 +75,8 @@ jobs:
       ghcr_repo: my-org/helm-charts
       push_chart: true
       bump_version_in_git: true
+      bump_version_git_branch: release/helm-bumps
+      lint_values_file: values/staging.yaml
     secrets:
       token: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -84,7 +90,9 @@ Inputs:
 - `aws_role_to_assume` (required when `push_chart=true`)
 - `push_chart` (optional, default `true`)
 - `bump_version_in_git` (optional, default `true`)
+- `bump_version_git_branch` (optional, default empty)
 - `lint_enabled` (optional, default `true`)
+- `lint_values_file` (optional, default empty)
 
 Secrets:
 - `token` (optional): git token for checkout/commit push.
@@ -117,6 +125,8 @@ jobs:
       aws_role_to_assume: arn:aws:iam::123456789012:role/github-actions-helm-release
       push_chart: true
       bump_version_in_git: true
+      bump_version_git_branch: release/helm-bumps
+      lint_values_file: values/staging.yaml
 ```
 
 ## `.github/workflows/helm-release-gar.yaml`
@@ -128,7 +138,9 @@ Inputs:
 - `gcp_service_account` (required when `push_chart=true`)
 - `push_chart` (optional, default `true`)
 - `bump_version_in_git` (optional, default `true`)
+- `bump_version_git_branch` (optional, default empty)
 - `lint_enabled` (optional, default `true`)
+- `lint_values_file` (optional, default empty)
 
 Secrets:
 - none
@@ -161,4 +173,6 @@ jobs:
       gcp_service_account: gha-helm@my-project.iam.gserviceaccount.com
       push_chart: true
       bump_version_in_git: true
+      bump_version_git_branch: release/helm-bumps
+      lint_values_file: values/staging.yaml
 ```
