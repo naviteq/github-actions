@@ -1,0 +1,15 @@
+name: Security / Trivy Runner
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trivy:
+    uses: ./.github/workflows/security-trivy.yml
+    with:
+      dockerfile: security-test-fixtures/trivy/Dockerfile.vuln
+      context: security-test-fixtures/trivy
+      image_ref: security-trivy:test

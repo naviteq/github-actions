@@ -1,0 +1,61 @@
+name: Security / Trivy (Container)
+
+on:
+  workflow_call:
+    inputs:
+      dockerfile:
+        description: Path to Dockerfile
+        required: false
+        type: string
+        default: Dockerfile
+      context:
+        description: Docker build context
+        required: false
+        type: string
+        default: .
+      image_ref:
+        description: Local image reference to scan
+        required: false
+        type: string
+        default: security-trivy:test
+  workflow_dispatch:
+    inputs:
+      dockerfile:
+        description: Path to Dockerfile
+        required: false
+        type: string
+        default: Dockerfile
+      context:
+        description: Docker build context
+        required: false
+        type: string
+        default: .
+      image_ref:
+        description: Local image reference to scan
+        required: false
+        type: string
+        default: security-trivy:test
+
+permissions:
+  contents: read
+
+jobs:
+  trivy:
+    name: Container Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          docker build -f "${{ inputs.dockerfile }}" -t "${{ inputs.image_ref }}" "${{ inputs.context }}"
+
+      - name: Run Trivy scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ inputs.image_ref }}
+          severity: HIGH,CRITICAL
+          exit-code: 1
+          ignore-unfixed: false
+          vuln-type: os,library
