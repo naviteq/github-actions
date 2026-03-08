@@ -43,8 +43,6 @@ jobs:
   trivy:
     name: Container Scan
     runs-on: ubuntu-latest
-    env:
-      TRIVY_VERSION: "0.56.1"
 
     steps:
       - uses: actions/checkout@v4
@@ -53,16 +51,11 @@ jobs:
         run: |
           docker build -f "${{ inputs.dockerfile }}" -t "${{ inputs.image_ref }}" "${{ inputs.context }}"
 
-      - name: Install Trivy
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
-          trivy --version
-
       - name: Run Trivy scan
         run: |
-          trivy image \
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.69.2 image \
             --severity HIGH,CRITICAL \
             --exit-code 1 \
             --ignore-unfixed=false \
