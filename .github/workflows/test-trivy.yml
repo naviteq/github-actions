@@ -1,6 +1,7 @@
 name: Security / Trivy Runner
 
 on:
+  pull_request:
   workflow_dispatch:
 
 permissions:
