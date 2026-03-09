@@ -156,7 +156,7 @@ jobs:
           image-ref: ${{ inputs.image_ref }}
           output: trivy.txt
           severity: HIGH,CRITICAL
-          exit-code: "0"
+          exit-code: "1"
           ignore-unfixed: false
           vuln-type: os,library
           scanners: vuln
@@ -170,18 +170,19 @@ jobs:
           scan-ref: ${{ inputs.scan_ref }}
           output: trivy.txt
           severity: HIGH,CRITICAL
-          exit-code: "0"
+          exit-code: "1"
           ignore-unfixed: false
           scanners: vuln
           hide-progress: true
 
       - name: Upload SARIF to GitHub Security
-        if: ${{ hashFiles('trivy-report.sarif') != '' }}
+        if: ${{ always() && hashFiles('trivy-report.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-report.sarif
 
       - name: Publish Trivy Output to Summary
+        if: always()
         shell: bash
         run: |
           echo "## 🔎 Trivy Scan Results" >> "$GITHUB_STEP_SUMMARY"
@@ -217,8 +218,4 @@ jobs:
               echo '```'
               echo "</details>"
             } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          if [ "$CRITICAL_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
-            exit 1
           fi
