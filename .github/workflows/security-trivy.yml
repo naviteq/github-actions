@@ -3,6 +3,11 @@ name: Security / Trivy
 on:
   workflow_call:
     inputs:
+      RUNNER:
+        description: GitHub Actions runner to use
+        required: false
+        type: string
+        default: ubuntu-latest
       dockerfile:
         description: Path to Dockerfile
         required: false
@@ -42,7 +47,7 @@ permissions:
 jobs:
   trivy:
     name: Container Scan
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.RUNNER || 'ubuntu-latest' }}
 
     steps:
       - uses: actions/checkout@v4
