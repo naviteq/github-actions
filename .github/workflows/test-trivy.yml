@@ -14,4 +14,4 @@ jobs:
     with:
       RUNNER: ubuntu-latest
       scan_type: image
-      image_ref: nginx:latest
+      image_ref: alpine:3.20.0
