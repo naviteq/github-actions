@@ -1,0 +1,17 @@
+name: Security / Trivy Runner
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  trivy:
+    uses: ./.github/workflows/security-trivy.yml
+    with:
+      RUNNER: ubuntu-latest
+      scan_type: image
+      image_ref: cgr.dev/chainguard/nginx:latest
