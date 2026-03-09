@@ -7,11 +7,11 @@ on:
 permissions:
   contents: read
   security-events: write
-  
+
 jobs:
   trivy:
     uses: ./.github/workflows/security-trivy.yml
     with:
       RUNNER: ubuntu-latest
       scan_type: image
-      image_ref: node:12
+      image_ref: nginx:latest
