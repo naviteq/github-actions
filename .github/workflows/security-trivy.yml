@@ -15,15 +15,29 @@ on:
         default: image
         # Supported values: image, fs
       image_ref:
-        description: Local image reference to scan when scan_type=image
+        description: Image reference to scan when scan_type=image
         required: false
         type: string
-        default: security-trivy:test
+        default: ""
       scan_ref:
         description: Path to scan when scan_type=fs
         required: false
         type: string
-        default: .
+        default: "."
+      registry:
+        description: Container registry hostname for image scans
+        required: false
+        type: string
+        default: ""
+      registry_username:
+        description: Registry username for image scans
+        required: false
+        type: string
+        default: ""
+    secrets:
+      registry_password:
+        required: false
+
   workflow_dispatch:
     inputs:
       scan_type:
@@ -35,15 +49,25 @@ on:
           - image
           - fs
       image_ref:
-        description: Local image reference to scan when scan_type=image
+        description: Image reference to scan when scan_type=image
         required: false
         type: string
-        default: security-trivy:test
+        default: ""
       scan_ref:
         description: Path to scan when scan_type=fs
         required: false
         type: string
-        default: .
+        default: "."
+      registry:
+        description: Container registry hostname for image scans
+        required: false
+        type: string
+        default: ""
+      registry_username:
+        description: Registry username for image scans
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -56,30 +80,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Log in to container registry
+        if: ${{ inputs.scan_type == 'image' && inputs.registry != '' && inputs.registry_username != '' && secrets.registry_password != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.registry_username }}
+          password: ${{ secrets.registry_password }}
+
       - name: Run Trivy image scan
         if: ${{ inputs.scan_type == 'image' }}
-        run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:0.69.2 image \
-            --severity HIGH,CRITICAL \
-            --exit-code 1 \
-            --ignore-unfixed=false \
-            --pkg-types os,library \
-            --scanners vuln \
-            --skip-version-check \
-            "${{ inputs.image_ref }}"
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image_ref }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: false
+          vuln-type: os,library
+          scanners: vuln
 
       - name: Run Trivy filesystem scan
         if: ${{ inputs.scan_type == 'fs' }}
-        run: |
-          docker run --rm \
-            -v "${{ github.workspace }}:/work" \
-            -w /work \
-            aquasec/trivy:0.69.2 fs \
-            --severity HIGH,CRITICAL \
-            --exit-code 1 \
-            --ignore-unfixed=false \
-            --scanners vuln \
-            --skip-version-check \
-            "${{ inputs.scan_ref }}"
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.scan_ref }}
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: false
+          scanners: vuln

@@ -1,4 +1,4 @@
-name: Security / Trivy Runner
+name: Security / Trivy FS Runner
 
 on:
   pull_request:
@@ -13,4 +13,4 @@ jobs:
     with:
       RUNNER: ubuntu-latest
       scan_type: image
-      image_ref: security-trivy:test
+      image_ref: node:12
