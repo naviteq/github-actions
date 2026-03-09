@@ -14,4 +14,4 @@ jobs:
     with:
       RUNNER: ubuntu-latest
       scan_type: image
-      image_ref: cgr.dev/chainguard/nginx:latest
+      image_ref: nginx:latest
