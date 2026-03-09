@@ -2,6 +2,12 @@ name: Security / Gitleaks (Secrets)
 
 on:
   workflow_call:
+    inputs:
+      RUNNER:
+        description: GitHub Actions runner to use
+        required: false
+        type: string
+        default: ubuntu-latest
   workflow_dispatch:
 
 permissions:
@@ -10,7 +16,7 @@ permissions:
 jobs:
   gitleaks:
     name: Secret Scan
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.RUNNER }}
     env:
       GITLEAKS_VERSION: "8.30.0"
 
@@ -55,4 +61,17 @@ jobs:
 
       - name: Run Gitleaks scan
         run: |
-          gitleaks git --verbose --exit-code 1
+          gitleaks git --verbose --report-format json --report-path gitleaks-report.json || true
+
+      - name: Publish results to GitHub Summary
+        run: |
+          echo "## 🔐 Gitleaks Secret Scan Results" >> $GITHUB_STEP_SUMMARY
+          if [ -s gitleaks-report.json ]; then
+            echo "Secrets were detected. See details below:" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat gitleaks-report.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ No secrets detected." >> $GITHUB_STEP_SUMMARY
+          fi
