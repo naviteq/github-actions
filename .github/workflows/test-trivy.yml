@@ -6,7 +6,8 @@ on:
 
 permissions:
   contents: read
-
+  security-events: write
+  
 jobs:
   trivy:
     uses: ./.github/workflows/security-trivy.yml
