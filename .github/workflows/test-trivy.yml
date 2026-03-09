@@ -1,4 +1,4 @@
-name: Security / Trivy FS Runner
+name: Security / Trivy Runner
 
 on:
   pull_request:

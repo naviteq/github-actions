@@ -13,7 +13,6 @@ on:
         required: false
         type: string
         default: image
-        # Supported values: image, fs
       image_ref:
         description: Image reference to scan when scan_type=image
         required: false
@@ -71,6 +70,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   trivy:
@@ -90,25 +90,96 @@ jobs:
           username: ${{ inputs.registry_username }}
           password: ${{ env.REGISTRY_PASSWORD }}
 
-      - name: Run Trivy image scan
+      - name: Run Trivy image scan (JSON)
         if: ${{ inputs.scan_type == 'image' }}
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: image
           image-ref: ${{ inputs.image_ref }}
+          format: json
+          output: trivy-report.json
           severity: HIGH,CRITICAL
-          exit-code: "1"
+          exit-code: "0"
           ignore-unfixed: false
           vuln-type: os,library
           scanners: vuln
 
-      - name: Run Trivy filesystem scan
+      - name: Run Trivy filesystem scan (JSON)
         if: ${{ inputs.scan_type == 'fs' }}
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
           scan-ref: ${{ inputs.scan_ref }}
+          format: json
+          output: trivy-report.json
           severity: HIGH,CRITICAL
-          exit-code: "1"
+          exit-code: "0"
           ignore-unfixed: false
           scanners: vuln
+
+      - name: Run Trivy image scan (SARIF)
+        if: ${{ inputs.scan_type == 'image' }}
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image_ref }}
+          format: sarif
+          output: trivy-report.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          ignore-unfixed: false
+          vuln-type: os,library
+          scanners: vuln
+
+      - name: Run Trivy filesystem scan (SARIF)
+        if: ${{ inputs.scan_type == 'fs' }}
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.scan_ref }}
+          format: sarif
+          output: trivy-report.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          ignore-unfixed: false
+          scanners: vuln
+
+      - name: Upload SARIF to GitHub Security
+        if: ${{ hashFiles('trivy-report.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-report.sarif
+
+      - name: Publish results to GitHub Summary
+        shell: bash
+        run: |
+          echo "## 🔎 Trivy Scan Results" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ ! -f trivy-report.json ]; then
+            echo "No Trivy JSON report was generated." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          CRITICAL_COUNT=$(jq '[.. | objects | select(has("Severity")) | select(.Severity == "CRITICAL")] | length' trivy-report.json)
+          HIGH_COUNT=$(jq '[.. | objects | select(has("Severity")) | select(.Severity == "HIGH")] | length' trivy-report.json)
+
+          if [ "${{ inputs.scan_type }}" = "image" ]; then
+            echo "- **Scan type:** image" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Target:** \`${{ inputs.image_ref }}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- **Scan type:** fs" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Target:** \`${{ inputs.scan_ref }}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "- **Critical vulnerabilities:** ${CRITICAL_COUNT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **High vulnerabilities:** ${HIGH_COUNT}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$CRITICAL_COUNT" -gt 0 ] || [ "$HIGH_COUNT" -gt 0 ]; then
+            echo "### ❌ Vulnerabilities detected" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The scan found HIGH and/or CRITICAL vulnerabilities. See the workflow logs or SARIF results for full details." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          else
+            echo "### ✅ No HIGH/CRITICAL vulnerabilities detected" >> "$GITHUB_STEP_SUMMARY"
+          fi
