@@ -8,38 +8,42 @@ on:
         required: false
         type: string
         default: ubuntu-latest
-      dockerfile:
-        description: Path to Dockerfile
+      scan_type:
+        description: Trivy scan type
         required: false
         type: string
-        default: Dockerfile
-      context:
-        description: Docker build context
-        required: false
-        type: string
-        default: .
+        default: image
+        # Supported values: image, fs
       image_ref:
-        description: Local image reference to scan
+        description: Local image reference to scan when scan_type=image
         required: false
         type: string
         default: security-trivy:test
+      scan_ref:
+        description: Path to scan when scan_type=fs
+        required: false
+        type: string
+        default: .
   workflow_dispatch:
     inputs:
-      dockerfile:
-        description: Path to Dockerfile
+      scan_type:
+        description: Trivy scan type
         required: false
-        type: string
-        default: Dockerfile
-      context:
-        description: Docker build context
-        required: false
-        type: string
-        default: .
+        type: choice
+        default: image
+        options:
+          - image
+          - fs
       image_ref:
-        description: Local image reference to scan
+        description: Local image reference to scan when scan_type=image
         required: false
         type: string
         default: security-trivy:test
+      scan_ref:
+        description: Path to scan when scan_type=fs
+        required: false
+        type: string
+        default: .
 
 permissions:
   contents: read
@@ -52,19 +56,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v6
-        with:
-          context: ${{ inputs.context }}
-          file: ${{ inputs.dockerfile }}
-          tags: ${{ inputs.image_ref }}
-          load: true
-          push: false
-
-      - name: Run Trivy scan
+      - name: Run Trivy image scan
+        if: ${{ inputs.scan_type == 'image' }}
         run: |
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
@@ -76,3 +69,17 @@ jobs:
             --scanners vuln \
             --skip-version-check \
             "${{ inputs.image_ref }}"
+
+      - name: Run Trivy filesystem scan
+        if: ${{ inputs.scan_type == 'fs' }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/work" \
+            -w /work \
+            aquasec/trivy:0.69.2 fs \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            --ignore-unfixed=false \
+            --scanners vuln \
+            --skip-version-check \
+            "${{ inputs.scan_ref }}"
