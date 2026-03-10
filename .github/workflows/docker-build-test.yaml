@@ -38,6 +38,7 @@ jobs:
         TEST_ARG_2=enabled
       TAG_FLAVOR_PREFIX: 'prefix-'
       TAG_FLAVOR_SUFFIX: '-suffix'
+      VERSION_TAG_V_PREFIX: true
       CUSTOM_TAGS: |
         test-custom-tag
       DOCKER_PUSH: true
