@@ -84,6 +84,11 @@ on:
         type: string
         required: false
         default: ''
+      VERSION_TAG_V_PREFIX:
+        description: Whether semver image tags should use a leading v prefix
+        type: boolean
+        required: false
+        default: false
       CUSTOM_TAGS:
         description: Custom tags (newline separated)
         type: string
@@ -194,12 +199,12 @@ jobs:
             type=match,pattern=^feature/(.+)$,group=1,value=${{ github.ref_name }},enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/') }}
             # Pull requests: PR #123 -> pr-123
             type=ref,event=pr,enable=${{ github.event_name == 'pull_request' }}
-            # Version tag vX.Y.Z -> X.Y.Z
-            type=semver,pattern={{version}}
-            # Version tag vX.Y.Z -> X.Y
-            type=semver,pattern={{major}}.{{minor}}
-            # Optional major tag from vX.Y.Z -> X
-            type=semver,pattern={{major}}
+            # Version tag X.Y.Z -> X.Y.Z or vX.Y.Z
+            type=semver,pattern=${{ inputs.VERSION_TAG_V_PREFIX && 'v' || '' }}{{version}}
+            # Version tag X.Y.Z -> X.Y or vX.Y
+            type=semver,pattern=${{ inputs.VERSION_TAG_V_PREFIX && 'v' || '' }}{{major}}.{{minor}}
+            # Version tag X from X.Y.Z or vX
+            type=semver,pattern=${{ inputs.VERSION_TAG_V_PREFIX && 'v' || '' }}{{major}}
             # Scheduled workflow: nightly tag
             type=schedule,pattern=nightly
             # Scheduled workflow: UTC date tag YYYYMMDD
