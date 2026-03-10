@@ -205,7 +205,7 @@ jobs:
             # Version tag X.Y.Z -> X.Y and vX.Y
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern=v{{major}}.{{minor}}, enable=${{ inputs.VERSION_TAG_V_PREFIX }}
-            # Version tag X from X.Y.Z and vX
+            # Version tag X.Y.Z -> X and vX
             type=semver,pattern={{major}}
             type=semver,pattern=v{{major}}, enable=${{ inputs.VERSION_TAG_V_PREFIX }}
             # Scheduled workflow: nightly tag
