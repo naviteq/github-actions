@@ -79,8 +79,6 @@ jobs:
         with:
           repository: helm-charts
           commit_message: "Updated from CI"
-          commit_user_name: Naviteq Automation
-          commit_user_email: naviteq-automation@naviteq.io
           file_pattern: "*.tgz"
 
       - name: Commit file to branch
@@ -89,6 +87,4 @@ jobs:
         with:
           commit_message: "Bumped up version and appVersion [skip ci]"
           branch: ${{ inputs.UPDATE_BRANCH }}
-          commit_user_name: Naviteq Automation
-          commit_user_email: naviteq-automation@naviteq.io
           file_pattern: "**/*.yaml"

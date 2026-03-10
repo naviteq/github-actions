@@ -157,7 +157,7 @@ jobs:
         if: inputs.DOCKER_PUSH && inputs.AWS_REGION != ''
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
-          role-session-name: github-${{ github.repository_id }}-${{ github.triggering_actor }}
+          role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}
           aws-region: ${{ inputs.AWS_REGION }}
       - name: Login to Amazon ECR
         if: inputs.DOCKER_PUSH && inputs.AWS_REGION != ''

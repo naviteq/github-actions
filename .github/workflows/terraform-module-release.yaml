@@ -32,7 +32,7 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v1.7.0
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
-          role-session-name: github-${{ github.repository_id }}-${{ github.triggering_actor }}
+          role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}
           aws-region: ${{ inputs.AWS_REGION }}
       - name: Push module to the s3
         run: aws s3 cp ./module.tgz s3://$BUCKET/${OBJECT_PATH}/${OBJECT}
