@@ -117,7 +117,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
           role-duration-seconds: 14400
-          role-session-name: github-${{ github.repository_id }}-${{ github.triggering_actor }}
+          role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}
           aws-region: ${{ inputs.AWS_REGION }}
       - name: Tests run
         run: |
