@@ -1,0 +1,13 @@
+---
+
+name: CI (Main branch)
+on:
+  push:
+    branches: [main]
+
+jobs:
+  release:
+    uses: naviteq/github-actions/.github/workflows/create-release.yaml@main
+    secrets:
+      GITHUB_APP_ID: ${{ secrets.NAVITEQ_GITHUB_APP_ID }}
+      GITHUB_APP_KEY: ${{ secrets.NAVITEQ_GITHUB_APP_KEY }}
