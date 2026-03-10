@@ -50,6 +50,11 @@ on:
         type: string
         required: false
         default: ""
+    secrets:
+      GITHUB_APP_ID:
+        required: true
+      GITHUB_APP_KEY:
+        required: true
     outputs:
       chart_name:
         description: Chart name
@@ -81,8 +86,16 @@ jobs:
       sha256: ${{ steps.core.outputs.sha256 }}
       upload_identifier: ${{ steps.core.outputs.upload_identifier }}
     steps:
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.GITHUB_APP_ID }}
+          private-key: ${{ secrets.GITHUB_APP_KEY }}
+
       - uses: actions/checkout@v6
         with:
+          token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
 
       - name: Validate GAR auth inputs

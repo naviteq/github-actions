@@ -33,6 +33,8 @@ jobs:
       bump_version_in_git: true
       lint_enabled: true
     secrets:
+      GITHUB_APP_ID: ${{ secrets.NAVITEQ_GITHUB_APP_ID }}
+      GITHUB_APP_KEY: ${{ secrets.NAVITEQ_GITHUB_APP_KEY }}
       token: ${{ secrets.GITHUB_TOKEN }}
 
   case_ecr_wrapper_no_push:
@@ -46,6 +48,9 @@ jobs:
       push_chart: false
       bump_version_in_git: false
       lint_enabled: true
+    secrets:
+      GITHUB_APP_ID: ${{ secrets.NAVITEQ_GITHUB_APP_ID }}
+      GITHUB_APP_KEY: ${{ secrets.NAVITEQ_GITHUB_APP_KEY }}
 
   case_gar_wrapper_no_push:
     name: Case - GAR wrapper (no push)
@@ -58,3 +63,6 @@ jobs:
       push_chart: false
       bump_version_in_git: false
       lint_enabled: true
+    secrets:
+      GITHUB_APP_ID: ${{ secrets.NAVITEQ_GITHUB_APP_ID }}
+      GITHUB_APP_KEY: ${{ secrets.NAVITEQ_GITHUB_APP_KEY }}
