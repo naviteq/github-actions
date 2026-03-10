@@ -137,8 +137,8 @@ runs:
       with:
         branch: ${{ inputs.bump_version_git_branch != '' && inputs.bump_version_git_branch || github.ref_name }}
         commit_message: "Helm bumped up version and appVersion [skip ci]"
-        commit_user_name: Naviteq Automation
-        commit_user_email: naviteq-automation@naviteq.io
+        commit_user_name: naviteq-release[bot]
+        commit_user_email: naviteq-release[bot]@naviteq.ai
         file_pattern: "${{ inputs.chart_path }}/Chart.yaml"
 
     - name: Push chart

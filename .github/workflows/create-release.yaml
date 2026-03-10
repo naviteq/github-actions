@@ -8,20 +8,30 @@ on:
     secrets:
       PROJECT_GITHUB_TOKEN:
         required: false
+      GITHUB_APP_ID:
+        required: true
+      GITHUB_APP_KEY:
+        required: true
 
 jobs:
   release:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ secrets.GITHUB_APP_ID }}
+          private-key: ${{ secrets.GITHUB_APP_KEY }}
       - name: Bump version and push tag
         id: tag_version
         uses: mathieudutour/github-tag-action@v6.0
         with:
-          github_token: ${{ secrets.PROJECT_GITHUB_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
       - name: Create a GitHub release
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ steps.tag_version.outputs.new_tag }}
           name: Release ${{ steps.tag_version.outputs.new_tag }}
           body: ${{ steps.tag_version.outputs.changelog }}
+          token: ${{ steps.app-token.outputs.token }}
