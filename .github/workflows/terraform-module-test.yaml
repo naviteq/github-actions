@@ -30,7 +30,7 @@ jobs:
     name: Format check
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.10.5
@@ -51,7 +51,7 @@ jobs:
       - terraform
       - aws
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: actions/cache@v4
         with:
           path: ~/.tflint.d/plugins
@@ -71,7 +71,7 @@ jobs:
       CHECKOV_ENABLE_MODULES_FOREACH_HANDLING: "False"
       CHECKOV_NEW_TF_PARSER: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: TFSec
         uses: aquasecurity/tfsec-action@v1.0.3
         with:
@@ -93,7 +93,7 @@ jobs:
       - tflint
       - security
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.10.5
