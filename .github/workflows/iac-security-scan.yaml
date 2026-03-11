@@ -1,0 +1,69 @@
+name: Checkov Reusable Scan
+
+on:
+  workflow_call:
+    inputs:
+      directory:
+        description: Directory to scan
+        required: false
+        type: string
+        default: .
+      framework:
+        description: Checkov frameworks (comma separated list)
+        required: false
+        type: string
+        default: terraform,kubernetes,helm
+      soft_fail:
+        description: Do not fail the workflow on findings
+        required: false
+        type: boolean
+        default: false
+      check:
+        description: Run only specific checks (comma separated list)
+        required: false
+        type: string
+        default: ""
+      skip_check:
+        description: Skip specific checks (comma separated list)
+        required: false
+        type: string
+        default: ""
+      GITHUB_RUNNER:
+        description: GitHub Actions runner
+        type: string
+        required: false
+        default: "ubuntu-22.04"
+
+permissions:
+  contents: read
+
+jobs:
+  checkov:
+    name: Checkov IaC Scan
+    runs-on: ${{ inputs.RUNNER }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ${{ inputs.directory }}
+          framework: ${{ inputs.framework }}
+          quiet: true
+          compact: true
+          soft_fail: ${{ inputs.soft_fail }}
+          check: ${{ inputs.check }}
+          skip_check: ${{ inputs.skip_check }}
+
+      - name: Write summary
+        if: always()
+        run: |
+          {
+            echo "## Checkov IaC Scan"
+            echo ""
+            echo "- Directory: \`${{ inputs.directory }}\`"
+            echo "- Frameworks: \`${{ inputs.framework }}\`"
+            echo "- Soft fail: \`${{ inputs.soft_fail }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
