@@ -1,0 +1,12 @@
+name: IaC Security Scan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  checkov:
+    uses: ./.github/workflows/iac-security-scan.yaml
+    with:
+      directory: .github/testdata/iac-security-scan
+      framework: terraform,kubernetes,helm
+      soft_fail: false
