@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: Default GitHub Actions runner for all scanners
+        description: Default GitHub Actions runner for all scanners. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ubuntu-latest

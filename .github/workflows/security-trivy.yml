@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       RUNNER:
-        description: GitHub Actions runner to use
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ubuntu-latest
@@ -39,6 +39,11 @@ on:
 
   workflow_dispatch:
     inputs:
+      RUNNER:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-latest
       scan_type:
         description: Trivy scan type
         required: false
@@ -75,7 +80,7 @@ permissions:
 jobs:
   trivy:
     name: Container Scan
-    runs-on: ${{ inputs.RUNNER || 'ubuntu-latest' }}
+    runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER || 'ubuntu-latest' }}
     env:
       REGISTRY_PASSWORD: ${{ secrets.registry_password }}
 

@@ -4,11 +4,17 @@ on:
   workflow_call:
     inputs:
       RUNNER:
-        description: GitHub Actions runner to use
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ubuntu-latest
   workflow_dispatch:
+    inputs:
+      RUNNER:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-latest
 
 permissions:
   contents: read
@@ -16,7 +22,7 @@ permissions:
 jobs:
   gitleaks:
     name: Secret Scan
-    runs-on: ${{ inputs.RUNNER }}
+    runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
     env:
       GITLEAKS_VERSION: "8.30.0"
 

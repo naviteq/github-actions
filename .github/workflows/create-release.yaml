@@ -3,6 +3,12 @@
 name: Create GitHub release
 on:
   workflow_call:
+    inputs:
+      RUNNER:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
     secrets:
       GITHUB_APP_ID:
         required: true
@@ -11,7 +17,7 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
     steps:
       - name: Generate GitHub App token
         uses: actions/create-github-app-token@v2

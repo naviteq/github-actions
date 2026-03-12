@@ -14,13 +14,18 @@ on:
         type: string
       PROVIDER:
         type: string
+      RUNNER:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
     secrets:
       AWS_IAM_ROLE:
         required: true
 jobs:
   release:
     name: Module registry release
-    runs-on: ubuntu-24.04
+    runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
     steps:
       - uses: actions/checkout@v6
       - run: echo "VERSION=${GITHUB_REF#refs/*/v}" >> "$GITHUB_ENV"

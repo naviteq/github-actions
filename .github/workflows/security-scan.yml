@@ -4,12 +4,12 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: Default GitHub Actions runner for all scanners
+        description: Default GitHub Actions runner for all scanners. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ubuntu-latest
       codeql_runner:
-        description: GitHub Actions runner for CodeQL
+        description: GitHub Actions runner for CodeQL. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ""
@@ -18,17 +18,17 @@ on:
         required: true
         type: string
       dependency_review_runner:
-        description: GitHub Actions runner for Dependency Review
+        description: GitHub Actions runner for Dependency Review. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ""
       gitleaks_runner:
-        description: GitHub Actions runner for Gitleaks
+        description: GitHub Actions runner for Gitleaks. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ""
       trivy_runner:
-        description: GitHub Actions runner for Trivy
+        description: GitHub Actions runner for Trivy. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ""
@@ -63,7 +63,7 @@ on:
         type: string
         default: .
       checkov_runner:
-        description: GitHub Actions runner for Checkov
+        description: GitHub Actions runner for Checkov. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ""

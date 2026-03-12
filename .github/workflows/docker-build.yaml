@@ -60,7 +60,7 @@ on:
         required: false
         default: "linux/amd64,linux/arm64"
       RUNNER:
-        description: GitHub Actions runner to use for the build job
+        description: GitHub Actions runner to use for the build job. Supports a single label or a JSON array of labels.
         type: string
         required: false
         default: "ubuntu-22.04"
@@ -136,7 +136,7 @@ on:
 jobs:
   build:
     name: Docker build and push to registry
-    runs-on: ${{ inputs.RUNNER }}
+    runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
     outputs:
       tag-names: ${{ steps.meta.outputs.tag-names }}
       tags: ${{ steps.meta.outputs.tags }}
