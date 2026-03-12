@@ -32,7 +32,7 @@ jobs:
       IMAGE: ${{ github.repository }}
       DOCKER_CONTEXT: '.'
       DOCKER_PLATFORMS: linux/amd64,linux/arm64
-      DOCKERFILE: .github/testdata/docker-build/Dockerfile.green
+      DOCKERFILE: fixtures/docker-build/Dockerfile.green
       BUILD_ARGS: |
         TEST_ARG=enabled
         TEST_ARG_2=enabled
