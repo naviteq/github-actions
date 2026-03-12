@@ -181,7 +181,7 @@ jobs:
           password: ${{ secrets.TOKEN }}
       - name: Prepare Docker meta
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ inputs.AWS_REGION != '' && steps.ecr.outputs.registry || inputs.REGISTRY }}/${{ inputs.IMAGE != '' && inputs.IMAGE || github.repository }}
           flavor: |

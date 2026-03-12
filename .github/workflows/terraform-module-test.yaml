@@ -107,8 +107,8 @@ jobs:
           requirement_files: tests/requirements.txt
       - uses: syphar/restore-pip-download-cache@v1
         if: steps.cache-virtualenv.outputs.cache-hit != 'true'
-      - run: eval ${PRE_PIP_COMMANDS}
-        if: ${{ inputs.PRE_PIP_COMMANDS }} != ""
+      - run: bash -lc "$PRE_PIP_COMMANDS"
+        if: ${{ inputs.PRE_PIP_COMMANDS != '' }}
         env:
           PRE_PIP_COMMANDS: ${{ inputs.PRE_PIP_COMMANDS }}
       - run: pip install -r tests/requirements.txt
@@ -121,8 +121,17 @@ jobs:
           aws-region: ${{ inputs.AWS_REGION }}
       - name: Tests run
         run: |
-          if [ -n "${TEST_EXTRA_COMMANDS}" ]; then eval ${TEST_EXTRA_COMMANDS}; fi
-          if [ -n "${EXTRA_ENV_VARS}" ]; then export ${EXTRA_ENV_VARS}; fi
+          if [ -n "${TEST_EXTRA_COMMANDS}" ]; then
+            printf '%s\n' "${TEST_EXTRA_COMMANDS}" > .github/tmp-test-extra-commands.sh
+            . ./.github/tmp-test-extra-commands.sh
+            rm -f .github/tmp-test-extra-commands.sh
+          fi
+
+          if [ -n "${EXTRA_ENV_VARS}" ]; then
+            read -r -a extra_env_vars <<< "${EXTRA_ENV_VARS}"
+            export "${extra_env_vars[@]}"
+          fi
+
           python -m pytest --show-capture=all --log-cli-level=debug -vv
         env:
           TEST_EXTRA_COMMANDS: ${{ inputs.TEST_EXTRA_COMMANDS }}

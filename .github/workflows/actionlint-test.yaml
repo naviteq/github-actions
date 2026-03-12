@@ -1,0 +1,54 @@
+name: Actionlint Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  invalid-fixtures:
+    name: Invalid fixtures fail
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare invalid workflow fixture
+        shell: bash
+        run: |
+          rm -rf .github/workflows
+          mkdir -p .github/workflows
+          cp fixtures/actionlint/invalid-workflow.yaml .github/workflows/invalid-workflow.yaml
+
+      - name: Run actionlint on invalid workflow fixture
+        id: invalid-workflow-lint
+        continue-on-error: true
+        uses: devops-actions/actionlint@v0.1.11
+
+      - name: Assert workflow lint failed
+        if: ${{ steps.invalid-workflow-lint.outcome == 'success' }}
+        shell: bash
+        run: |
+          echo "Expected actionlint to fail on the invalid workflow fixture." >&2
+          exit 1
+
+      - name: Prepare invalid local action fixture
+        shell: bash
+        run: |
+          rm -rf .github/actions
+          mkdir -p .github/actions/broken-composite
+          cp fixtures/actionlint/invalid-local-action.yaml .github/actions/broken-composite/action.yaml
+
+      - name: Run composite action lint on invalid fixture
+        id: composite-action-lint
+        continue-on-error: true
+        uses: bettermarks/composite-action-lint@master
+        with:
+          actions: .github/actions/*/action.yaml
+
+      - name: Assert composite action lint failed
+        if: ${{ steps.composite-action-lint.outcome == 'success' }}
+        shell: bash
+        run: |
+          echo "Expected composite-action-lint to fail on the invalid local action fixture." >&2
+          exit 1

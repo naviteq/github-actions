@@ -90,105 +90,6 @@ on:
     secrets:
       trivy_registry_password:
         required: false
-  workflow_dispatch:
-    inputs:
-      runner:
-        description: Default GitHub Actions runner for all scanners
-        required: false
-        type: string
-        default: ubuntu-latest
-      codeql_runner:
-        description: GitHub Actions runner for CodeQL
-        required: false
-        type: string
-        default: ""
-      codeql_language:
-        description: CodeQL language to scan
-        required: true
-        type: choice
-        options:
-          - python
-          - javascript
-          - java
-          - csharp
-          - go
-          - ruby
-          - cpp
-          - swift
-      dependency_review_runner:
-        description: GitHub Actions runner for Dependency Review
-        required: false
-        type: string
-        default: ""
-      gitleaks_runner:
-        description: GitHub Actions runner for Gitleaks
-        required: false
-        type: string
-        default: ""
-      trivy_runner:
-        description: GitHub Actions runner for Trivy
-        required: false
-        type: string
-        default: ""
-      trivy_scan_type:
-        description: Trivy scan type
-        required: false
-        type: choice
-        default: image
-        options:
-          - image
-          - fs
-      trivy_image_ref:
-        description: Container image reference for Trivy image scans
-        required: false
-        type: string
-        default: ""
-      trivy_scan_ref:
-        description: Path for Trivy filesystem scans
-        required: false
-        type: string
-        default: .
-      trivy_registry:
-        description: Container registry hostname for image scans
-        required: false
-        type: string
-        default: ""
-      trivy_registry_username:
-        description: Registry username for image scans
-        required: false
-        type: string
-        default: ""
-      checkov_directory:
-        description: Directory to scan with Checkov
-        required: false
-        type: string
-        default: .
-      checkov_runner:
-        description: GitHub Actions runner for Checkov
-        required: false
-        type: string
-        default: ""
-      checkov_framework:
-        description: Checkov frameworks (comma separated list)
-        required: false
-        type: string
-        default: terraform,kubernetes,helm
-      checkov_soft_fail:
-        description: Do not fail Checkov on findings
-        required: false
-        type: boolean
-        default: false
-      checkov_check:
-        description: Run only specific Checkov checks
-        required: false
-        type: string
-        default: ""
-      checkov_skip_check:
-        description: Skip specific Checkov checks
-        required: false
-        type: string
-        default: ""
-
 permissions:
   contents: read
   pull-requests: read
@@ -197,7 +98,7 @@ permissions:
 jobs:
   codeql:
     name: CodeQL
-    uses: ./.github/workflows/security-codeql.yml
+    uses: naviteq/github-actions/.github/workflows/security-codeql.yml@main
     with:
       RUNNER: ${{ inputs.codeql_runner != '' && inputs.codeql_runner || inputs.runner }}
       language: ${{ inputs.codeql_language }}
@@ -205,19 +106,19 @@ jobs:
   dependency-review:
     name: Dependency Review
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' || github.event_name == 'merge_group' }}
-    uses: ./.github/workflows/security-dependency-review.yml
+    uses: naviteq/github-actions/.github/workflows/security-dependency-review.yml@main
     with:
       RUNNER: ${{ inputs.dependency_review_runner != '' && inputs.dependency_review_runner || inputs.runner }}
 
   gitleaks:
     name: Gitleaks
-    uses: ./.github/workflows/security-gitleaks.yml
+    uses: naviteq/github-actions/.github/workflows/security-gitleaks.yml@main
     with:
       RUNNER: ${{ inputs.gitleaks_runner != '' && inputs.gitleaks_runner || inputs.runner }}
 
   trivy:
     name: Trivy
-    uses: ./.github/workflows/security-trivy.yml
+    uses: naviteq/github-actions/.github/workflows/security-trivy.yml@main
     with:
       RUNNER: ${{ inputs.trivy_runner != '' && inputs.trivy_runner || inputs.runner }}
       scan_type: ${{ inputs.trivy_scan_type }}
@@ -230,7 +131,7 @@ jobs:
 
   checkov:
     name: Checkov
-    uses: ./.github/workflows/security-checkov.yaml
+    uses: naviteq/github-actions/.github/workflows/security-checkov.yaml@main
     with:
       RUNNER: ${{ inputs.checkov_runner != '' && inputs.checkov_runner || inputs.runner }}
       directory: ${{ inputs.checkov_directory }}

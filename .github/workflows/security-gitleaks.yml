@@ -66,14 +66,19 @@ jobs:
       - name: Publish results to GitHub Summary
         shell: bash
         run: |
-          echo "## 🔐 Gitleaks Secret Scan Results" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## 🔐 Gitleaks Secret Scan Results"
+
+            if jq -e 'length > 0' gitleaks-report.json > /dev/null; then
+              echo "Secrets were detected. See details below:"
+              echo '```json'
+              cat gitleaks-report.json
+              echo '```'
+            else
+              echo "✅ No secrets detected."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if jq -e 'length > 0' gitleaks-report.json > /dev/null; then
-            echo "Secrets were detected. See details below:" >> "$GITHUB_STEP_SUMMARY"
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat gitleaks-report.json >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
             exit 1
-          else
-            echo "✅ No secrets detected." >> "$GITHUB_STEP_SUMMARY"
           fi

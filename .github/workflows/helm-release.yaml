@@ -39,7 +39,7 @@ jobs:
         run: |
           if [[ -n "$ENVIRONMENT" ]]
           then
-            helm lint -f values/$ENVIRONMENT.yaml
+            helm lint -f "values/$ENVIRONMENT.yaml"
           else
             helm lint .
           fi
@@ -57,8 +57,8 @@ jobs:
         run: |
           if [[ "$GITHUB_REF_TYPE" == "branch" ]]
           then
-            LATEST_TAG=$(git describe --tags $(git rev-list --tags --max-count=1))
-            APP_VERSION="$LATEST_TAG-pre+$(echo ${GITHUB_SHA} | cut -c1-7)" 
+            LATEST_TAG=$(git describe --tags "$(git rev-list --tags --max-count=1)")
+            APP_VERSION="$LATEST_TAG-pre+$(echo "$GITHUB_SHA" | cut -c1-7)"
           else
             APP_VERSION="${GITHUB_REF_NAME##*/}"
           fi
@@ -70,8 +70,8 @@ jobs:
       - name: Build Helm chart
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
         run: |
-          helm package ${{ inputs.CHART_LOCATION }}
-          mv *.tgz helm-charts
+          helm package "${{ inputs.CHART_LOCATION }}"
+          mv -- ./*.tgz helm-charts
 
       - name: Publish Helm charts
         if: ${{ github.ref_type == 'tag' && inputs.PUSH_TO_GITHUB }}
