@@ -41,6 +41,11 @@ on:
         type: string
         required: false
         default: ""
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
     secrets:
       token:
         description: Token for GHCR login (required when push_chart is true)
@@ -71,7 +76,7 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || inputs.runner }}
     outputs:
       chart_name: ${{ steps.core.outputs.chart_name }}
       chart_version: ${{ steps.core.outputs.chart_version }}

@@ -29,7 +29,7 @@ on:
         type: string
         default: ""
       RUNNER:
-        description: GitHub Actions runner to use
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ubuntu-latest
@@ -40,7 +40,7 @@ permissions:
 jobs:
   checkov:
     name: Checkov IaC Scan
-    runs-on: ${{ inputs.RUNNER }}
+    runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
 
     steps:
       - name: Checkout repository
