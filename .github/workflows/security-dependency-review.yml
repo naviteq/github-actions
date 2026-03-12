@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       RUNNER:
-        description: GitHub Actions runner to use
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
         required: false
         type: string
         default: ubuntu-latest
@@ -16,7 +16,7 @@ permissions:
 jobs:
   dependency-review:
     name: Dependency Review
-    runs-on: ${{ inputs.RUNNER }}
+    runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
 
     steps:
       - uses: actions/checkout@v6

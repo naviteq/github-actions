@@ -13,6 +13,11 @@ on:
       PUSH_TO_GITHUB:
         type: boolean
         default: false
+      RUNNER:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
     secrets:
       TOKEN:
         required: true
@@ -20,7 +25,7 @@ on:
 jobs:
   helm:
     name: Update Chart.yaml file for version\appVersion and build
-    runs-on: ubuntu-24.04
+    runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
     steps:
       - uses: actions/checkout@v6
         with:
