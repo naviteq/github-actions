@@ -190,31 +190,31 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo "## 🔎 Trivy Scan Results" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## 🔎 Trivy Scan Results"
 
-          if [ "${{ inputs.scan_type }}" = "image" ]; then
-            echo "- **Scan type:** image" >> "$GITHUB_STEP_SUMMARY"
-            echo "- **Target:** \`${{ inputs.image_ref }}\`" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "- **Scan type:** fs" >> "$GITHUB_STEP_SUMMARY"
-            echo "- **Target:** \`${{ inputs.scan_ref }}\`" >> "$GITHUB_STEP_SUMMARY"
-          fi
+            if [ "${{ inputs.scan_type }}" = "image" ]; then
+              echo "- **Scan type:** image"
+              echo "- **Target:** \`${{ inputs.image_ref }}\`"
+            else
+              echo "- **Scan type:** fs"
+              echo "- **Target:** \`${{ inputs.scan_ref }}\`"
+            fi
 
-          if [ ! -f trivy-report.json ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "No Trivy JSON report was generated." >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+            if [ ! -f trivy-report.json ]; then
+              echo ""
+              echo "No Trivy JSON report was generated."
+              exit 1
+            fi
 
-          CRITICAL_COUNT=$(jq '[.. | objects | select(has("Severity")) | select(.Severity == "CRITICAL")] | length' trivy-report.json)
-          HIGH_COUNT=$(jq '[.. | objects | select(has("Severity")) | select(.Severity == "HIGH")] | length' trivy-report.json)
+            CRITICAL_COUNT=$(jq '[.. | objects | select(has("Severity")) | select(.Severity == "CRITICAL")] | length' trivy-report.json)
+            HIGH_COUNT=$(jq '[.. | objects | select(has("Severity")) | select(.Severity == "HIGH")] | length' trivy-report.json)
 
-          echo "- **Critical vulnerabilities:** ${CRITICAL_COUNT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **High vulnerabilities:** ${HIGH_COUNT}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "- **Critical vulnerabilities:** ${CRITICAL_COUNT}"
+            echo "- **High vulnerabilities:** ${HIGH_COUNT}"
+            echo ""
 
-          if [[ -s trivy.txt ]]; then
-            {
+            if [[ -s trivy.txt ]]; then
               echo "### Security Output"
               echo "<details><summary>Click to expand</summary>"
               echo ""
@@ -222,5 +222,5 @@ jobs:
               cat trivy.txt
               echo '```'
               echo "</details>"
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

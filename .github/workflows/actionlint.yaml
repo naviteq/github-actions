@@ -1,0 +1,38 @@
+name: Actionlint
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  lint:
+    name: Lint workflows and local actions
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run actionlint with reviewdog
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: reviewdog/action-actionlint@v1.71
+        with:
+          reporter: github-pr-check
+          fail_level: any
+          filter_mode: nofilter
+          actionlint_flags: "-config-file .github/actionlint.yaml"
+
+      - name: Run actionlint on workflows
+        if: ${{ github.event_name == 'push' }}
+        uses: devops-actions/actionlint@v0.1.11
+
+      - name: Validate local actions
+        if: ${{ always() }}
+        uses: bettermarks/composite-action-lint@master
+        with:
+          actions: .github/actions/*/action.y*ml

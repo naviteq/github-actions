@@ -28,19 +28,17 @@ jobs:
     runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
     steps:
       - uses: actions/checkout@v6
-      - run: echo "VERSION=${GITHUB_REF#refs/*/v}" >> $GITHUB_ENV
+      - run: echo "VERSION=${GITHUB_REF#refs/*/v}" >> "$GITHUB_ENV"
       - uses: unfor19/install-aws-cli-action@v1.0.3
       - name: Create archive
-        run: tar ${exclude_args} -cvzf module.tgz ./*
-        env:
-          exclude_args: --exclude='./github' --exclude="./examples" --exclude="./tests" --exclude='./*.y*'
+        run: tar --exclude='./github' --exclude='./examples' --exclude='./tests' --exclude='./*.y*' -cvzf module.tgz -- ./*
       - uses: aws-actions/configure-aws-credentials@v1.7.0
         with:
           role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
           role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}
           aws-region: ${{ inputs.AWS_REGION }}
       - name: Push module to the s3
-        run: aws s3 cp ./module.tgz s3://$BUCKET/${OBJECT_PATH}/${OBJECT}
+        run: aws s3 cp ./module.tgz "s3://$BUCKET/${OBJECT_PATH}/${OBJECT}"
         env:
           BUCKET: ${{ inputs.S3_BUCKET }}
           OBJECT_PATH: modules/${{ inputs.NAMESPACE }}/${{ inputs.NAME }}/${{ inputs.PROVIDER }}/${{ env.VERSION }}

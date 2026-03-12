@@ -1,4 +1,4 @@
-name: Security / Scan Suite Runner
+name: Security / Scan Suite Test
 
 on:
   workflow_dispatch:
