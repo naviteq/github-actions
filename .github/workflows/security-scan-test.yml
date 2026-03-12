@@ -54,7 +54,7 @@ on:
         description: Directory to scan with Checkov
         required: false
         type: string
-        default: .github/testdata/security-checkov
+        default: fixtures/security-checkov
       checkov_framework:
         description: Checkov frameworks (comma separated list)
         required: false
@@ -108,7 +108,7 @@ jobs:
       trivy_scan_type: image
       trivy_image_ref: cgr.dev/chainguard/nginx:latest
       trivy_scan_ref: .
-      checkov_directory: .github/testdata/iac-security-scan
+      checkov_directory: fixtures/security-checkov
       checkov_framework: terraform,kubernetes,helm
       checkov_soft_fail: true
       checkov_check: ""

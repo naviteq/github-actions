@@ -27,7 +27,7 @@ jobs:
     needs: guard_non_main
     uses: ./.github/workflows/helm-release-github.yaml
     with:
-      chart_path: .github/testdata/helm-release-oci/helm-chart
+      chart_path: fixtures/helm-release-oci/helm-chart
       ghcr_repo: ${{ github.repository }}
       push_chart: true
       bump_version_in_git: true
@@ -42,7 +42,7 @@ jobs:
     needs: guard_non_main
     uses: ./.github/workflows/helm-release-ecr.yaml
     with:
-      chart_path: .github/testdata/helm-release-oci/helm-chart
+      chart_path: fixtures/helm-release-oci/helm-chart
       ecr_registry: 000000000000.dkr.ecr.eu-west-1.amazonaws.com
       ecr_repo: test/charts
       push_chart: false
@@ -57,7 +57,7 @@ jobs:
     needs: guard_non_main
     uses: ./.github/workflows/helm-release-gar.yaml
     with:
-      chart_path: .github/testdata/helm-release-oci/helm-chart
+      chart_path: fixtures/helm-release-oci/helm-chart
       gar_registry: europe-west1-docker.pkg.dev
       gar_repo: test-project/test-repo
       push_chart: false

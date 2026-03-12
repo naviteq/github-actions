@@ -7,6 +7,6 @@ jobs:
   checkov:
     uses: ./.github/workflows/security-checkov.yaml
     with:
-      directory: .github/testdata/security-checkov
+      directory: fixtures/security-checkov
       framework: terraform,kubernetes,helm
       soft_fail: false

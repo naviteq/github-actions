@@ -106,7 +106,7 @@ Its defaults are set for a practical smoke check:
 
 - CodeQL: `python`
 - Trivy image: `cgr.dev/chainguard/nginx:latest`
-- Checkov directory: `.github/testdata/security-checkov`
+- Checkov directory: `fixtures/security-checkov`
 - Checkov soft fail: `true`
 
 ## Reusable Usage Examples
@@ -146,10 +146,10 @@ Existing validation workflows and fixtures are preserved:
 
 Existing example fixtures:
 
-- CodeQL fixture: `security-test-fixtures/codeql/sql_injection.py`
-- Dependency Review fixture: `security-test-fixtures/dependency-review/package.json`
-- Trivy fixture: `security-test-fixtures/trivy/Dockerfile.safe`
-- Checkov fixtures: `.github/testdata/security-checkov/`
+- CodeQL fixture: `fixtures/security-codeql/sql_injection.py`
+- Dependency Review fixture: `fixtures/security-dependency-review/package.json`
+- Trivy fixture: `fixtures/security-trivy/Dockerfile.safe`
+- Checkov fixtures: `fixtures/security-checkov/`
 
 Examples with intentionally vulnerable code or misconfiguration are expected to fail the related validation workflow and serve as evidence that the scanner is wired correctly.
 
