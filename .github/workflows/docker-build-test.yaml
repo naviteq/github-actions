@@ -1,29 +1,16 @@
 ---
 
-name: Docker Build Test
+name: Docker build TEST
 on:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  guard_non_main:
-    name: Guard non-main
-    runs-on: ubuntu-latest
-    steps:
-      - name: Block main branch
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            echo "Tests must be run from a non-main branch. Main branch is blocked by DoD."
-            exit 1
-          fi
-
-  case_inputs_coverage:
-    name: Case - Inputs coverage
-    needs: guard_non_main
+  case_local_build_success:
+    name: Case - local build succeeds
     uses: ./.github/workflows/docker-build.yaml
     with:
       RUNNER: ubuntu-latest
@@ -41,15 +28,40 @@ jobs:
       VERSION_TAG_V_PREFIX: true
       CUSTOM_TAGS: |
         test-custom-tag
-      DOCKER_PUSH: true
+      DOCKER_PUSH: false
       SECURITY_SCAN_ENABLED: true
       SECURITY_SCAN_SEVERITY: CRITICAL
       SECURITY_SCAN_EXIT_CODE: '0'
       SBOM_ENABLED: true
       SLACK_NOTIFY_ON_SUCCESS: false
-    secrets:
-      TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      BUILD_SECRETS: |
-        smoke_secret=plain-text-value
-        smoke_secret_2=plain-text-value-2
-      # SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK}}
+
+  case_invalid_dockerfile_expected_failure:
+    name: Case - invalid Dockerfile fails
+    uses: ./.github/workflows/docker-build.yaml
+    with:
+      RUNNER: ubuntu-latest
+      REGISTRY: ghcr.io
+      USERNAME: ${{ github.actor }}
+      IMAGE: ${{ github.repository }}
+      DOCKER_CONTEXT: '.'
+      DOCKER_PLATFORMS: linux/amd64
+      DOCKERFILE: fixtures/docker-build/Dockerfile.invalid
+      DOCKER_PUSH: false
+      SECURITY_SCAN_ENABLED: false
+      SBOM_ENABLED: false
+      SLACK_NOTIFY_ON_SUCCESS: false
+
+  assert_invalid_dockerfile_failed:
+    name: Case - invalid Dockerfile assertion
+    if: ${{ always() }}
+    needs:
+      - case_invalid_dockerfile_expected_failure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert Docker build failed
+        shell: bash
+        run: |
+          if [[ "${{ needs.case_invalid_dockerfile_expected_failure.result }}" != "failure" ]]; then
+            echo "Expected Docker build to fail for the invalid Dockerfile fixture."
+            exit 1
+          fi

@@ -19,11 +19,11 @@ This repository provides a thin orchestration layer for the existing security sc
   security-gitleaks.yml
   security-trivy.yml
   security-checkov.yaml
-  test-caller-codeql.yml
-  test-dependency-review.yml
-  test-gitleaks.yml
-  test-trivy.yml
-  test-security-checkov.yaml
+  security-codeql-test.yml
+  security-dependency-review-test.yml
+  security-gitleaks-test.yml
+  security-trivy-test.yml
+  security-checkov-test.yaml
 ```
 
 ## Included Workflows
@@ -45,9 +45,10 @@ Runner workflow for integration verification.
 
 Supported triggers:
 
+- `workflow_call`
 - `workflow_dispatch`
 
-Use `workflow_dispatch` for manual runs from the Actions UI. 
+Use `workflow_dispatch` for manual runs from the Actions UI.
 
 ### `security-codeql.yml`
 
@@ -138,11 +139,11 @@ jobs:
 
 Existing validation workflows and fixtures are preserved:
 
-- CodeQL validation workflow: `.github/workflows/test-caller-codeql.yml`
-- Dependency Review validation workflow: `.github/workflows/test-dependency-review.yml`
-- Gitleaks validation workflow: `.github/workflows/test-gitleaks.yml`
-- Trivy validation workflow: `.github/workflows/test-trivy.yml`
-- Checkov validation workflow: `.github/workflows/test-security-checkov.yaml`
+- CodeQL validation workflow: `.github/workflows/security-codeql-test.yml`
+- Dependency Review validation workflow: `.github/workflows/security-dependency-review-test.yml`
+- Gitleaks validation workflow: `.github/workflows/security-gitleaks-test.yml`
+- Trivy validation workflow: `.github/workflows/security-trivy-test.yml`
+- Checkov validation workflow: `.github/workflows/security-checkov-test.yaml`
 
 Existing example fixtures:
 
