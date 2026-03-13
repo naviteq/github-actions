@@ -12,26 +12,3 @@ jobs:
       directory: fixtures/security-checkov
       framework: terraform,kubernetes,helm
       soft_fail: true
-
-  case_findings_expected_failure:
-    name: Case - findings fail
-    uses: ./.github/workflows/security-checkov.yaml
-    with:
-      directory: fixtures/security-checkov
-      framework: terraform,kubernetes,helm
-      soft_fail: false
-
-  assert_findings_failed:
-    name: Case - findings failure assertion
-    if: ${{ always() }}
-    needs:
-      - case_findings_expected_failure
-    runs-on: ubuntu-latest
-    steps:
-      - name: Assert findings scenario failed
-        shell: bash
-        run: |
-          if [[ "${{ needs.case_findings_expected_failure.result }}" != "failure" ]]; then
-            echo "Expected Checkov to fail when soft_fail=false."
-            exit 1
-          fi

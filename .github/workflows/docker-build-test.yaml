@@ -34,34 +34,3 @@ jobs:
       SECURITY_SCAN_EXIT_CODE: '0'
       SBOM_ENABLED: true
       SLACK_NOTIFY_ON_SUCCESS: false
-
-  case_invalid_dockerfile_expected_failure:
-    name: Case - invalid Dockerfile fails
-    uses: ./.github/workflows/docker-build.yaml
-    with:
-      RUNNER: ubuntu-latest
-      REGISTRY: ghcr.io
-      USERNAME: ${{ github.actor }}
-      IMAGE: ${{ github.repository }}
-      DOCKER_CONTEXT: '.'
-      DOCKER_PLATFORMS: linux/amd64
-      DOCKERFILE: fixtures/docker-build/Dockerfile.invalid
-      DOCKER_PUSH: false
-      SECURITY_SCAN_ENABLED: false
-      SBOM_ENABLED: false
-      SLACK_NOTIFY_ON_SUCCESS: false
-
-  assert_invalid_dockerfile_failed:
-    name: Case - invalid Dockerfile assertion
-    if: ${{ always() }}
-    needs:
-      - case_invalid_dockerfile_expected_failure
-    runs-on: ubuntu-latest
-    steps:
-      - name: Assert Docker build failed
-        shell: bash
-        run: |
-          if [[ "${{ needs.case_invalid_dockerfile_expected_failure.result }}" != "failure" ]]; then
-            echo "Expected Docker build to fail for the invalid Dockerfile fixture."
-            exit 1
-          fi

@@ -16,26 +16,3 @@ jobs:
       RUNNER: ubuntu-latest
       scan_type: image
       image_ref: cgr.dev/chainguard/nginx:latest
-
-  case_invalid_image_expected_failure:
-    name: Case - invalid image fails
-    uses: ./.github/workflows/security-trivy.yml
-    with:
-      RUNNER: ubuntu-latest
-      scan_type: image
-      image_ref: ghcr.io/naviteq/this-image-does-not-exist:missing
-
-  assert_invalid_image_failed:
-    name: Case - invalid image assertion
-    if: ${{ always() }}
-    needs:
-      - case_invalid_image_expected_failure
-    runs-on: ubuntu-latest
-    steps:
-      - name: Assert invalid image path failed
-        shell: bash
-        run: |
-          if [[ "${{ needs.case_invalid_image_expected_failure.result }}" != "failure" ]]; then
-            echo "Expected the Trivy invalid image scenario to fail."
-            exit 1
-          fi

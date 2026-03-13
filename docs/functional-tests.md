@@ -28,7 +28,7 @@ Test entrypoints:
 1. Add or update a dedicated `...-test.yml` workflow under `.github/workflows/`.
 2. Give the workflow a standard name in the format `<workflow name> TEST`.
 3. Add at least one success-path scenario.
-4. Add a failure-path scenario for critical behavior where failure handling matters.
+4. Add a failure-path scenario only when it can be asserted without making the whole workflow fail.
 5. Register the new component and its test entrypoint in `.github/workflows/functional-tests.yml`.
 
 Destructive workflows that create or mutate external state can be intentionally excluded when there is no safe sandbox target.
