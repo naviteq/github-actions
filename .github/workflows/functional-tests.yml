@@ -84,6 +84,7 @@ jobs:
             unmapped:
               - '.github/workflows/**'
               - '.github/actions/**/action.y*ml'
+              - '!.github/workflows/create-release.yaml'
               - '!.github/workflows/actionlint.yaml'
               - '!.github/workflows/actionlint-test.yaml'
               - '!.github/workflows/docker-build.yaml'
