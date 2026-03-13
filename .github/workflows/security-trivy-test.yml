@@ -1,6 +1,7 @@
-name: Security / Trivy Runner
+name: Security / Trivy TEST
 
 on:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -8,7 +9,8 @@ permissions:
   security-events: write
 
 jobs:
-  trivy:
+  case_image_scan_success:
+    name: Case - image scan succeeds
     uses: ./.github/workflows/security-trivy.yml
     with:
       RUNNER: ubuntu-latest

@@ -51,9 +51,9 @@ on:
         description: Token for GHCR login (required when push_chart is true)
         required: false
       GITHUB_APP_ID:
-        required: true
+        required: false
       GITHUB_APP_KEY:
-        required: true
+        required: false
     outputs:
       chart_name:
         description: Chart name
@@ -86,6 +86,7 @@ jobs:
       upload_identifier: ${{ steps.core.outputs.upload_identifier }}
     steps:
       - name: Generate GitHub App token
+        if: ${{ inputs.push_chart && inputs.bump_version_in_git }}
         uses: actions/create-github-app-token@v2
         id: app-token
         with:
@@ -94,7 +95,7 @@ jobs:
 
       - uses: actions/checkout@v6
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token != '' && steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
 
       - name: Login to GitHub Registry

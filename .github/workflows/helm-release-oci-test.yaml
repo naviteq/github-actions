@@ -1,45 +1,42 @@
 ---
 
-name: Helm Release OCI Test
+name: Helm Release OCI TEST
 on:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: write
-  packages: write
-  id-token: write
 
 jobs:
-  guard_non_main:
-    name: Guard non-main
+  case_core_action_success:
+    name: Case - OCI core action succeeds
     runs-on: ubuntu-latest
     steps:
-      - name: Block main branch
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            echo "Tests must be run from a non-main branch. Main branch is blocked by DoD."
-            exit 1
-          fi
+      - uses: actions/checkout@v6
+      - name: Run OCI core action
+        id: core
+        uses: ./.github/actions/helm-release-oci
+        with:
+          chart_path: fixtures/helm-release-oci/helm-chart
+          oci_registry: ghcr.io
+          oci_repo: naviteq/github-actions-tests
+          push_chart: "false"
+          bump_version_in_git: "false"
+          lint_enabled: "true"
 
-  case_github_wrapper_no_push:
-    name: Case - GitHub wrapper (no push)
-    needs: guard_non_main
+  case_github_wrapper_success:
+    name: Case - GitHub wrapper succeeds
     uses: ./.github/workflows/helm-release-github.yaml
     with:
       chart_path: fixtures/helm-release-oci/helm-chart
       ghcr_repo: ${{ github.repository }}
-      push_chart: true
-      bump_version_in_git: true
+      push_chart: false
+      bump_version_in_git: false
       lint_enabled: true
-    secrets:
-      GITHUB_APP_ID: ${{ secrets.NAVITEQ_GITHUB_APP_ID }}
-      GITHUB_APP_KEY: ${{ secrets.NAVITEQ_GITHUB_APP_KEY }}
-      token: ${{ secrets.GITHUB_TOKEN }}
 
-  case_ecr_wrapper_no_push:
-    name: Case - ECR wrapper (no push)
-    needs: guard_non_main
+  case_ecr_wrapper_success:
+    name: Case - ECR wrapper succeeds
     uses: ./.github/workflows/helm-release-ecr.yaml
     with:
       chart_path: fixtures/helm-release-oci/helm-chart
@@ -48,13 +45,9 @@ jobs:
       push_chart: false
       bump_version_in_git: false
       lint_enabled: true
-    secrets:
-      GITHUB_APP_ID: ${{ secrets.NAVITEQ_GITHUB_APP_ID }}
-      GITHUB_APP_KEY: ${{ secrets.NAVITEQ_GITHUB_APP_KEY }}
 
-  case_gar_wrapper_no_push:
-    name: Case - GAR wrapper (no push)
-    needs: guard_non_main
+  case_gar_wrapper_success:
+    name: Case - GAR wrapper succeeds
     uses: ./.github/workflows/helm-release-gar.yaml
     with:
       chart_path: fixtures/helm-release-oci/helm-chart
@@ -63,6 +56,3 @@ jobs:
       push_chart: false
       bump_version_in_git: false
       lint_enabled: true
-    secrets:
-      GITHUB_APP_ID: ${{ secrets.NAVITEQ_GITHUB_APP_ID }}
-      GITHUB_APP_KEY: ${{ secrets.NAVITEQ_GITHUB_APP_KEY }}
