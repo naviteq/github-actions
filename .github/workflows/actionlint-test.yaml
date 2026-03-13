@@ -1,6 +1,7 @@
-name: Actionlint Test
+name: Actionlint TEST
 
 on:
+  workflow_call:
   workflow_dispatch:
 
 permissions:

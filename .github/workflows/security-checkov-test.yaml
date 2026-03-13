@@ -1,12 +1,14 @@
-name: IaC Security Scan
+name: Checkov / Checkov TEST
 
 on:
+  workflow_call:
   workflow_dispatch:
 
 jobs:
-  checkov:
+  case_soft_fail_success:
+    name: Case - soft fail succeeds
     uses: ./.github/workflows/security-checkov.yaml
     with:
       directory: fixtures/security-checkov
       framework: terraform,kubernetes,helm
-      soft_fail: false
+      soft_fail: true

@@ -1,0 +1,144 @@
+name: Functional Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: read
+  security-events: write
+  packages: read
+
+jobs:
+  detect-changes:
+    name: Detect changed workflows and actions
+    runs-on: ubuntu-latest
+    outputs:
+      actionlint: ${{ steps.filter.outputs.actionlint }}
+      docker_build: ${{ steps.filter.outputs.docker_build }}
+      helm_release: ${{ steps.filter.outputs.helm_release }}
+      security_checkov: ${{ steps.filter.outputs.security_checkov }}
+      security_codeql: ${{ steps.filter.outputs.security_codeql }}
+      security_dependency_review: ${{ steps.filter.outputs.security_dependency_review }}
+      security_gitleaks: ${{ steps.filter.outputs.security_gitleaks }}
+      security_scan: ${{ steps.filter.outputs.security_scan }}
+      security_trivy: ${{ steps.filter.outputs.security_trivy }}
+      framework: ${{ steps.filter.outputs.framework }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Match changed components
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          list-files: shell
+          filters: |
+            framework:
+              - '.github/workflows/functional-tests.yml'
+              - 'docs/functional-tests.md'
+            actionlint:
+              - '.github/workflows/actionlint.yaml'
+              - '.github/workflows/actionlint-test.yaml'
+              - '.github/actionlint.yaml'
+              - 'fixtures/actionlint/**'
+            docker_build:
+              - '.github/workflows/docker-build.yaml'
+              - '.github/workflows/docker-build-test.yaml'
+              - 'fixtures/docker-build/**'
+            helm_release:
+              - '.github/workflows/helm-release-github.yaml'
+              - '.github/workflows/helm-release-ecr.yaml'
+              - '.github/workflows/helm-release-gar.yaml'
+              - '.github/workflows/helm-release-oci-test.yaml'
+              - '.github/actions/helm-release-oci/**'
+              - 'fixtures/helm-release-oci/**'
+            security_checkov:
+              - '.github/workflows/security-checkov.yaml'
+              - '.github/workflows/security-checkov-test.yaml'
+              - 'fixtures/security-checkov/**'
+            security_codeql:
+              - '.github/workflows/security-codeql.yml'
+              - '.github/workflows/security-codeql-test.yml'
+              - 'fixtures/security-codeql/**'
+            security_dependency_review:
+              - '.github/workflows/security-dependency-review.yml'
+              - '.github/workflows/security-dependency-review-test.yml'
+              - 'fixtures/security-dependency-review/**'
+            security_gitleaks:
+              - '.github/workflows/security-gitleaks.yml'
+              - '.github/workflows/security-gitleaks-test.yml'
+            security_scan:
+              - '.github/workflows/security-scan.yml'
+              - '.github/workflows/security-scan-test.yml'
+            security_trivy:
+              - '.github/workflows/security-trivy.yml'
+              - '.github/workflows/security-trivy-test.yml'
+              - 'fixtures/security-trivy/**'
+
+  actionlint:
+    name: Actionlint TEST
+    if: ${{ needs.detect-changes.outputs.framework == 'true' || needs.detect-changes.outputs.actionlint == 'true' }}
+    needs:
+      - detect-changes
+    uses: ./.github/workflows/actionlint-test.yaml
+
+  docker-build:
+    name: Docker build TEST
+    if: ${{ needs.detect-changes.outputs.framework == 'true' || needs.detect-changes.outputs.docker_build == 'true' }}
+    needs:
+      - detect-changes
+    uses: ./.github/workflows/docker-build-test.yaml
+
+  helm-release:
+    name: Helm Release OCI TEST
+    if: ${{ needs.detect-changes.outputs.framework == 'true' || needs.detect-changes.outputs.helm_release == 'true' }}
+    needs:
+      - detect-changes
+    uses: ./.github/workflows/helm-release-oci-test.yaml
+
+  security-checkov:
+    name: Checkov / Checkov TEST
+    if: ${{ needs.detect-changes.outputs.framework == 'true' || needs.detect-changes.outputs.security_checkov == 'true' }}
+    needs:
+      - detect-changes
+    uses: ./.github/workflows/security-checkov-test.yaml
+
+  security-codeql:
+    name: Security / CodeQL (SAST) TEST
+    if: ${{ needs.detect-changes.outputs.framework == 'true' || needs.detect-changes.outputs.security_codeql == 'true' }}
+    needs:
+      - detect-changes
+    uses: ./.github/workflows/security-codeql-test.yml
+
+  security-dependency-review:
+    name: Security / Dependency Review (SCA) TEST
+    if: ${{ needs.detect-changes.outputs.framework == 'true' || needs.detect-changes.outputs.security_dependency_review == 'true' }}
+    needs:
+      - detect-changes
+    uses: ./.github/workflows/security-dependency-review-test.yml
+
+  security-gitleaks:
+    name: Security / Gitleaks (Secrets) TEST
+    if: ${{ needs.detect-changes.outputs.framework == 'true' || needs.detect-changes.outputs.security_gitleaks == 'true' }}
+    needs:
+      - detect-changes
+    uses: ./.github/workflows/security-gitleaks-test.yml
+
+  security-scan:
+    name: Security / Scan Suite TEST
+    if: ${{ needs.detect-changes.outputs.framework == 'true' || needs.detect-changes.outputs.security_scan == 'true' }}
+    needs:
+      - detect-changes
+    uses: ./.github/workflows/security-scan-test.yml
+
+  security-trivy:
+    name: Security / Trivy TEST
+    if: ${{ needs.detect-changes.outputs.framework == 'true' || needs.detect-changes.outputs.security_trivy == 'true' }}
+    needs:
+      - detect-changes
+    uses: ./.github/workflows/security-trivy-test.yml

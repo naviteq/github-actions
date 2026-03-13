@@ -1,8 +1,13 @@
-name: Security / CodeQL Runner
+name: Security / CodeQL (SAST) TEST
 
 on:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      language:
+        description: CodeQL language to scan
+        required: false
+        type: string
+        default: python
   workflow_dispatch:
     inputs:
       language:
@@ -20,15 +25,13 @@ on:
           - cpp
           - swift
 
-jobs:
-  codeql-auto:
-    if: github.event_name != 'workflow_dispatch'
-    uses: ./.github/workflows/security-codeql.yml
-    with:
-      language: ${{ vars.CODEQL_LANGUAGE || 'python' }}
+permissions:
+  contents: read
+  security-events: write
 
-  codeql-manual:
-    if: github.event_name == 'workflow_dispatch'
+jobs:
+  codeql:
+    name: Case - codeql analyze succeeds
     uses: ./.github/workflows/security-codeql.yml
     with:
-      language: ${{ inputs.language }}
+      language: ${{ inputs.language || 'python' }}

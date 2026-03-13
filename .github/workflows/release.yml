@@ -14,7 +14,7 @@ on:
 
 jobs:
   release:
-    uses: naviteq/github-actions/.github/workflows/create-release.yaml@main
+    uses: ./.github/workflows/create-release.yaml
     with:
       RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'ubuntu-24.04' }}
     secrets:

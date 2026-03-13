@@ -17,4 +17,5 @@ This repository validates its GitHub Actions workflows with `actionlint` in CI.
 - `pull_request`: `reviewdog/action-actionlint` reports workflow findings as PR checks
 - `push` to `main`: `devops-actions/actionlint` runs workflow linting and fails the job on findings
 - `bettermarks/composite-action-lint` validates local composite actions in both cases
-- `actionlint-test.yml` is a manual `workflow_dispatch` proof job that replaces checked out files with invalid fixtures and asserts both linters fail
+- `actionlint-test.yaml` is a `workflow_dispatch` and `workflow_call` proof job that replaces checked out files with invalid fixtures and asserts both linters fail
+- `create-release.yaml` is intentionally excluded from the functional framework because it is a destructive release workflow

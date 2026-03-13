@@ -48,6 +48,7 @@ Inputs:
 
 Secrets:
 - `token` (required when `push_chart=true`): token used for GHCR login.
+- `GITHUB_APP_ID` and `GITHUB_APP_KEY` (optional): only needed when `bump_version_in_git=true`.
 
 Outputs:
 - `chart_name`
@@ -95,7 +96,7 @@ Inputs:
 - `lint_values_file` (optional, default empty)
 
 Secrets:
-- `token` (optional): git token for checkout/commit push.
+- `GITHUB_APP_ID` and `GITHUB_APP_KEY` (optional): only needed when `bump_version_in_git=true`.
 
 Outputs:
 - `chart_name`
@@ -143,7 +144,7 @@ Inputs:
 - `lint_values_file` (optional, default empty)
 
 Secrets:
-- none
+- `GITHUB_APP_ID` and `GITHUB_APP_KEY` (optional): only needed when `bump_version_in_git=true`.
 
 Outputs:
 - `chart_name`
