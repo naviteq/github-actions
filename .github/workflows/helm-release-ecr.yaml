@@ -92,7 +92,7 @@ jobs:
       upload_identifier: ${{ steps.core.outputs.upload_identifier }}
     steps:
       - name: Generate GitHub App token
-        if: ${{ inputs.bump_version_in_git }}
+        if: ${{ inputs.push_chart && inputs.bump_version_in_git }}
         uses: actions/create-github-app-token@v2
         id: app-token
         with:
