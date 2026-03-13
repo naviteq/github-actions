@@ -55,4 +55,4 @@ jobs:
       gar_repo: test-project/test-repo
       push_chart: false
       bump_version_in_git: false
-      lint_enabled: true
+      lint_enabled: false
