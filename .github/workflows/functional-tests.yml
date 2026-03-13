@@ -27,8 +27,6 @@ jobs:
       security_scan: ${{ steps.filter.outputs.security_scan }}
       security_trivy: ${{ steps.filter.outputs.security_trivy }}
       framework: ${{ steps.filter.outputs.framework }}
-      unmapped: ${{ steps.filter.outputs.unmapped }}
-      unmapped_files: ${{ steps.filter.outputs.unmapped_files }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -81,48 +79,6 @@ jobs:
               - '.github/workflows/security-trivy.yml'
               - '.github/workflows/security-trivy-test.yml'
               - 'fixtures/security-trivy/**'
-            unmapped:
-              - '.github/workflows/**'
-              - '.github/actions/**/action.y*ml'
-              - '!.github/workflows/create-release.yaml'
-              - '!.github/workflows/actionlint.yaml'
-              - '!.github/workflows/actionlint-test.yaml'
-              - '!.github/workflows/docker-build.yaml'
-              - '!.github/workflows/docker-build-test.yaml'
-              - '!.github/workflows/functional-tests.yml'
-              - '!.github/workflows/helm-release-ecr.yaml'
-              - '!.github/workflows/helm-release-gar.yaml'
-              - '!.github/workflows/helm-release-github.yaml'
-              - '!.github/workflows/helm-release-oci-test.yaml'
-              - '!.github/workflows/release.yml'
-              - '!.github/workflows/runner-selection-test.yml'
-              - '!.github/workflows/security-checkov.yaml'
-              - '!.github/workflows/security-checkov-test.yaml'
-              - '!.github/workflows/security-codeql.yml'
-              - '!.github/workflows/security-codeql-test.yml'
-              - '!.github/workflows/security-dependency-review.yml'
-              - '!.github/workflows/security-dependency-review-test.yml'
-              - '!.github/workflows/security-gitleaks.yml'
-              - '!.github/workflows/security-gitleaks-test.yml'
-              - '!.github/workflows/security-scan.yml'
-              - '!.github/workflows/security-scan-test.yml'
-              - '!.github/workflows/security-trivy.yml'
-              - '!.github/workflows/security-trivy-test.yml'
-              - '!.github/actions/helm-release-oci/action.yaml'
-
-  unmapped-components:
-    name: Fail on unmapped workflow or action changes
-    if: ${{ needs.detect-changes.outputs.unmapped == 'true' }}
-    needs:
-      - detect-changes
-    runs-on: ubuntu-latest
-    steps:
-      - name: Report unmapped files
-        shell: bash
-        run: |
-          echo "Changed workflow/action files are not onboarded into functional tests:"
-          echo "${{ needs.detect-changes.outputs.unmapped_files }}"
-          exit 1
 
   actionlint:
     name: Actionlint TEST

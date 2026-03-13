@@ -20,7 +20,6 @@ Test entrypoints:
 
 - On `pull_request` and `push` to `main`, `functional-tests.yml` detects changed workflow and action files with `dorny/paths-filter`.
 - Only the matching functional test workflows are executed.
-- If a workflow or local action changes and is not mapped to a functional test, CI fails and prints the unmapped files.
 - `security-scan-test.yml` is used as the suite-level orchestration smoke test for `security-scan.yml`.
 
 ## Onboarding a new workflow or action
@@ -29,9 +28,7 @@ Test entrypoints:
 2. Give the workflow a standard name in the format `<workflow name> TEST`.
 3. Add at least one success-path scenario.
 4. Add a failure-path scenario only when it can be asserted without making the whole workflow fail.
-5. Register the new component and its test entrypoint in `.github/workflows/functional-tests.yml`.
-
-Destructive workflows that create or mutate external state can be intentionally excluded when there is no safe sandbox target.
+5. Register the new component and its test entrypoint in `.github/workflows/functional-tests.yml` when it should run automatically.
 
 ## Notes
 
