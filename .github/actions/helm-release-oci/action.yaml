@@ -74,6 +74,11 @@ runs:
           exit 1
         fi
 
+    - name: Update Helm dependencies
+      shell: bash
+      working-directory: ${{ inputs.chart_path }}
+      run: helm dependency update
+
     - name: Lint Helm chart
       if: ${{ inputs.lint_enabled == 'true' }}
       shell: bash
@@ -103,9 +108,14 @@ runs:
         else
           APP_VERSION="${GITHUB_REF_NAME##*/}"
         fi
+        
         echo "Updating Chart.yaml"
-        sed -i "s#^[[:space:]]*version:.*#version: ${APP_VERSION/v/}#g" Chart.yaml
-        sed -i "s#^[[:space:]]*appVersion:.*#appVersion: ${APP_VERSION}#g" Chart.yaml
+
+        APP_VERSION="$APP_VERSION" yq -i '
+          .version = (strenv(APP_VERSION) | sub("^v"; "")) |
+          .appVersion = strenv(APP_VERSION)
+        ' Chart.yaml
+        
         cat Chart.yaml
 
     - name: Read chart metadata
@@ -114,9 +124,10 @@ runs:
       env:
         CHART_FILE: ${{ inputs.chart_path }}/Chart.yaml
       run: |
-        CHART_NAME=$(sed -n 's/^[[:space:]]*name:[[:space:]]*//p' "$CHART_FILE" | head -n1)
-        CHART_VERSION=$(sed -n 's/^[[:space:]]*version:[[:space:]]*//p' "$CHART_FILE" | head -n1)
-        APP_VERSION=$(sed -n 's/^[[:space:]]*appVersion:[[:space:]]*//p' "$CHART_FILE" | head -n1)
+        CHART_NAME=$(yq -r '.name // ""' "$CHART_FILE")
+        CHART_VERSION=$(yq -r '.version // ""' "$CHART_FILE")
+        APP_VERSION=$(yq -r '.appVersion // ""' "$CHART_FILE")
+        
         echo "chart_name=$CHART_NAME" >> "$GITHUB_OUTPUT"
         echo "chart_version=$CHART_VERSION" >> "$GITHUB_OUTPUT"
         echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
