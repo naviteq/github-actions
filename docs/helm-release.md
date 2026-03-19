@@ -22,6 +22,7 @@ Legacy note:
 - `bump_version_git_branch` (`string`, optional, default `""`): Override target branch for bump commit. If empty, uses current ref name.
 - `lint_enabled` (`boolean`, optional, default `true`): Run `helm lint` before package.
 - `lint_values_file` (`string`, optional, default `""`): Optional values file for helm lint (path is resolved from `chart_path`).
+- `chart_version` (`string`, optional, default `""`): Optional helm chart version (overrides appVersion-derived version when provided).
 
 Note:
 - Version bump commit is intentionally tied to `push_chart=true`.
@@ -45,6 +46,7 @@ Inputs:
 - `bump_version_git_branch` (optional, default empty)
 - `lint_enabled` (optional, default `true`)
 - `lint_values_file` (optional, default empty)
+- `chart_version` (`string`, optional, default `""`): Optional helm chart version (overrides appVersion-derived version when provided).
 
 Secrets:
 - `token` (required when `push_chart=true`): token used for GHCR login.
@@ -94,6 +96,7 @@ Inputs:
 - `bump_version_git_branch` (optional, default empty)
 - `lint_enabled` (optional, default `true`)
 - `lint_values_file` (optional, default empty)
+- `chart_version` (`string`, optional, default `""`): Optional helm chart version (overrides appVersion-derived version when provided).
 
 Secrets:
 - `GITHUB_APP_ID` and `GITHUB_APP_KEY` (optional): only needed when both `push_chart=true` and `bump_version_in_git=true`.
@@ -142,6 +145,7 @@ Inputs:
 - `bump_version_git_branch` (optional, default empty)
 - `lint_enabled` (optional, default `true`)
 - `lint_values_file` (optional, default empty)
+- `chart_version` (`string`, optional, default `""`): Optional helm chart version (overrides appVersion-derived version when provided).
 
 Secrets:
 - `GITHUB_APP_ID` and `GITHUB_APP_KEY` (optional): only needed when both `push_chart=true` and `bump_version_in_git=true`.

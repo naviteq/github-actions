@@ -50,6 +50,11 @@ on:
         type: string
         required: false
         default: ""
+      chart_version:
+        description: Helm chart version (overrides appVersion-derived version when provided)
+        type: string
+        required: false
+        default: ""
       runner:
         description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
         type: string
@@ -144,3 +149,4 @@ jobs:
           bump_version_git_branch: ${{ inputs.bump_version_git_branch }}
           lint_enabled: ${{ inputs.lint_enabled }}
           lint_values_file: ${{ inputs.lint_values_file }}
+          chart_version: ${{ inputs.chart_version }}
