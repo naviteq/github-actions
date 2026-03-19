@@ -31,6 +31,10 @@ inputs:
     description: Optional values file for helm lint (path is resolved from chart_path working directory)
     required: false
     default: ""
+  chart_version:
+    description: Helm chart version (overrides appVersion-derived version when provided)
+    required: false
+    default: ""
 
 outputs:
   chart_name:
@@ -96,6 +100,8 @@ runs:
     - name: Update versions
       shell: bash
       working-directory: ${{ inputs.chart_path }}
+      env:
+        CHART_VERSION_OVERRIDE: ${{ inputs.chart_version }}
       run: |
         if [[ "$GITHUB_REF_TYPE" == "branch" ]]
         then
@@ -108,14 +114,20 @@ runs:
         else
           APP_VERSION="${GITHUB_REF_NAME##*/}"
         fi
-        
+
+        if [[ -n "$CHART_VERSION_OVERRIDE" ]]; then
+          CHART_VERSION="$CHART_VERSION_OVERRIDE"
+        else
+          CHART_VERSION="$(echo "$APP_VERSION" | sed 's/^v//')"
+        fi
+
         echo "Updating Chart.yaml"
 
-        APP_VERSION="$APP_VERSION" yq -i '
-          .version = (strenv(APP_VERSION) | sub("^v"; "")) |
+        APP_VERSION="$APP_VERSION" CHART_VERSION="$CHART_VERSION" yq -i '
+          .version = strenv(CHART_VERSION) |
           .appVersion = strenv(APP_VERSION)
         ' Chart.yaml
-        
+
         cat Chart.yaml
 
     - name: Read chart metadata

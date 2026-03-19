@@ -24,6 +24,7 @@ jobs:
           push_chart: "false"
           bump_version_in_git: "false"
           lint_enabled: "true"
+          chart_version: "" # test empty
 
   case_github_wrapper_success:
     name: Case - GitHub wrapper succeeds
@@ -34,6 +35,7 @@ jobs:
       push_chart: false
       bump_version_in_git: false
       lint_enabled: true
+      chart_version: "1.0.0-override" # test override
 
   case_ecr_wrapper_success:
     name: Case - ECR wrapper succeeds
