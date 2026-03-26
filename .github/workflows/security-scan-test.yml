@@ -47,7 +47,7 @@ on:
         description: Checkov frameworks (comma separated list)
         required: false
         type: string
-        default: terraform,kubernetes,helm
+        default: all
       checkov_soft_fail:
         description: Do not fail Checkov on findings
         required: false
@@ -118,10 +118,10 @@ on:
         type: string
         default: fixtures/security-checkov
       checkov_framework:
-        description: Checkov frameworks (comma separated list)
+        description: Checkov framework
         required: false
         type: string
-        default: terraform,kubernetes,helm
+        default: all
       checkov_soft_fail:
         description: Do not fail Checkov on findings
         required: false

@@ -16,11 +16,11 @@ jobs:
     name: Lint workflows and local actions
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Run actionlint with reviewdog
         if: ${{ github.event_name == 'pull_request' }}
-        uses: reviewdog/action-actionlint@d39025c0fb1cc41ac827852403ea94804b0e6907
+        uses: reviewdog/action-actionlint@0d952c597ef8459f634d7145b0b044a9699e5e43 # v1
         with:
           reporter: github-pr-check
           fail_level: any
@@ -29,10 +29,10 @@ jobs:
 
       - name: Run actionlint on workflows
         if: ${{ github.event_name == 'push' }}
-        uses: devops-actions/actionlint@fff09c1c1b540ae616ebbc7e5d49de02b44f9cbb
+        uses: devops-actions/actionlint@469810fd82c015d3c43815cd2b0e4d02eecc4819 # v0.1.11
 
       - name: Validate local actions
         if: ${{ always() }}
-        uses: bettermarks/composite-action-lint@673212ed410dde8377d1d5bce860152e85064a2d
+        uses: bettermarks/composite-action-lint@673212ed410dde8377d1d5bce860152e85064a2d # master
         with:
           actions: .github/actions/*/action.y*ml
