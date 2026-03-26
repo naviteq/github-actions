@@ -20,7 +20,7 @@ jobs:
 
       - name: Run actionlint with reviewdog
         if: ${{ github.event_name == 'pull_request' }}
-        uses: reviewdog/action-actionlint@v1.71
+        uses: reviewdog/action-actionlint@d39025c0fb1cc41ac827852403ea94804b0e6907
         with:
           reporter: github-pr-check
           fail_level: any
@@ -29,10 +29,10 @@ jobs:
 
       - name: Run actionlint on workflows
         if: ${{ github.event_name == 'push' }}
-        uses: devops-actions/actionlint@v0.1.11
+        uses: devops-actions/actionlint@fff09c1c1b540ae616ebbc7e5d49de02b44f9cbb
 
       - name: Validate local actions
         if: ${{ always() }}
-        uses: bettermarks/composite-action-lint@master
+        uses: bettermarks/composite-action-lint@673212ed410dde8377d1d5bce860152e85064a2d
         with:
           actions: .github/actions/*/action.y*ml

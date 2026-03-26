@@ -139,7 +139,7 @@ runs:
         CHART_NAME=$(yq -r '.name // ""' "$CHART_FILE")
         CHART_VERSION=$(yq -r '.version // ""' "$CHART_FILE")
         APP_VERSION=$(yq -r '.appVersion // ""' "$CHART_FILE")
-        
+
         echo "chart_name=$CHART_NAME" >> "$GITHUB_OUTPUT"
         echo "chart_version=$CHART_VERSION" >> "$GITHUB_OUTPUT"
         echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
@@ -156,7 +156,7 @@ runs:
     # Intentional: version bump commit runs only when chart push is enabled.
     - name: Commit file to branch
       if: ${{ inputs.push_chart == 'true' && inputs.bump_version_in_git == 'true' }}
-      uses: stefanzweifel/git-auto-commit-action@v7
+      uses: stefanzweifel/git-auto-commit-action@f53a62c26ed5971dd2ed8768e4142f08c767ea37
       with:
         branch: ${{ inputs.bump_version_git_branch != '' && inputs.bump_version_git_branch || github.ref_name }}
         commit_message: "Helm bumped up version and appVersion [skip ci]"

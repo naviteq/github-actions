@@ -97,7 +97,7 @@ jobs:
 
       - name: Run Trivy image scan (JSON)
         if: ${{ inputs.scan_type == 'image' }}
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: image
           image-ref: ${{ inputs.image_ref }}
@@ -112,7 +112,7 @@ jobs:
 
       - name: Run Trivy filesystem scan (JSON)
         if: ${{ inputs.scan_type == 'fs' }}
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: fs
           scan-ref: ${{ inputs.scan_ref }}
@@ -126,7 +126,7 @@ jobs:
 
       - name: Run Trivy image scan (SARIF)
         if: ${{ inputs.scan_type == 'image' }}
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: image
           image-ref: ${{ inputs.image_ref }}
@@ -141,7 +141,7 @@ jobs:
 
       - name: Run Trivy filesystem scan (SARIF)
         if: ${{ inputs.scan_type == 'fs' }}
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: fs
           scan-ref: ${{ inputs.scan_ref }}
@@ -155,7 +155,7 @@ jobs:
 
       - name: Run Trivy image scan (text summary)
         if: ${{ inputs.scan_type == 'image' }}
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: image
           image-ref: ${{ inputs.image_ref }}
@@ -169,7 +169,7 @@ jobs:
 
       - name: Run Trivy filesystem scan (text summary)
         if: ${{ inputs.scan_type == 'fs' }}
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           scan-type: fs
           scan-ref: ${{ inputs.scan_ref }}

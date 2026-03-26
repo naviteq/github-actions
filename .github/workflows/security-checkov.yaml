@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@v12
+        uses: bridgecrewio/checkov-action@dae50a5e9eb93ac7dc96b2aea92a185131103539
         with:
           directory: ${{ inputs.directory }}
           framework: ${{ inputs.framework }}
