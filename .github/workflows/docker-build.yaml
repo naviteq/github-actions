@@ -1,5 +1,4 @@
 ---
-
 name: Docker build
 on:
   workflow_call:
@@ -30,7 +29,7 @@ on:
         description: Docker build context
         type: string
         required: false
-        default: '.'
+        default: "."
       DOCKER_PUSH:
         description: Do we should push the image or not
         type: boolean
@@ -40,12 +39,12 @@ on:
         description: Registry URL
         type: string
         required: false
-        default: ''
+        default: ""
       USERNAME:
         description: Registry Username
         type: string
         required: false
-        default: ''
+        default: ""
       IMAGE:
         description: Image name
         type: string
@@ -68,22 +67,22 @@ on:
         description: Path to Dockerfile (relative to context). Leave empty to use default {context}/Dockerfile
         type: string
         required: false
-        default: ''
+        default: ""
       BUILD_ARGS:
         description: Docker build arguments (multiline KEY=value format)
         type: string
         required: false
-        default: ''
+        default: ""
       TAG_FLAVOR_SUFFIX:
         description: Tag flavor suffix applied to all generated tags (e.g. -arm64, -debug)
         type: string
         required: false
-        default: ''
+        default: ""
       TAG_FLAVOR_PREFIX:
         description: Tag flavor prefix applied to all generated tags
         type: string
         required: false
-        default: ''
+        default: ""
       VERSION_TAG_V_PREFIX:
         description: Whether semver image tags should use a leading v prefix
         type: boolean
@@ -93,7 +92,7 @@ on:
         description: Custom tags (newline separated)
         type: string
         required: false
-        default: ''
+        default: ""
       SECURITY_SCAN_ENABLED:
         description: Enable container vulnerability scan
         type: boolean
@@ -103,12 +102,12 @@ on:
         description: Comma-separated severities to scan and display (UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL)
         type: string
         required: false
-        default: 'CRITICAL'
+        default: "CRITICAL"
       SECURITY_SCAN_EXIT_CODE:
         description: Exit code used by vulnerability scanner (use 0 to never fail)
         type: string
         required: false
-        default: '1'
+        default: "1"
       SBOM_ENABLED:
         description: Enable SBOM generation
         type: boolean
@@ -124,7 +123,7 @@ on:
         description: Registry Token
         required: false
       AWS_IAM_ROLE:
-        description: AWS IAM Role to assume 
+        description: AWS IAM Role to assume
         required: false
       BUILD_SECRETS:
         description: Build secrets (multiline KEY=value format)
@@ -234,7 +233,7 @@ jobs:
       - name: Run Trivy vulnerability scanner
         id: security_scan
         if: ${{ inputs.SECURITY_SCAN_ENABLED && inputs.DOCKER_PUSH }}
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         env:
           TRIVY_EXIT_ON_EOL: "1"
         with:
@@ -247,7 +246,7 @@ jobs:
           severity: "${{ inputs.SECURITY_SCAN_SEVERITY }}"
       - name: Generate SBOM (CycloneDX)
         if: ${{ always() && inputs.SBOM_ENABLED && inputs.DOCKER_PUSH }}
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         with:
           image-ref: "${{ fromJSON(steps.meta.outputs.json).tags[0] }}"
           hide-progress: true
@@ -297,7 +296,7 @@ jobs:
       - name: Send Slack notification
         if: ${{ always() && steps.check_slack_webhook.outputs.has_webhook == 'true' && (job.status != 'success' || inputs.SLACK_NOTIFY_ON_SUCCESS) }}
         continue-on-error: true
-        uses: slackapi/slack-github-action@v2
+        uses: slackapi/slack-github-action@fd998911a4a39ce77c6ae6221df1f58471594105
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK }}
           webhook-type: incoming-webhook

@@ -24,7 +24,7 @@ jobs:
       - name: Run actionlint on invalid workflow fixture
         id: invalid-workflow-lint
         continue-on-error: true
-        uses: devops-actions/actionlint@v0.1.11
+        uses: devops-actions/actionlint@fff09c1c1b540ae616ebbc7e5d49de02b44f9cbb
 
       - name: Assert workflow lint failed
         if: ${{ steps.invalid-workflow-lint.outcome == 'success' }}
@@ -43,7 +43,7 @@ jobs:
       - name: Run composite action lint on invalid fixture
         id: composite-action-lint
         continue-on-error: true
-        uses: bettermarks/composite-action-lint@master
+        uses: bettermarks/composite-action-lint@673212ed410dde8377d1d5bce860152e85064a2d
         with:
           actions: .github/actions/*/action.yaml
 
