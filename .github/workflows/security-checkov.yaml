@@ -9,10 +9,10 @@ on:
         type: string
         default: .
       framework:
-        description: Checkov frameworks (comma separated list)
+        description: Checkov framework
         required: false
         type: string
-        default: terraform,kubernetes,helm
+        default: all
       soft_fail:
         description: Do not fail the workflow on findings
         required: false
@@ -39,15 +39,15 @@ permissions:
 
 jobs:
   checkov:
-    name: Checkov IaC Scan
+    name: Checkov Scan (${{ inputs.framework }})
     runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@dae50a5e9eb93ac7dc96b2aea92a185131103539
+        uses: bridgecrewio/checkov-action@8c07e78c64ddc2209d8c193a4e321aad67677f8d # v12
         with:
           directory: ${{ inputs.directory }}
           framework: ${{ inputs.framework }}

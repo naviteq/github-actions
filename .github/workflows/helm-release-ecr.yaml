@@ -98,13 +98,13 @@ jobs:
     steps:
       - name: Generate GitHub App token
         if: ${{ inputs.push_chart && inputs.bump_version_in_git }}
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         id: app-token
         with:
           app-id: ${{ secrets.GITHUB_APP_ID }}
           private-key: ${{ secrets.GITHUB_APP_KEY }}
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           token: ${{ steps.app-token.outputs.token != '' && steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
@@ -122,7 +122,7 @@ jobs:
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ inputs.push_chart }}
-        uses: aws-actions/configure-aws-credentials@v6
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
         with:
           role-to-assume: ${{ inputs.aws_role_to_assume }}
           aws-region: ${{ inputs.aws_region }}
@@ -130,7 +130,7 @@ jobs:
       - name: Login to Amazon ECR
         if: ${{ inputs.push_chart }}
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+        uses: aws-actions/amazon-ecr-login@183a1442edf41672e66566b7fc560e297a290896 # v2
 
       - name: Run OCI core
         id: core
