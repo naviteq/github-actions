@@ -15,16 +15,6 @@ on:
         description: ECR repository path
         type: string
         required: true
-      aws_region:
-        description: AWS region (required when push_chart is true)
-        type: string
-        required: false
-        default: ""
-      aws_role_to_assume:
-        description: AWS IAM role ARN for OIDC (required when push_chart is true)
-        type: string
-        required: false
-        default: ""
       push_chart:
         description: Push packaged chart to ECR
         type: boolean
@@ -64,6 +54,12 @@ on:
       GITHUB_APP_ID:
         required: false
       GITHUB_APP_KEY:
+        required: false
+      AWS_REGION:
+        description: AWS region (required when push_chart is true)
+        required: false
+      AWS_ROLE_TO_ASSUME:
+        description: AWS IAM role ARN for OIDC (required when push_chart is true)
         required: false
     outputs:
       chart_name:
@@ -112,8 +108,8 @@ jobs:
       - name: Validate ECR auth inputs
         if: ${{ inputs.push_chart }}
         env:
-          AWS_REGION: ${{ inputs.aws_region }}
-          AWS_ROLE_TO_ASSUME: ${{ inputs.aws_role_to_assume }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
         run: |
           if [[ -z "$AWS_REGION" || -z "$AWS_ROLE_TO_ASSUME" ]]; then
             echo "aws_region and aws_role_to_assume are required when push_chart=true"
@@ -124,8 +120,8 @@ jobs:
         if: ${{ inputs.push_chart }}
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
         with:
-          role-to-assume: ${{ inputs.aws_role_to_assume }}
-          aws-region: ${{ inputs.aws_region }}
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
         if: ${{ inputs.push_chart }}
@@ -134,7 +130,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@bedcc145fb6dde75af75285b410d98be685cdaf9
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@48ed6406e34de4eb818c7100067bc877e8ee24cb
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ecr_registry }}
