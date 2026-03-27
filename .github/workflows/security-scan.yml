@@ -98,7 +98,7 @@ permissions:
 jobs:
   codeql:
     name: CodeQL
-    uses: naviteq/github-actions/.github/workflows/security-codeql.yml@main
+    uses: naviteq/github-actions/.github/workflows/security-codeql.yml@3380b175a06eea738e0c73ea4cb216b4941b74b7
     with:
       RUNNER: ${{ inputs.codeql_runner != '' && inputs.codeql_runner || inputs.runner }}
       language: ${{ inputs.codeql_language }}
@@ -106,19 +106,19 @@ jobs:
   dependency-review:
     name: Dependency Review
     if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' || github.event_name == 'merge_group' }}
-    uses: naviteq/github-actions/.github/workflows/security-dependency-review.yml@main
+    uses: naviteq/github-actions/.github/workflows/security-dependency-review.yml@3380b175a06eea738e0c73ea4cb216b4941b74b7
     with:
       RUNNER: ${{ inputs.dependency_review_runner != '' && inputs.dependency_review_runner || inputs.runner }}
 
   gitleaks:
     name: Gitleaks
-    uses: naviteq/github-actions/.github/workflows/security-gitleaks.yml@main
+    uses: naviteq/github-actions/.github/workflows/security-gitleaks.yml@3380b175a06eea738e0c73ea4cb216b4941b74b7
     with:
       RUNNER: ${{ inputs.gitleaks_runner != '' && inputs.gitleaks_runner || inputs.runner }}
 
   trivy:
     name: Trivy
-    uses: naviteq/github-actions/.github/workflows/security-trivy.yml@main
+    uses: naviteq/github-actions/.github/workflows/security-trivy.yml@3380b175a06eea738e0c73ea4cb216b4941b74b7
     with:
       RUNNER: ${{ inputs.trivy_runner != '' && inputs.trivy_runner || inputs.runner }}
       scan_type: ${{ inputs.trivy_scan_type }}
@@ -131,7 +131,7 @@ jobs:
 
   checkov:
     name: Checkov
-    uses: naviteq/github-actions/.github/workflows/security-checkov.yaml@main
+    uses: naviteq/github-actions/.github/workflows/security-checkov.yaml@3380b175a06eea738e0c73ea4cb216b4941b74b7
     with:
       RUNNER: ${{ inputs.checkov_runner != '' && inputs.checkov_runner || inputs.runner }}
       directory: ${{ inputs.checkov_directory }}

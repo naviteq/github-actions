@@ -30,6 +30,39 @@ jobs:
         with:
           github_token: ${{ steps.app-token.outputs.token }}
 
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Pin self reusable references to released SHA
+        env:
+          RELEASE_TAG: ${{ steps.tag_version.outputs.new_tag }}
+        run: |
+          set -euo pipefail
+
+          RELEASE_SHA="$(git rev-list -n 1 "$RELEASE_TAG")"
+          echo "Pinning naviteq/github-actions reusable references to $RELEASE_SHA"
+
+          FILES=(
+            ".github/workflows/security-scan.yml"
+            ".github/workflows/helm-release-github.yaml"
+            ".github/workflows/helm-release-gar.yaml"
+            ".github/workflows/helm-release-ecr.yaml"
+          )
+
+          for file in "${FILES[@]}"; do
+            perl -i -pe "s#(uses:\\s+naviteq/github-actions/.+?)@[[:alnum:]._-]+#\$1\\@${RELEASE_SHA}#g" "$file"
+          done
+
+      - name: Commit pinned self references
+        uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7
+        with:
+          branch: ${{ github.ref_name }}
+          commit_message: "chore: pin self reusable references to ${{ steps.tag_version.outputs.new_tag }} SHA [skip ci]"
+          file_pattern: ".github/workflows/security-scan.yml .github/workflows/helm-release-github.yaml .github/workflows/helm-release-gar.yaml .github/workflows/helm-release-ecr.yaml"
+
       - name: Create a GitHub release
         uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
         with:
