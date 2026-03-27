@@ -4,3 +4,10 @@ repos:
     rev: v1.7.11 # https://github.com/rhysd/actionlint/blob/v1.7.11/docs/install.md
     hooks:
       - id: actionlint-system
+  - repo: local
+    hooks:
+      - id: pin-self-action-shas
+        name: Pin self action references to current SHA
+        entry: scripts/pin-self-action-shas.sh
+        language: script
+        files: ^\.github/(workflows/.*\.ya?ml|actions/.*/action\.ya?ml)$
