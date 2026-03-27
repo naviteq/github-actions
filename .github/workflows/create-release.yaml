@@ -60,6 +60,9 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7
         with:
           branch: ${{ github.ref_name }}
+          commit_user_name: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot]', steps.app-token.outputs.app-slug) || 'github-actions[bot]' }}
+          commit_user_email: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot]@users.noreply.github.com', steps.app-token.outputs.app-slug) || 'github-actions[bot]@users.noreply.github.com' }}
+          commit_author: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot] <{0}[bot]@users.noreply.github.com>', steps.app-token.outputs.app-slug) || 'github-actions[bot] <github-actions[bot]@users.noreply.github.com>' }}
           commit_message: "chore: pin self reusable references to ${{ steps.tag_version.outputs.new_tag }} SHA [skip ci]"
           file_pattern: ".github/workflows/security-scan.yml .github/workflows/helm-release-github.yaml .github/workflows/helm-release-gar.yaml .github/workflows/helm-release-ecr.yaml"
 

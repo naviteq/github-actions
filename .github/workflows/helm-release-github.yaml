@@ -113,7 +113,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@b22353195d721a9b081039be12ec0ebb038dbe8c
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@f281e51c81dc501c721ff553402dc3b4eab8c68e
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ghcr_registry }}
@@ -124,3 +124,6 @@ jobs:
           lint_enabled: ${{ inputs.lint_enabled }}
           lint_values_file: ${{ inputs.lint_values_file }}
           chart_version: ${{ inputs.chart_version }}
+          commit_user_name: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot]', steps.app-token.outputs.app-slug) || github.actor }}
+          commit_user_email: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot]@users.noreply.github.com', steps.app-token.outputs.app-slug) || format('{0}@users.noreply.github.com', github.actor) }}
+          commit_author: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot] <{0}[bot]@users.noreply.github.com>', steps.app-token.outputs.app-slug) || format('{0} <{0}@users.noreply.github.com>', github.actor) }}
