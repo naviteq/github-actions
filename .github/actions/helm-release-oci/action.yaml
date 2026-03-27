@@ -1,3 +1,4 @@
+---
 name: Helm Release OCI Core
 description: Common Helm OCI release logic without provider-specific authentication
 
@@ -33,6 +34,30 @@ inputs:
     default: ""
   chart_version:
     description: Helm chart version (overrides appVersion-derived version when provided)
+    required: false
+    default: ""
+  commit_author:
+    description: Commit author in "Name <email>" format for version bump commit
+    required: false
+    default: ""
+  commit_user_name:
+    description: Commit username for version bump commit
+    required: false
+    default: ""
+  commit_user_email:
+    description: Commit email for version bump commit
+    required: false
+    default: ""
+  commiter_author:
+    description: Deprecated alias for commit_author
+    required: false
+    default: ""
+  commiter_user_name:
+    description: Deprecated alias for commit_user_name
+    required: false
+    default: ""
+  commiter_user_email:
+    description: Deprecated alias for commit_user_email
     required: false
     default: ""
 
@@ -159,6 +184,9 @@ runs:
       uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7
       with:
         branch: ${{ inputs.bump_version_git_branch != '' && inputs.bump_version_git_branch || github.ref_name }}
+        commit_user_name: ${{ inputs.commit_user_name != '' && inputs.commit_user_name || inputs.commiter_user_name }}
+        commit_user_email: ${{ inputs.commit_user_email != '' && inputs.commit_user_email || inputs.commiter_user_email }}
+        commit_author: ${{ inputs.commit_author != '' && inputs.commit_author || inputs.commiter_author }}
         commit_message: "Helm bumped up version and appVersion [skip ci]"
         file_pattern: "${{ inputs.chart_path }}/Chart.yaml"
 
