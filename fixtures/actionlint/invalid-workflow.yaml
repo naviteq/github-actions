@@ -1,9 +1,0 @@
-name: Invalid Actionlint Fixture
-on: workflow_dispatch
-
-jobs:
-  broken:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Missing uses value
-        uses:

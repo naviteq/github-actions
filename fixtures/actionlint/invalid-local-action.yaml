@@ -1,7 +1,0 @@
-name: Broken Composite Action
-description: Fixture used to prove local action validation fails.
-
-runs:
-  using: composite
-  steps:
-    - name: Invalid composite step
