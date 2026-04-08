@@ -45,6 +45,11 @@ on:
         type: string
         required: false
         default: ""
+      app_version:
+        description: Helm chart appVersion (overrides Git-ref-derived version when provided)
+        type: string
+        required: false
+        default: ""
       runner:
         description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
         type: string
@@ -141,6 +146,7 @@ jobs:
           lint_enabled: ${{ inputs.lint_enabled }}
           lint_values_file: ${{ inputs.lint_values_file }}
           chart_version: ${{ inputs.chart_version }}
+          app_version: ${{ inputs.app_version }}
           commit_user_name: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot]', steps.app-token.outputs.app-slug) || github.actor }}
           commit_user_email: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot]@users.noreply.github.com', steps.app-token.outputs.app-slug) || format('{0}@users.noreply.github.com', github.actor) }}
           commit_author: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot] <{0}[bot]@users.noreply.github.com>', steps.app-token.outputs.app-slug) || format('{0} <{0}@users.noreply.github.com>', github.actor) }}
