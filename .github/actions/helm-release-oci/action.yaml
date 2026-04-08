@@ -36,6 +36,10 @@ inputs:
     description: Helm chart version (overrides appVersion-derived version when provided)
     required: false
     default: ""
+  app_version:
+    description: Helm chart appVersion (overrides Git-ref-derived version when provided)
+    required: false
+    default: ""
   commit_author:
     description: Commit author in "Name <email>" format for version bump commit
     required: false
@@ -127,15 +131,20 @@ runs:
       working-directory: ${{ inputs.chart_path }}
       env:
         CHART_VERSION_OVERRIDE: ${{ inputs.chart_version }}
+        APP_VERSION_OVERRIDE: ${{ inputs.app_version }}
       run: |
         if [[ "$GITHUB_REF_TYPE" == "branch" ]]
         then
-          if git show-ref --tags --quiet; then
+          if [[ -n "$APP_VERSION_OVERRIDE" ]]; then
+            LATEST_TAG="$APP_VERSION_OVERRIDE"
+          elif git show-ref --tags --quiet; then
             LATEST_TAG=$(git describe --tags "$(git rev-list --tags --max-count=1)")
           else
             LATEST_TAG="v0.0.0"
           fi
           APP_VERSION="$LATEST_TAG-pre+$(echo ${GITHUB_SHA} | cut -c1-7)"
+        elif [[ -n "$APP_VERSION_OVERRIDE" ]]; then
+          APP_VERSION="$APP_VERSION_OVERRIDE"
         else
           APP_VERSION="${GITHUB_REF_NAME##*/}"
         fi
