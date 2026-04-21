@@ -113,8 +113,8 @@ jobs:
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ inputs.ghcr_registry }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.token }}
+          username: ${{ steps.app-token.outputs.app-slug }}
+          password: ${{ steps.app-token.outputs.token }}
 
       - name: Run OCI core
         id: core
