@@ -188,16 +188,16 @@ runs:
         echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
 
     # Intentional: version bump commit runs only when chart push is enabled.
-    - name: Commit file to branch
-      if: ${{ inputs.push_chart == 'true' && inputs.bump_version_in_git == 'true' }}
-      uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7
-      with:
-        branch: ${{ inputs.bump_version_git_branch != '' && inputs.bump_version_git_branch || github.ref_name }}
-        commit_user_name: ${{ inputs.commit_user_name != '' && inputs.commit_user_name || inputs.commiter_user_name }}
-        commit_user_email: ${{ inputs.commit_user_email != '' && inputs.commit_user_email || inputs.commiter_user_email }}
-        commit_author: ${{ inputs.commit_author != '' && inputs.commit_author || inputs.commiter_author }}
-        commit_message: "Helm bumped up version and appVersion [skip ci]"
-        file_pattern: "${{ inputs.chart_path }}/Chart.yaml"
+    # - name: Commit file to branch
+    #   if: ${{ inputs.push_chart == 'true' && inputs.bump_version_in_git == 'true' }}
+    #   uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7
+    #   with:
+    #     branch: ${{ inputs.bump_version_git_branch != '' && inputs.bump_version_git_branch || github.ref_name }}
+    #     commit_user_name: ${{ inputs.commit_user_name != '' && inputs.commit_user_name || inputs.commiter_user_name }}
+    #     commit_user_email: ${{ inputs.commit_user_email != '' && inputs.commit_user_email || inputs.commiter_user_email }}
+    #     commit_author: ${{ inputs.commit_author != '' && inputs.commit_author || inputs.commiter_author }}
+    #     commit_message: "Helm bumped up version and appVersion [skip ci]"
+    #     file_pattern: "${{ inputs.chart_path }}/Chart.yaml"
 
     - name: Push chart
       id: push
