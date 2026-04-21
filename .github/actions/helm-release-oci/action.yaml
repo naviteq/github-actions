@@ -206,7 +206,7 @@ runs:
       env:
         PACKAGE_FILE: ${{ steps.package.outputs.package_file }}
       run: |  
-        jq -r '.auths["ghcr.io"].auth' ~/.docker/config.json | base64 --decode
+        echo "${{ github.token }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
         helm push "$PACKAGE_FILE" "oci://${{ inputs.oci_registry }}/${{ inputs.oci_repo }}"
 
     - name: Upload metadata
