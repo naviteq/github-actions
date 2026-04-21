@@ -113,12 +113,13 @@ jobs:
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ inputs.ghcr_registry }}
-          username: ${{ steps.app-token.outputs.app-slug }}
-          password: ${{ steps.app-token.outputs.token }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.token }}
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@5b8826cfc79c3a060cec9b2406886a248ee23fef
+        # uses: naviteq/github-actions/.github/actions/helm-release-oci@72e61924bf0ef4a10e104caa2012d655e18ba322
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@fix-github-helm-release
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ghcr_registry }}
