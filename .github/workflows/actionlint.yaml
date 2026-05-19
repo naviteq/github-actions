@@ -1,0 +1,65 @@
+---
+name: Actionlint
+on:
+  pull_request:
+    branches: ["main"]
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+
+permissions: {}
+
+concurrency:
+  group: actionlint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint workflows and local actions
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner != '' && inputs.runner || (vars.DEFAULT_ORG_RUNNER || 'ubuntu-24.04')) }}
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Run actionlint with reviewdog
+        uses: reviewdog/action-actionlint@6fb7acc99f4a1008869fa8a0f09cfca740837d9d # v1.72.0
+        with:
+          reporter: github-pr-check
+          fail_level: any
+          filter_mode: nofilter
+          actionlint_flags: "-config-file .github/actionlint.yaml"
+
+      - name: Ensure Node.js is available
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: 3.x
+
+      - name: Install pipx
+        run: |
+          python3 -m pip install pipx
+          python3 -m pipx ensurepath
+
+      - name: Run actionlint on workflows
+        uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2
+        with:
+          version: 1.7.12
+          matcher: true
+
+      - name: Validate local actions
+        if: ${{ always() }}
+        uses: naviteq/github-actions/.github/actions/action-lint@e1b9cb25e68e3a52d413d37fa9c579bbb4e4e45c
+        with:
+          actions: .github/actions/*/action.y*ml

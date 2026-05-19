@@ -1,6 +1,8 @@
-name: Checkov / Checkov
-
+---
+name: Security / Checkov
 on:
+  pull_request:
+    branches: ["main"]
   workflow_call:
     inputs:
       directory:
@@ -28,42 +30,88 @@ on:
         required: false
         type: string
         default: ""
-      RUNNER:
+      config_file:
+        description: Path to the Checkov configuration file
+        required: false
+        type: string
+        default: ""
+      upload_sarif:
+        description: Upload SARIF results to GitHub Security tab
+        required: false
+        type: boolean
+        default: false
+      runner:
         description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
         required: false
         type: string
-        default: ubuntu-latest
+        default: ubuntu-24.04
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: checkov-security-${{ github.workflow }}-${{ github.ref }}-${{ inputs.framework || 'all' }}
+  cancel-in-progress: true
 
 jobs:
   checkov:
-    name: Checkov Scan (${{ inputs.framework }})
-    runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
-
+    name: Checkov Scan (${{ inputs.framework || 'all' }})
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner != '' && inputs.runner || (vars.DEFAULT_ORG_RUNNER || 'ubuntu-24.04')) }}
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    env:
+      CHECKOV_DIRECTORY: ${{ inputs.directory || '.' }}
+      CHECKOV_FRAMEWORK: ${{ inputs.framework || 'all' }}
+      CHECKOV_SOFT_FAIL: ${{ inputs.soft_fail || false }}
+      CHECKOV_CHECK: ${{ inputs.check || '' }}
+      CHECKOV_SKIP_CHECK: ${{ inputs.skip_check || '' }}
+      CHECKOV_CONFIG_FILE: ${{ inputs.config_file || '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@8c07e78c64ddc2209d8c193a4e321aad67677f8d # v12
+        uses: bridgecrewio/checkov-action@4048c972aae68d0b983a48bb3479aab2d877b898 # v12.3102.0
         with:
-          directory: ${{ inputs.directory }}
-          framework: ${{ inputs.framework }}
+          directory: ${{ env.CHECKOV_DIRECTORY }}
+          framework: ${{ env.CHECKOV_FRAMEWORK }}
           quiet: true
+          output_format: cli,sarif
+          output_file_path: checkov-report.txt,results.sarif
           compact: true
-          soft_fail: ${{ inputs.soft_fail }}
-          check: ${{ inputs.check }}
-          skip_check: ${{ inputs.skip_check }}
+          soft_fail: ${{ env.CHECKOV_SOFT_FAIL }}
+          check: ${{ env.CHECKOV_CHECK }}
+          skip_check: ${{ env.CHECKOV_SKIP_CHECK }}
+          config_file: ${{ env.CHECKOV_CONFIG_FILE }}
 
       - name: Write summary
         if: always()
+        shell: bash
         run: |
           {
             echo "## Checkov IaC Scan"
             echo ""
-            echo "- Directory: \`${{ inputs.directory }}\`"
-            echo "- Frameworks: \`${{ inputs.framework }}\`"
-            echo "- Soft fail: \`${{ inputs.soft_fail }}\`"
+            echo "- Directory: \`${{ env.CHECKOV_DIRECTORY }}\`"
+            echo "- Frameworks: \`${{ env.CHECKOV_FRAMEWORK }}\`"
+            echo "- Soft fail: \`${{ env.CHECKOV_SOFT_FAIL }}\`"
+            echo ""
+
+            if [[ -s checkov-report.txt ]]; then
+              echo "### Scan Results"
+              echo "<details><summary>Click to expand</summary>"
+              echo ""
+              echo '```text'
+              cat checkov-report.txt
+              echo '```'
+              echo "</details>"
+            else
+              echo "_No Checkov CLI report was generated._"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
+        if: ${{ always() && inputs.upload_sarif }}
+        with:
+          sarif_file: results.sarif

@@ -1,0 +1,209 @@
+---
+name: Security / Scan Suite
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Default GitHub Actions runner for all scanners. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      codeql_runner:
+        description: GitHub Actions runner for CodeQL. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ""
+      codeql_language:
+        description: CodeQL language to scan
+        required: true
+        type: string
+      dependency_review_runner:
+        description: GitHub Actions runner for Dependency Review. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ""
+      gitleaks_runner:
+        description: GitHub Actions runner for Gitleaks. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ""
+      gitleaks_full_scan:
+        description: Run Gitleaks against the full Git history instead of only the supplied commit range.
+        required: false
+        type: boolean
+        default: false
+      gitleaks_base_ref:
+        description: Base ref (commit SHA, branch, or tag) Gitleaks diffs against. Defaults to the repository's default branch.
+        required: false
+        type: string
+        default: ""
+      gitleaks_head_ref:
+        description: Head ref (commit SHA, branch, or tag) marking the tip of the Gitleaks scan range. Defaults to the current commit (github.sha).
+        required: false
+        type: string
+        default: ""
+      trivy_runner:
+        description: GitHub Actions runner for Trivy. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ""
+      trivy_scan_type:
+        description: Trivy scan type
+        required: false
+        type: string
+        default: image
+      trivy_image_ref:
+        description: Container image reference for Trivy image scans
+        required: false
+        type: string
+        default: ""
+      trivy_scan_ref:
+        description: Path for Trivy filesystem scans
+        required: false
+        type: string
+        default: .
+      trivy_registry:
+        description: Container registry hostname for image scans
+        required: false
+        type: string
+        default: ""
+      trivy_registry_username:
+        description: Registry username for image scans
+        required: false
+        type: string
+        default: ""
+      checkov_directory:
+        description: Directory to scan with Checkov
+        required: false
+        type: string
+        default: .
+      checkov_runner:
+        description: GitHub Actions runner for Checkov. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ""
+      checkov_framework:
+        description: Checkov framework
+        required: false
+        type: string
+        default: all
+      checkov_soft_fail:
+        description: Do not fail Checkov on findings
+        required: false
+        type: boolean
+        default: false
+      checkov_check:
+        description: Run only specific Checkov checks
+        required: false
+        type: string
+        default: ""
+      checkov_skip_check:
+        description: Skip specific Checkov checks
+        required: false
+        type: string
+        default: ""
+      enable_codeql:
+        description: Enable CodeQL scanning
+        required: false
+        type: boolean
+        default: true
+      enable_dependency_review:
+        description: Enable Dependency Review scanning
+        required: false
+        type: boolean
+        default: true
+      enable_gitleaks:
+        description: Enable Gitleaks scanning
+        required: false
+        type: boolean
+        default: true
+      enable_trivy:
+        description: Enable Trivy scanning
+        required: false
+        type: boolean
+        default: true
+      enable_checkov:
+        description: Enable Checkov scanning
+        required: false
+        type: boolean
+        default: true
+      upload_sarif:
+        description: Upload SARIF results to GitHub Security tab
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      trivy_registry_password:
+        required: false
+
+permissions: {}
+
+jobs:
+  codeql:
+    name: CodeQL
+    if: ${{ inputs.enable_codeql }}
+    uses: ./.github/workflows/security-codeql.yaml
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    with:
+      runner: ${{ inputs.codeql_runner != '' && inputs.codeql_runner || inputs.runner }}
+      language: ${{ inputs.codeql_language }}
+
+  dependency-review:
+    name: Dependency Review
+    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target' || github.event_name == 'merge_group') && inputs.enable_dependency_review }}
+    uses: ./.github/workflows/security-dependency-review.yaml
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      runner: ${{ inputs.dependency_review_runner != '' && inputs.dependency_review_runner || inputs.runner }}
+
+  gitleaks:
+    name: Gitleaks
+    if: ${{ inputs.enable_gitleaks }}
+    uses: ./.github/workflows/security-gitleaks.yaml
+    permissions:
+      contents: read
+    with:
+      runner: ${{ inputs.gitleaks_runner != '' && inputs.gitleaks_runner || inputs.runner }}
+      full_scan: ${{ inputs.gitleaks_full_scan }}
+      base_ref: ${{ inputs.gitleaks_base_ref }}
+      head_ref: ${{ inputs.gitleaks_head_ref }}
+
+  trivy:
+    name: Trivy
+    if: ${{ inputs.enable_trivy }}
+    uses: ./.github/workflows/security-trivy.yaml
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    with:
+      runner: ${{ inputs.trivy_runner != '' && inputs.trivy_runner || inputs.runner }}
+      scan_type: ${{ inputs.trivy_scan_type }}
+      image_ref: ${{ inputs.trivy_image_ref }}
+      scan_ref: ${{ inputs.trivy_scan_ref }}
+      registry: ${{ inputs.trivy_registry }}
+      registry_username: ${{ inputs.trivy_registry_username }}
+      upload_sarif: ${{ inputs.upload_sarif }}
+    secrets:
+      registry_password: ${{ secrets.trivy_registry_password }}
+
+  checkov:
+    name: Checkov
+    if: ${{ inputs.enable_checkov }}
+    uses: ./.github/workflows/security-checkov.yaml
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    with:
+      runner: ${{ inputs.checkov_runner != '' && inputs.checkov_runner || inputs.runner }}
+      directory: ${{ inputs.checkov_directory }}
+      framework: ${{ inputs.checkov_framework }}
+      soft_fail: ${{ inputs.checkov_soft_fail }}
+      check: ${{ inputs.checkov_check }}
+      skip_check: ${{ inputs.checkov_skip_check }}

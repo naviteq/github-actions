@@ -1,0 +1,14 @@
+---
+name: Manual setup of release-please
+description: Installs release please and all required dependencies.
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      with:
+        node-version: "24"
+
+    - name: Install release-please CLI
+      run: npm install -g release-please@17.4.0
+      shell: bash

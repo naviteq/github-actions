@@ -1,5 +1,5 @@
-name: Helm Release GitHub
-
+---
+name: Helm Release / GitHub (OCI)
 on:
   workflow_call:
     inputs:
@@ -46,11 +46,6 @@ on:
         type: string
         required: false
         default: ""
-      app_version:
-        description: Helm chart appVersion (overrides Git-ref-derived version when provided)
-        type: string
-        required: false
-        default: ""
       runner:
         description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
         type: string
@@ -60,9 +55,9 @@ on:
       token:
         description: Token for GHCR login (required when push_chart is true)
         required: false
-      GITHUB_APP_ID:
+      github_app_id:
         required: false
-      GITHUB_APP_KEY:
+      github_app_key:
         required: false
     outputs:
       chart_name:
@@ -84,9 +79,15 @@ on:
         description: Pushed OCI reference
         value: ${{ jobs.release.outputs.upload_identifier }}
 
+permissions: {}
+
 jobs:
   release:
-    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || inputs.runner }}
+    name: Helm Release to GitHub
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: write
+      packages: write
     outputs:
       chart_name: ${{ steps.core.outputs.chart_name }}
       chart_version: ${{ steps.core.outputs.chart_version }}
@@ -97,20 +98,21 @@ jobs:
     steps:
       - name: Generate GitHub App token
         if: ${{ inputs.push_chart && inputs.bump_version_in_git }}
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         id: app-token
         with:
-          app-id: ${{ secrets.GITHUB_APP_ID }}
-          private-key: ${{ secrets.GITHUB_APP_KEY }}
+          client-id: ${{ secrets.github_app_id }}
+          private-key: ${{ secrets.github_app_key }}
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           token: ${{ steps.app-token.outputs.token != '' && steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
 
       - name: Login to GitHub Registry
         if: ${{ inputs.push_chart }}
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ${{ inputs.ghcr_registry }}
           username: ${{ github.actor }}
@@ -118,7 +120,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@5b8826cfc79c3a060cec9b2406886a248ee23fef
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@e1b9cb25e68e3a52d413d37fa9c579bbb4e4e45c
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ghcr_registry }}
@@ -129,7 +131,6 @@ jobs:
           lint_enabled: ${{ inputs.lint_enabled }}
           lint_values_file: ${{ inputs.lint_values_file }}
           chart_version: ${{ inputs.chart_version }}
-          app_version: ${{ inputs.app_version }}
           commit_user_name: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot]', steps.app-token.outputs.app-slug) || github.actor }}
           commit_user_email: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot]@users.noreply.github.com', steps.app-token.outputs.app-slug) || format('{0}@users.noreply.github.com', github.actor) }}
           commit_author: ${{ steps.app-token.outputs.app-slug != '' && format('{0}[bot] <{0}[bot]@users.noreply.github.com>', steps.app-token.outputs.app-slug) || format('{0} <{0}@users.noreply.github.com>', github.actor) }}
