@@ -45,11 +45,36 @@ on:
         required: false
         type: string
         default: ubuntu-24.04
+      full_scan:
+        description: Scan the full directory instead of only files changed between base_ref and head_ref.
+        required: false
+        type: boolean
+        default: false
+      base_ref:
+        description: Base ref (commit SHA, branch, or tag) to diff against when computing changed files. Defaults to the repository's default branch.
+        required: false
+        type: string
+        default: ""
+      head_ref:
+        description: Head ref (commit SHA, branch, or tag) marking the tip of the change range. Defaults to the current commit (github.sha).
+        required: false
+        type: string
+        default: ""
+      submodules:
+        description: Submodule checkout mode passed to actions/checkout. Accepts "true", "recursive", or "false".
+        required: false
+        type: string
+        default: "false"
+      enable_cache:
+        description: Cache the Checkov pip install between runs (keyed on the upstream action SHA).
+        required: false
+        type: boolean
+        default: true
 
 permissions: {}
 
 concurrency:
-  group: checkov-security-${{ github.workflow }}-${{ github.ref }}-${{ inputs.framework || 'all' }}
+  group: checkov-security-${{ github.workflow }}-${{ github.ref }}-${{ inputs.framework || 'all' }}-${{ inputs.full_scan || 'false' }}-${{ inputs.base_ref || 'default' }}-${{ inputs.head_ref || 'default' }}-${{ inputs.submodules || 'false' }}-${{ inputs.enable_cache && 'cache-on' || 'cache-off' }}
   cancel-in-progress: true
 
 jobs:
@@ -60,6 +85,7 @@ jobs:
       security-events: write
       actions: read
       contents: read
+      pull-requests: read
     env:
       CHECKOV_DIRECTORY: ${{ inputs.directory || '.' }}
       CHECKOV_FRAMEWORK: ${{ inputs.framework || 'all' }}
@@ -70,8 +96,210 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          submodules: ${{ inputs.submodules }}
 
-      - name: Run Checkov
+      - name: Cache Checkov install
+        if: ${{ inputs.enable_cache }}
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.local/share/checkov
+          key: checkov-${{ runner.os }}-py3-bridgecrewio-4048c972aae68d0b983a48bb3479aab2d877b898
+          restore-keys: |
+            checkov-${{ runner.os }}-py3-bridgecrewio-
+
+      - name: Resolve diff range
+        id: range
+        if: ${{ !inputs.full_scan }}
+        shell: bash
+        env:
+          BASE_REF_INPUT: ${{ inputs.base_ref }}
+          HEAD_REF_INPUT: ${{ inputs.head_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          BASE_REF="${BASE_REF_INPUT:-origin/${DEFAULT_BRANCH}}"
+          HEAD_REF="${HEAD_REF_INPUT:-${GITHUB_SHA}}"
+
+          BASE_SHA="$(git rev-parse "${BASE_REF}")"
+          HEAD_SHA="$(git rev-parse "${HEAD_REF}")"
+
+          {
+            echo "base_ref=${BASE_REF}"
+            echo "head_ref=${HEAD_REF}"
+            echo "base_sha=${BASE_SHA}"
+            echo "head_sha=${HEAD_SHA}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Detect changed IaC files
+        id: changed
+        if: ${{ !inputs.full_scan }}
+        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
+        with:
+          base: ${{ steps.range.outputs.base_sha }}
+          ref: ${{ steps.range.outputs.head_sha }}
+          list-files: json
+          filters: |
+            terraform:
+              - '**/*.tf'
+              - '**/*.tf.json'
+              - '**/*.tfvars'
+              - '**/*.tfvars.json'
+            kubernetes:
+              - '**/*.yaml'
+              - '**/*.yml'
+              - '**/*.json'
+            helm:
+              - '**/Chart.yaml'
+              - '**/Chart.yml'
+              - '**/values*.yaml'
+              - '**/values*.yml'
+              - '**/templates/**/*.yaml'
+              - '**/templates/**/*.yml'
+            cloudformation:
+              - '**/*.yaml'
+              - '**/*.yml'
+              - '**/*.json'
+              - '**/*.template'
+            dockerfile:
+              - '**/Dockerfile'
+              - '**/Dockerfile.*'
+            github_actions:
+              - '.github/workflows/**/*.yaml'
+              - '.github/workflows/**/*.yml'
+              - '.github/actions/**/action.yaml'
+              - '.github/actions/**/action.yml'
+            iac:
+              - '**/*.tf'
+              - '**/*.tf.json'
+              - '**/*.tfvars'
+              - '**/*.tfvars.json'
+              - '**/*.yaml'
+              - '**/*.yml'
+              - '**/*.json'
+              - '**/*.template'
+              - '**/Dockerfile'
+              - '**/Dockerfile.*'
+
+      - name: Resolve framework matches
+        id: resolved
+        if: ${{ !inputs.full_scan }}
+        shell: bash
+        env:
+          FRAMEWORK: ${{ env.CHECKOV_FRAMEWORK }}
+          DIRECTORY: ${{ env.CHECKOV_DIRECTORY }}
+          BASE_REF: ${{ steps.range.outputs.base_ref }}
+          HEAD_REF: ${{ steps.range.outputs.head_ref }}
+          TERRAFORM_FILES: ${{ steps.changed.outputs.terraform_files }}
+          KUBERNETES_FILES: ${{ steps.changed.outputs.kubernetes_files }}
+          HELM_FILES: ${{ steps.changed.outputs.helm_files }}
+          CLOUDFORMATION_FILES: ${{ steps.changed.outputs.cloudformation_files }}
+          DOCKERFILE_FILES: ${{ steps.changed.outputs.dockerfile_files }}
+          GITHUB_ACTIONS_FILES: ${{ steps.changed.outputs.github_actions_files }}
+          IAC_FILES: ${{ steps.changed.outputs.iac_files }}
+        run: |
+          set -uo pipefail
+
+          case "${FRAMEWORK}" in
+            terraform|terraform_plan) files_json="${TERRAFORM_FILES}" ;;
+            kubernetes)               files_json="${KUBERNETES_FILES}" ;;
+            helm)                     files_json="${HELM_FILES}" ;;
+            cloudformation)           files_json="${CLOUDFORMATION_FILES}" ;;
+            dockerfile)               files_json="${DOCKERFILE_FILES}" ;;
+            github_actions)           files_json="${GITHUB_ACTIONS_FILES}" ;;
+            *)                        files_json="${IAC_FILES}" ;;
+          esac
+
+          files_json="${files_json:-[]}"
+          mapfile -t matched < <(jq -r '.[]?' <<<"${files_json}")
+
+          printf 'Framework=%s — changed-files matched %d file(s):\n' "${FRAMEWORK}" "${#matched[@]}"
+          printf '  %s\n' "${matched[@]:-(none)}"
+
+          # Limit to files under the configured directory.
+          declare -a in_dir=()
+          for f in "${matched[@]}"; do
+            [[ -z "${f}" ]] && continue
+            if [[ "${DIRECTORY}" == "." || "${f}" == "${DIRECTORY%/}/"* ]]; then
+              in_dir+=("${f}")
+            fi
+          done
+
+          # For the helm framework, scanning individual templates is fragile —
+          # the chart must be rendered as a whole. Expand any matched file to
+          # the nearest ancestor directory containing Chart.yaml (or .yml).
+          if [[ "${FRAMEWORK}" == "helm" && ${#in_dir[@]} -gt 0 ]]; then
+            declare -A chart_dirs=()
+            for f in "${in_dir[@]}"; do
+              dir="$(dirname "${f}")"
+              while :; do
+                if [[ -f "${dir}/Chart.yaml" || -f "${dir}/Chart.yml" ]]; then
+                  chart_dirs["${dir}"]=1
+                  break
+                fi
+                [[ "${dir}" == "." || "${dir}" == "/" ]] && break
+                dir="$(dirname "${dir}")"
+              done
+            done
+            if [[ ${#chart_dirs[@]} -gt 0 ]]; then
+              in_dir=()
+              for d in "${!chart_dirs[@]}"; do
+                # For a root-level chart (".") scope to the canonical chart
+                # files only — otherwise git ls-files would pull in the
+                # entire repo. For nested charts, every tracked file under
+                # the chart directory is part of the rendering context.
+                if [[ "${d}" == "." ]]; then
+                  while IFS= read -r charted; do
+                    in_dir+=("${charted}")
+                  done < <(git ls-files -- 'Chart.yaml' 'Chart.yml' 'values*.yaml' 'values*.yml' 'templates' 'charts')
+                else
+                  while IFS= read -r charted; do
+                    in_dir+=("${charted}")
+                  done < <(git ls-files -- "${d}")
+                fi
+              done
+            fi
+          fi
+
+          # Deduplicate while preserving order.
+          declare -A seen=()
+          declare -a unique=()
+          for f in "${in_dir[@]}"; do
+            if [[ -z "${seen[${f}]:-}" ]]; then
+              seen[${f}]=1
+              unique+=("${f}")
+            fi
+          done
+
+          printf 'After directory filter & helm expansion (%d):\n' "${#unique[@]}"
+          printf '  %s\n' "${unique[@]:-(none)}"
+
+          : > checkov-files.txt
+          for f in "${unique[@]}"; do
+            printf '%s\n' "${f}" >> checkov-files.txt
+          done
+
+          {
+            if [[ ${#unique[@]} -eq 0 ]]; then
+              echo "has_changes=false"
+            else
+              echo "has_changes=true"
+            fi
+            echo "count=${#unique[@]}"
+            echo "base_ref=${BASE_REF}"
+            echo "head_ref=${HEAD_REF}"
+            echo 'files<<CHECKOV_FILES_EOF'
+            cat checkov-files.txt
+            echo 'CHECKOV_FILES_EOF'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Run Checkov (full scan)
+        if: ${{ inputs.full_scan }}
         uses: bridgecrewio/checkov-action@4048c972aae68d0b983a48bb3479aab2d877b898 # v12.3102.0
         with:
           directory: ${{ env.CHECKOV_DIRECTORY }}
@@ -85,19 +313,48 @@ jobs:
           skip_check: ${{ env.CHECKOV_SKIP_CHECK }}
           config_file: ${{ env.CHECKOV_CONFIG_FILE }}
 
+      - name: Run Checkov (changed files)
+        if: ${{ !inputs.full_scan && steps.resolved.outputs.has_changes == 'true' }}
+        uses: bridgecrewio/checkov-action@4048c972aae68d0b983a48bb3479aab2d877b898 # v12.3102.0
+        with:
+          directory: ${{ env.CHECKOV_DIRECTORY }}
+          file: ${{ steps.resolved.outputs.files }}
+          framework: ${{ env.CHECKOV_FRAMEWORK }}
+          quiet: true
+          output_format: cli,sarif
+          output_file_path: checkov-report.txt,results.sarif
+          compact: true
+          soft_fail: ${{ env.CHECKOV_SOFT_FAIL }}
+          check: ${{ env.CHECKOV_CHECK }}
+          skip_check: ${{ env.CHECKOV_SKIP_CHECK }}
+          config_file: ${{ env.CHECKOV_CONFIG_FILE }}
+
       - name: Write summary
         if: always()
         shell: bash
+        env:
+          SCAN_SCOPE: ${{ inputs.full_scan && 'full' || 'changed-files' }}
+          BASE_REF: ${{ steps.resolved.outputs.base_ref }}
+          HEAD_REF: ${{ steps.resolved.outputs.head_ref }}
+          CHANGED_COUNT: ${{ steps.resolved.outputs.count }}
+          HAS_CHANGES: ${{ steps.resolved.outputs.has_changes }}
         run: |
           {
             echo "## Checkov IaC Scan"
             echo ""
-            echo "- Directory: \`${{ env.CHECKOV_DIRECTORY }}\`"
-            echo "- Frameworks: \`${{ env.CHECKOV_FRAMEWORK }}\`"
-            echo "- Soft fail: \`${{ env.CHECKOV_SOFT_FAIL }}\`"
+            echo "- Directory: \`${CHECKOV_DIRECTORY}\`"
+            echo "- Frameworks: \`${CHECKOV_FRAMEWORK}\`"
+            echo "- Soft fail: \`${CHECKOV_SOFT_FAIL}\`"
+            echo "- Scope: \`${SCAN_SCOPE}\`"
+            if [[ "${SCAN_SCOPE}" == "changed-files" ]]; then
+              echo "- Range: \`${BASE_REF}...${HEAD_REF}\`"
+              echo "- Files scanned: \`${CHANGED_COUNT:-0}\`"
+            fi
             echo ""
 
-            if [[ -s checkov-report.txt ]]; then
+            if [[ "${SCAN_SCOPE}" == "changed-files" && "${HAS_CHANGES}" != "true" ]]; then
+              echo "_No IaC files changed in the supplied range; scan skipped._"
+            elif [[ -s checkov-report.txt ]]; then
               echo "### Scan Results"
               echo "<details><summary>Click to expand</summary>"
               echo ""
@@ -111,7 +368,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@68bde559dea0fdcac2102bfdf6230c5f70eb485e # v4.35.4
-        if: ${{ always() && inputs.upload_sarif }}
+        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4.35.5
+        if: ${{ always() && inputs.upload_sarif && hashFiles('results.sarif') != '' }}
         with:
           sarif_file: results.sarif

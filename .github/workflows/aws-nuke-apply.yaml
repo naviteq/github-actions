@@ -1,0 +1,516 @@
+---
+name: AWS Nuke / Apply
+# Apply-phase of the two-phase aws-nuke pattern.
+#
+# Triggered by a consumer-side trampoline workflow that matches an
+# `issue_comment` event against `^/approve\s+nuke-<run-id>$` and forwards the
+# extracted run id / comment body / commenter to this reusable workflow.
+#
+# `issue_comment` is NOT a valid `on:` trigger for reusable workflows, so the
+# trigger gate must live in the caller. This workflow re-validates every
+# claim made by the caller (regex, CODEOWNERS, hash, account) before
+# executing aws-nuke with --no-dry-run.
+on:
+  workflow_call:
+    inputs:
+      aws_account_id:
+        description: Declared AWS account ID. Verified via aws sts get-caller-identity before any destructive action.
+        type: string
+        required: true
+      aws_region:
+        description: AWS region used for STS / SNS calls.
+        type: string
+        required: false
+        default: us-east-1
+      nuke_config_path:
+        description: Path to the consumer-side aws-nuke.yaml config file (relative to repository root).
+        type: string
+        required: true
+      regions_allowlist:
+        description: >-
+          Explicit allowlist of regions (newline- or comma-separated). Re-validated against the
+          regions: block of the config file at apply time.
+        type: string
+        required: true
+      issue_number:
+        description: Audit issue number created by aws-nuke-plan.yaml.
+        type: number
+        required: true
+      plan_run_id:
+        description: GitHub Actions run id of the plan workflow (extracted from the approval comment).
+        type: string
+        required: true
+      plan_artifact_name:
+        description: Name of the plan artifact uploaded by aws-nuke-plan.yaml.
+        type: string
+        required: true
+      approval_comment_body:
+        description: >-
+          Raw body of the approval comment as forwarded from the caller workflow. Re-validated
+          against the strict regex `^/approve\s+nuke-<plan_run_id>$` before any destructive
+          action — fuzzy text such as "approved!" or "lgtm" must be rejected.
+        type: string
+        required: true
+      approval_actor:
+        description: GitHub login of the user who posted the approval comment. Verified against CODEOWNERS at apply time.
+        type: string
+        required: true
+      audit_topic_arn:
+        description: Optional SNS topic ARN. When set, a structured audit event is published on success or failure.
+        type: string
+        required: false
+        default: ""
+      paused:
+        description: Top-level pause switch. When true, the workflow exits early without running aws-nuke.
+        type: boolean
+        required: false
+        default: false
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
+      aws_nuke_version:
+        description: aws-nuke release version. Should match what the plan phase used.
+        type: string
+        required: false
+        default: 3.50.0
+      artifact_retention_days:
+        description: Apply-log artifact retention in days. Must be >= 90 for audit purposes.
+        type: number
+        required: false
+        default: 90
+    secrets:
+      aws_iam_role:
+        description: AWS IAM role ARN to assume via OIDC. Trust policy must restrict by repository, repository_owner, and ref.
+        required: true
+
+permissions: {}
+
+jobs:
+  apply:
+    name: aws-nuke apply
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    timeout-minutes: 60
+    steps:
+      - name: Honor pause switch
+        id: pause
+        env:
+          PAUSED_INPUT: ${{ inputs.paused }}
+          NUKE_FREEZE: ${{ vars.NUKE_FREEZE }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${PAUSED_INPUT}" == "true" || "${NUKE_FREEZE,,}" == "true" ]]; then
+            gh issue comment "${ISSUE}" \
+              --repo "${{ github.repository }}" \
+              --body "Apply skipped: pause switch is active (paused=${PAUSED_INPUT}, NUKE_FREEZE=${NUKE_FREEZE})."
+            echo "::notice::aws-nuke apply paused. Exiting." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure aws-nuke labels exist
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `gh issue edit --add-label` fails if the label is missing in the consumer repo.
+          # Plan phase normally creates these, but be defensive in case they were deleted
+          # or this apply is being run against a manually-created issue.
+          ensure_label() {
+            local name="$1" color="$2" desc="$3"
+            if gh label create "${name}" \
+                --repo "${{ github.repository }}" \
+                --color "${color}" \
+                --description "${desc}" 2>/dev/null; then
+              echo "Created label: ${name}"
+              return 0
+            fi
+            if gh label list --repo "${{ github.repository }}" \
+                --search "${name}" \
+                --json name \
+                --jq ".[] | select(.name == \"${name}\") | .name" \
+                | grep -qx "${name}"; then
+              echo "Label already present: ${name}"
+            else
+              echo "::error::Failed to ensure label '${name}' exists in ${{ github.repository }}." >&2
+              return 1
+            fi
+          }
+          ensure_label "nuke:pending"  "FBCA04" "aws-nuke: plan awaiting approval"
+          ensure_label "nuke:applying" "0E8A16" "aws-nuke: apply in progress"
+          ensure_label "nuke:failed"   "B60205" "aws-nuke: apply failed"
+
+      - name: Production-account guard
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          PROD_ACCOUNTS: ${{ vars.RUNESTRA_PROD_ACCOUNTS }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${PROD_ACCOUNTS:-}" ]]; then
+            echo "::warning::RUNESTRA_PROD_ACCOUNTS org variable is unset. Production-account guard cannot enforce."
+            exit 0
+          fi
+          IFS=',' read -r -a accounts <<< "${PROD_ACCOUNTS}"
+          for acct in "${accounts[@]}"; do
+            trimmed="$(printf '%s' "$acct" | tr -d '[:space:]')"
+            if [[ -n "$trimmed" && "$trimmed" == "${AWS_ACCOUNT_ID}" ]]; then
+              gh issue comment "${ISSUE}" \
+                --repo "${{ github.repository }}" \
+                --body "Apply refused: account \`${AWS_ACCOUNT_ID}\` is listed in \`RUNESTRA_PROD_ACCOUNTS\`."
+              gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label nuke:failed || true
+              echo "::error::Refusing to run aws-nuke against production account ${AWS_ACCOUNT_ID}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Re-validate approval comment regex
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          COMMENT: ${{ inputs.approval_comment_body }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use grep -P -x with a fully anchored pattern. -x means the entire line must match;
+          # this rejects trailing text like "/approve nuke-123 please".
+          pattern='^/approve[[:space:]]+nuke-'"${PLAN_RUN_ID}"'$'
+          if ! printf '%s' "${COMMENT}" | grep -qE -x "${pattern}"; then
+            gh issue comment "${ISSUE}" \
+              --repo "${{ github.repository }}" \
+              --body "Apply refused: approval comment did not match the required format \`/approve nuke-${PLAN_RUN_ID}\`."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label nuke:failed || true
+            echo "::error::Approval comment rejected by regex." >&2
+            exit 1
+          fi
+
+      - name: Re-fetch CODEOWNERS and verify approver
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ inputs.approval_actor }}
+          ISSUE: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          default_branch="$(gh api "repos/${{ github.repository }}" --jq .default_branch)"
+          if [[ -z "${default_branch}" ]]; then
+            echo "::error::Could not resolve default branch." >&2
+            exit 1
+          fi
+
+          codeowners=""
+          for path in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
+            body="$(gh api "repos/${{ github.repository }}/contents/${path}?ref=${default_branch}" --jq '.content // empty' 2>/dev/null || true)"
+            if [[ -n "${body}" ]]; then
+              codeowners="$(printf '%s' "${body}" | base64 -d)"
+              echo "Loaded CODEOWNERS from ${path}@${default_branch}"
+              break
+            fi
+          done
+
+          if [[ -z "${codeowners}" ]]; then
+            gh issue comment "${ISSUE}" \
+              --repo "${{ github.repository }}" \
+              --body "Apply refused: no CODEOWNERS file found on default branch \`${default_branch}\`."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label nuke:failed || true
+            echo "::error::No CODEOWNERS file on default branch." >&2
+            exit 1
+          fi
+
+          # Collect @handles from non-comment lines.
+          owners="$(printf '%s\n' "${codeowners}" \
+            | sed 's/#.*$//' \
+            | grep -oE '@[A-Za-z0-9_./-]+' \
+            | sed 's#^@##' \
+            | sort -u || true)"
+
+          if [[ -z "${owners}" ]]; then
+            gh issue comment "${ISSUE}" \
+              --repo "${{ github.repository }}" \
+              --body "Apply refused: CODEOWNERS on \`${default_branch}\` lists no approvers."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label nuke:failed || true
+            echo "::error::CODEOWNERS lists no approvers." >&2
+            exit 1
+          fi
+
+          actor_lc="$(printf '%s' "${ACTOR}" | tr '[:upper:]' '[:lower:]')"
+          match=0
+          while IFS= read -r owner; do
+            owner_lc="$(printf '%s' "${owner}" | tr '[:upper:]' '[:lower:]')"
+            if [[ "${owner_lc}" == "${actor_lc}" ]]; then
+              match=1; break
+            fi
+            # Team membership check (handles "org/team" entries).
+            if [[ "${owner_lc}" == */* ]]; then
+              org="${owner_lc%/*}"
+              team="${owner_lc#*/}"
+              if gh api "orgs/${org}/teams/${team}/memberships/${ACTOR}" --jq '.state' 2>/dev/null | grep -qx active; then
+                match=1; break
+              fi
+            fi
+          done <<< "${owners}"
+
+          if (( match == 0 )); then
+            gh issue comment "${ISSUE}" \
+              --repo "${{ github.repository }}" \
+              --body "Apply refused: \`@${ACTOR}\` is not listed in CODEOWNERS on \`${default_branch}\`."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label nuke:failed || true
+            echo "::error::Approver ${ACTOR} not in CODEOWNERS." >&2
+            exit 1
+          fi
+
+      - name: In-progress marker
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          labels="$(gh issue view "${ISSUE}" --repo "${{ github.repository }}" --json labels --jq '[.labels[].name]')"
+          if echo "${labels}" | grep -qE '"nuke:applying"'; then
+            echo "::error::Issue ${ISSUE} already has nuke:applying label — refusing concurrent apply." >&2
+            exit 1
+          fi
+          gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label nuke:applying
+
+      - name: Checkout consumer repository
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install AWS CLI v2
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@bd824f078219efbc8b92219defdc2f5343b5ec2a
+
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        with:
+          role-to-assume: ${{ secrets.aws_iam_role }}
+          role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}-nuke-apply
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Verify caller identity matches declared account
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          DECLARED_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(aws sts get-caller-identity --query Account --output text)"
+          if [[ "${actual}" != "${DECLARED_ACCOUNT_ID}" ]]; then
+            echo "::error::STS account mismatch. Declared=${DECLARED_ACCOUNT_ID} actual=${actual}. Refusing to run." >&2
+            exit 1
+          fi
+
+      - name: Validate config regions against allowlist
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          NUKE_CONFIG: ${{ inputs.nuke_config_path }}
+          REGIONS_ALLOWLIST: ${{ inputs.regions_allowlist }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "${NUKE_CONFIG}" ]]; then
+            echo "::error::nuke_config_path '${NUKE_CONFIG}' not found in repository." >&2
+            exit 1
+          fi
+
+          mapfile -t allow < <(printf '%s\n' "${REGIONS_ALLOWLIST}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | sort -u)
+          mapfile -t config_regions < <(awk '
+            /^regions:[[:space:]]*$/ { in_block=1; next }
+            in_block && /^[a-zA-Z]/ { in_block=0 }
+            in_block && /^[[:space:]]*-/ { sub(/^[[:space:]]*-[[:space:]]*/, ""); gsub(/["'\'']/, ""); print }
+          ' "${NUKE_CONFIG}" | sort -u)
+
+          for r in "${config_regions[@]}"; do
+            allowed=0
+            for a in "${allow[@]}"; do
+              if [[ "${r}" == "${a}" ]]; then allowed=1; break; fi
+            done
+            if (( allowed == 0 )); then
+              echo "::error::Config region '${r}' is not in regions_allowlist." >&2
+              exit 1
+            fi
+          done
+
+      - name: Download plan artifact
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.plan_artifact_name }}
+          run-id: ${{ inputs.plan_run_id }}
+          github-token: ${{ github.token }}
+          path: plan
+
+      - name: Verify plan hash against audit issue
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f plan/resource-set.txt ]]; then
+            echo "::error::plan artifact missing resource-set.txt." >&2
+            exit 1
+          fi
+
+          recomputed="$(sha256sum plan/resource-set.txt | awk '{print $1}')"
+          embedded="$(gh issue view "${ISSUE}" --repo "${{ github.repository }}" --json body --jq .body \
+            | grep -oE 'nuke:hash=[0-9a-f]{64}' \
+            | head -n1 \
+            | sed 's/^nuke:hash=//')"
+
+          if [[ -z "${embedded}" ]]; then
+            gh issue comment "${ISSUE}" \
+              --repo "${{ github.repository }}" \
+              --body "Apply refused: no hash marker found in issue body."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label nuke:failed --remove-label nuke:applying || true
+            echo "::error::Hash marker not found in issue body." >&2
+            exit 1
+          fi
+
+          if [[ "${recomputed}" != "${embedded}" ]]; then
+            gh issue comment "${ISSUE}" \
+              --repo "${{ github.repository }}" \
+              --body "Apply refused: plan artifact hash \`${recomputed}\` does not match issue-recorded hash \`${embedded}\`. Resource set drifted — re-plan before approving."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label nuke:failed --remove-label nuke:applying || true
+            echo "::error::Hash mismatch: recomputed=${recomputed} embedded=${embedded}" >&2
+            exit 1
+          fi
+
+          echo "Hash verified: ${recomputed}"
+
+      - name: Install aws-nuke
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@bd824f078219efbc8b92219defdc2f5343b5ec2a
+        with:
+          version: ${{ inputs.aws_nuke_version }}
+
+      - name: Run aws-nuke (destructive)
+        id: nuke
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        continue-on-error: true
+        env:
+          NUKE_CONFIG: ${{ inputs.nuke_config_path }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          # stdbuf forces line buffering so progress is visible live in the workflow log
+          # — destructive runs can take a long time and silent steps look stuck. Tee
+          # preserves the full apply log file for upload as an artifact.
+          stdbuf -oL -eL aws-nuke run \
+            --config "${NUKE_CONFIG}" \
+            --no-dry-run \
+            --no-prompt \
+            --log-level info \
+            2>&1 | tee nuke-apply.log
+          rc=${PIPESTATUS[0]}
+          echo "nuke_exit_code=${rc}" >> "$GITHUB_OUTPUT"
+          if (( rc == 0 )); then
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Upload apply log
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        id: upload_log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: aws-nuke-apply-${{ github.run_id }}
+          path: nuke-apply.log
+          retention-days: ${{ inputs.artifact_retention_days }}
+          if-no-files-found: warn
+
+      - name: Publish audit event
+        if: ${{ steps.pause.outputs.skip != 'true' && inputs.audit_topic_arn != '' }}
+        env:
+          AUDIT_TOPIC_ARN: ${{ inputs.audit_topic_arn }}
+          STATUS: ${{ steps.nuke.outputs.status }}
+          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          REGIONS: ${{ inputs.regions_allowlist }}
+          ACTOR: ${{ inputs.approval_actor }}
+          RUN_ID: ${{ github.run_id }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload="$(jq -n \
+            --arg account "${AWS_ACCOUNT_ID}" \
+            --arg regions "${REGIONS}" \
+            --arg actor "${ACTOR}" \
+            --arg status "${STATUS}" \
+            --arg apply_run "${RUN_ID}" \
+            --arg plan_run "${PLAN_RUN_ID}" \
+            --arg repo "${{ github.repository }}" \
+            '{
+              event: "aws-nuke-apply",
+              account: $account,
+              regions: $regions,
+              actor: $actor,
+              status: $status,
+              apply_run_id: $apply_run,
+              plan_run_id: $plan_run,
+              repository: $repo
+            }')"
+          aws sns publish \
+            --topic-arn "${AUDIT_TOPIC_ARN}" \
+            --message "${payload}" \
+            --subject "aws-nuke-apply ${STATUS}" || echo "::warning::SNS publish failed; continuing."
+
+      - name: Success path — close audit issue
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.nuke.outputs.status == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue comment "${ISSUE}" \
+            --repo "${{ github.repository }}" \
+            --body "Apply succeeded. Log artifact: \`aws-nuke-apply-${{ github.run_id }}\` (run: ${RUN_URL})."
+          gh issue edit "${ISSUE}" --repo "${{ github.repository }}" \
+            --remove-label nuke:pending \
+            --remove-label nuke:applying || true
+          gh issue close "${ISSUE}" --repo "${{ github.repository }}"
+
+      - name: Failure path — leave issue open
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.nuke.outputs.status == 'failure' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EXIT_CODE: ${{ steps.nuke.outputs.nuke_exit_code }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue comment "${ISSUE}" \
+            --repo "${{ github.repository }}" \
+            --body "Apply failed (exit ${EXIT_CODE}). Log artifact: \`aws-nuke-apply-${{ github.run_id }}\` (run: ${RUN_URL}). Issue remains open."
+          gh issue edit "${ISSUE}" --repo "${{ github.repository }}" \
+            --add-label nuke:failed \
+            --remove-label nuke:applying || true
+          exit 1
