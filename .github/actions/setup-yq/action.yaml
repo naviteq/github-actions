@@ -1,0 +1,45 @@
+---
+name: Setup yq
+description: Install mikefarah/yq YAML processor on the runner
+
+inputs:
+  version:
+    description: yq version to install (e.g. v4.48.1)
+    required: false
+    default: v4.48.1
+
+outputs:
+  version:
+    description: Installed yq version string
+    value: ${{ steps.verify.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install yq
+      shell: bash
+      env:
+        YQ_VERSION: ${{ inputs.version }}
+      run: |
+        set -e -x
+        sudo apt-get update
+        sudo apt-get install -y wget
+        case "$RUNNER_ARCH" in
+          X64) ASSET_ARCH="amd64" ;;
+          X86) ASSET_ARCH="amd64" ;;
+          ARM64) ASSET_ARCH="arm64" ;;
+          *)
+            echo "Unsupported architecture: $RUNNER_ARCH"
+            exit 1
+            ;;
+        esac
+        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        sudo wget -q -O /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_${OS}_${ASSET_ARCH}"
+        sudo chmod +x /usr/local/bin/yq
+
+    - name: Verify yq installation
+      id: verify
+      shell: bash
+      run: |
+        yq --version
+        echo "version=$(yq --version)" >> "$GITHUB_OUTPUT"

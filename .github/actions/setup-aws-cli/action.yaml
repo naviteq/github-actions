@@ -1,0 +1,94 @@
+---
+name: Setup AWS CLI v2
+description: Install AWS CLI v2 on the runner (latest or specific version)
+
+inputs:
+  version:
+    description: >-
+      AWS CLI v2 version to install (e.g. 2.27.31). Use "latest" to always install
+      the most recent release.
+    required: false
+    default: latest
+
+outputs:
+  version:
+    description: Installed AWS CLI version string (e.g. 2.27.31)
+    value: ${{ steps.verify.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download and install AWS CLI v2
+      shell: bash
+      env:
+        AWS_CLI_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        case "$RUNNER_OS" in
+          Linux)
+            case "$RUNNER_ARCH" in
+              X64)   ARCH="x86_64" ;;
+              ARM64) ARCH="aarch64" ;;
+              *)
+                echo "Unsupported architecture: $RUNNER_ARCH" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$AWS_CLI_VERSION" = "latest" ]; then
+              URL="https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}.zip"
+            else
+              URL="https://awscli.amazonaws.com/awscli-exe-linux-${ARCH}-${AWS_CLI_VERSION}.zip"
+            fi
+            WORK_DIR="$(mktemp -d)"
+            curl -fsSL -o "${WORK_DIR}/awscli.zip" "$URL"
+            unzip -q "${WORK_DIR}/awscli.zip" -d "${WORK_DIR}"
+            "${WORK_DIR}/aws/install" \
+              --install-dir "${HOME}/.local/aws-cli" \
+              --bin-dir "${HOME}/.local/bin" \
+              --update
+            echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+            rm -rf "${WORK_DIR}"
+            ;;
+          macOS)
+            if [ "$AWS_CLI_VERSION" = "latest" ]; then
+              URL="https://awscli.amazonaws.com/AWSCLIV2.pkg"
+            else
+              URL="https://awscli.amazonaws.com/AWSCLIV2-${AWS_CLI_VERSION}.pkg"
+            fi
+            WORK_DIR="$(mktemp -d)"
+            curl -fsSL -o "${WORK_DIR}/AWSCLIV2.pkg" "$URL"
+            sudo installer -pkg "${WORK_DIR}/AWSCLIV2.pkg" -target /
+            rm -rf "${WORK_DIR}"
+            ;;
+          *)
+            echo "Unsupported OS: $RUNNER_OS" >&2
+            exit 1
+            ;;
+        esac
+
+    - name: Verify AWS CLI installation
+      id: verify
+      shell: bash
+      run: |
+        aws --version
+        INSTALLED_VERSION="$(aws --version 2>&1 | awk '{print $1}' | cut -d/ -f2)"
+        echo "version=${INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+
+    - name: Write step summary
+      if: ${{ always() }}
+      shell: bash
+      env:
+        AWS_CLI_VERSION: ${{ inputs.version }}
+      run: |
+        INSTALLED_VERSION="$(aws --version 2>&1 | awk '{print $1}' | cut -d/ -f2)" || INSTALLED_VERSION="unknown"
+        {
+          echo "## Setup AWS CLI v2"
+          echo ""
+          echo "| Field | Value |"
+          echo "| ----- | ----- |"
+          echo "| Requested version | \`${AWS_CLI_VERSION}\` |"
+          echo "| Installed version | \`${INSTALLED_VERSION}\` |"
+          echo "| OS | \`${RUNNER_OS}\` |"
+          echo "| Architecture | \`${RUNNER_ARCH}\` |"
+        } >> "$GITHUB_STEP_SUMMARY"

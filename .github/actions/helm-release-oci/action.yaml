@@ -37,7 +37,11 @@ inputs:
     required: false
     default: ""
   app_version:
-    description: Helm chart appVersion (overrides Git-ref-derived version when provided)
+    description: >-
+      Helm chart appVersion override. When provided, uses this value directly.
+      When chart_version is provided but app_version is not, the existing
+      appVersion from Chart.yaml is preserved to prevent monorepo cross-chart
+      tag contamination (e.g. argo-cd tag polluting github-arc-scale-sets).
     required: false
     default: ""
   commit_author:
@@ -89,7 +93,7 @@ runs:
   using: composite
   steps:
     - name: Setup Helm
-      uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5
       with:
         version: v3.18.3
 
@@ -133,18 +137,24 @@ runs:
         CHART_VERSION_OVERRIDE: ${{ inputs.chart_version }}
         APP_VERSION_OVERRIDE: ${{ inputs.app_version }}
       run: |
-        if [[ "$GITHUB_REF_TYPE" == "branch" ]]
-        then
-          if [[ -n "$APP_VERSION_OVERRIDE" ]]; then
-            LATEST_TAG="$APP_VERSION_OVERRIDE"
-          elif git show-ref --tags --quiet; then
+        EXISTING_APP_VERSION="$(yq -r '.appVersion // ""' Chart.yaml)"
+
+        if [[ -n "$APP_VERSION_OVERRIDE" ]]; then
+          # Explicit app_version input takes highest priority
+          APP_VERSION="$APP_VERSION_OVERRIDE"
+        elif [[ -n "$CHART_VERSION_OVERRIDE" ]]; then
+          # When chart_version is overridden (monorepo pattern), preserve the
+          # chart's own appVersion from Chart.yaml to prevent cross-chart tag
+          # contamination (e.g. argo-cd-9.4.7 tag polluting github-arc-scale-sets).
+          # See: https://github.com/naviteq-ltd/helm-charts/issues/181
+          APP_VERSION="$EXISTING_APP_VERSION"
+        elif [[ "$GITHUB_REF_TYPE" == "branch" ]]; then
+          if git show-ref --tags --quiet; then
             LATEST_TAG=$(git describe --tags "$(git rev-list --tags --max-count=1)")
           else
             LATEST_TAG="v0.0.0"
           fi
           APP_VERSION="$LATEST_TAG-pre+$(echo ${GITHUB_SHA} | cut -c1-7)"
-        elif [[ -n "$APP_VERSION_OVERRIDE" ]]; then
-          APP_VERSION="$APP_VERSION_OVERRIDE"
         else
           APP_VERSION="${GITHUB_REF_NAME##*/}"
         fi

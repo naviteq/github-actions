@@ -1,0 +1,56 @@
+---
+name: Generate release-please defaults
+description: >-
+  Testable proxy for the inline defaults-generation logic in create-release.yaml.
+  Generates release-please-config.json and .release-please-manifest.json in the
+  current workspace if they are absent. The identical logic is inlined in
+  create-release.yaml to avoid self-referencing SHA-pinning issues in reusable
+  workflows; this action exists solely so z-test-create-release.yaml can exercise
+  and validate that generation path without duplicating it into test step scripts.
+runs:
+  using: composite
+  steps:
+    - name: Generate release-please config if absent
+      shell: bash
+      run: |
+        if [ -f release-please-config.json ]; then
+          echo "Using existing release-please-config.json"
+        else
+          echo "No release-please-config.json found — writing preset defaults"
+          cat > release-please-config.json << 'RELEASE_PLEASE_CONFIG'
+        {
+          "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+          "release-type": "simple",
+          "tag-prefix": "v",
+          "include-v-in-tag": true,
+          "changelog-sections": [
+            { "type": "feat",     "section": "Features" },
+            { "type": "fix",      "section": "Bug Fixes" },
+            { "type": "perf",     "section": "Performance Improvements" },
+            { "type": "revert",   "section": "Reverts" },
+            { "type": "docs",     "section": "Documentation",    "hidden": true },
+            { "type": "chore",    "section": "Miscellaneous",    "hidden": true },
+            { "type": "ci",       "section": "CI",               "hidden": true },
+            { "type": "style",    "section": "Styles",           "hidden": true },
+            { "type": "refactor", "section": "Code Refactoring", "hidden": true },
+            { "type": "test",     "section": "Tests",            "hidden": true },
+            { "type": "build",    "section": "Build System",     "hidden": true }
+          ],
+          "packages": { ".": {} }
+        }
+        RELEASE_PLEASE_CONFIG
+        fi
+
+    - name: Generate release-please manifest if absent
+      shell: bash
+      run: |
+        if [ -f .release-please-manifest.json ]; then
+          echo "Using existing .release-please-manifest.json"
+        else
+          echo "No .release-please-manifest.json found — generating from latest git tag"
+          LATEST_TAG=$(git tag --list "v*" --sort=-version:refname | head -1)
+          LATEST_TAG="${LATEST_TAG:-v0.0.0}"
+          LATEST_VERSION="${LATEST_TAG#v}"
+          echo "Seeding manifest at version: $LATEST_VERSION (from tag: $LATEST_TAG)"
+          printf '{ ".": "%s" }\n' "$LATEST_VERSION" > .release-please-manifest.json
+        fi
