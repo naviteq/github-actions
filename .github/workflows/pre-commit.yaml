@@ -1,0 +1,77 @@
+---
+name: Pre-commit
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      skip_hooks:
+        description: >
+          Comma-separated list of pre-commit hook IDs to skip.
+          Passed as the SKIP environment variable to pre-commit.
+          Use this to skip hooks that require tools not available on the runner
+          (e.g. Docker-dependent hooks on runners without Docker).
+        required: false
+        type: string
+        default: ""
+      flags:
+        description: Additional flags to pass to pre-commit.
+        required: false
+        type: string
+        default: "--all-files"
+      extra_pre_command:
+        description: Extra command to run before pre-commit.
+        required: false
+        type: string
+        default: ""
+      allow_failure:
+        description: Whether to allow the job to fail.
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      outcome:
+        description: Outcome from the pre-commit job
+        value: ${{ jobs.pre-commit.outputs.outcome }}
+
+permissions: {}
+
+jobs:
+  pre-commit:
+    name: Run pre-commit hooks
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+    outputs:
+      outcome: ${{ steps.run.outcome }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.x"
+
+      - name: Cache pre-commit environments
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit
+        continue-on-error: ${{ inputs.allow_failure }}
+        id: run
+        env:
+          SKIP: ${{ inputs.skip_hooks }}
+        run: |
+          set -e
+          eval "${{ inputs.extra_pre_command }}"
+          pre-commit run ${{ inputs.flags }}

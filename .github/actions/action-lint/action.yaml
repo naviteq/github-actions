@@ -1,0 +1,41 @@
+---
+name: composite-action-lint
+description: actionlint for composite actions
+
+inputs:
+  actions:
+    description: space separated list of paths to actions to lint, supports wildcards
+    default: .github/actions/*/action.yml
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+      with:
+        go-version: "stable"
+
+    - name: Install composite-action-lint
+      run: go install github.com/bettermarks/composite-action-lint/cmd/composite-action-lint@latest
+      shell: sh
+
+    - name: Check composite actions
+      shell: bash
+      run: |
+        shopt -s nullglob
+        set -x
+
+        actions=()
+        for pattern in ${{ inputs.actions }}; do
+          matches=( $pattern )
+          if (( ${#matches[@]} )); then
+            actions+=("${matches[@]}")
+          fi
+        done
+
+        if (( ${#actions[@]} == 0 )); then
+          echo "No composite actions matched '${{ inputs.actions }}'; skipping composite-action-lint."
+          exit 0
+        fi
+
+        composite-action-lint "${actions[@]}"

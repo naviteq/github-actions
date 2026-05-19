@@ -1,5 +1,5 @@
-name: Helm Release ECR
-
+---
+name: Helm Release / ECR
 on:
   workflow_call:
     inputs:
@@ -46,7 +46,10 @@ on:
         required: false
         default: ""
       app_version:
-        description: Helm chart appVersion (overrides Git-ref-derived version when provided)
+        description: >-
+          Helm chart appVersion override. When provided, uses this value directly.
+          When chart_version is provided but app_version is not, the existing
+          appVersion from Chart.yaml is preserved automatically (GH-181 fix).
         type: string
         required: false
         default: ""
@@ -56,14 +59,14 @@ on:
         required: false
         default: ubuntu-24.04
     secrets:
-      GITHUB_APP_ID:
+      github_app_id:
         required: false
-      GITHUB_APP_KEY:
+      github_app_key:
         required: false
-      AWS_REGION:
+      aws_region:
         description: AWS region (required when push_chart is true)
         required: false
-      AWS_ROLE_TO_ASSUME:
+      aws_role_to_assume:
         description: AWS IAM role ARN for OIDC (required when push_chart is true)
         required: false
     outputs:
@@ -86,9 +89,15 @@ on:
         description: Pushed OCI reference
         value: ${{ jobs.release.outputs.upload_identifier }}
 
+permissions: {}
+
 jobs:
   release:
-    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || inputs.runner }}
+    name: Helm Release to ECR
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: write
+      id-token: write
     outputs:
       chart_name: ${{ steps.core.outputs.chart_name }}
       chart_version: ${{ steps.core.outputs.chart_version }}
@@ -99,13 +108,14 @@ jobs:
     steps:
       - name: Generate GitHub App token
         if: ${{ inputs.push_chart && inputs.bump_version_in_git }}
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         id: app-token
         with:
-          app-id: ${{ secrets.GITHUB_APP_ID }}
-          private-key: ${{ secrets.GITHUB_APP_KEY }}
+          client-id: ${{ secrets.github_app_id }}
+          private-key: ${{ secrets.github_app_key }}
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           token: ${{ steps.app-token.outputs.token != '' && steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
@@ -113,29 +123,29 @@ jobs:
       - name: Validate ECR auth inputs
         if: ${{ inputs.push_chart }}
         env:
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_ROLE_TO_ASSUME: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws_region: ${{ secrets.aws_region }}
+          aws_role_to_assume: ${{ secrets.aws_role_to_assume }}
         run: |
-          if [[ -z "$AWS_REGION" || -z "$AWS_ROLE_TO_ASSUME" ]]; then
+          if [[ -z "$aws_region" || -z "$aws_role_to_assume" ]]; then
             echo "aws_region and aws_role_to_assume are required when push_chart=true"
             exit 1
           fi
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ inputs.push_chart }}
-        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ secrets.aws_role_to_assume }}
+          aws-region: ${{ secrets.aws_region }}
 
       - name: Login to Amazon ECR
         if: ${{ inputs.push_chart }}
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@183a1442edf41672e66566b7fc560e297a290896 # v2
+        uses: aws-actions/amazon-ecr-login@fa648b43de3d4d023bcb3f89ed6940096949c419 # v2.1.5
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@5b8826cfc79c3a060cec9b2406886a248ee23fef
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@01651c60674035f47b51f9f5145bf0728ec43b66
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ecr_registry }}

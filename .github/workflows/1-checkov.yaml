@@ -1,0 +1,23 @@
+---
+name: Security / Checkov
+on:
+  pull_request:
+    branches: ["main"]
+
+permissions: {}
+
+concurrency:
+  group: checkov-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checkov:
+    name: Checkov Scan (all)
+    uses: ./.github/workflows/security-checkov.yaml
+    with:
+      config_file: .github/.checkov.yml
+      runner: ${{ vars.DEFAULT_ORG_RUNNER }}
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
