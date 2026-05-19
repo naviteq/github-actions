@@ -9,6 +9,9 @@ on:
       tags:
         description: Generated image tags
         value: ${{ jobs.build.outputs.tags }}
+      image-ref:
+        description: Primary image reference in the form repo/image:<primary_tag>
+        value: ${{ jobs.build.outputs.image-ref }}
       digest:
         description: Built image digest
         value: ${{ jobs.build.outputs.digest }}
@@ -25,215 +28,325 @@ on:
         description: SBOM artifact name
         value: ${{ jobs.build.outputs.sbom_artifact_name }}
     inputs:
-      DOCKER_CONTEXT:
+      docker_context:
         description: Docker build context
         type: string
         required: false
         default: "."
-      DOCKER_PUSH:
+      docker_push:
         description: Do we should push the image or not
         type: boolean
         required: false
         default: true
-      REGISTRY:
+      registry:
         description: Registry URL
         type: string
         required: false
         default: ""
-      USERNAME:
+      username:
         description: Registry Username
         type: string
         required: false
         default: ""
-      IMAGE:
+      image:
         description: Image name
         type: string
         required: false
-      AWS_REGION:
+      aws_region:
         description: AWS Region
         type: string
         required: false
-      DOCKER_PLATFORMS:
+      docker_platforms:
         description: Target Docker platforms (e.g. linux/amd64,linux/arm64 or linux/arm/v7)
         type: string
         required: false
         default: "linux/amd64,linux/arm64"
-      RUNNER:
+      runner:
         description: GitHub Actions runner to use for the build job. Supports a single label or a JSON array of labels.
         type: string
         required: false
         default: "ubuntu-22.04"
-      DOCKERFILE:
+      dockerfile:
         description: Path to Dockerfile (relative to context). Leave empty to use default {context}/Dockerfile
         type: string
         required: false
         default: ""
-      BUILD_ARGS:
+      build_args:
         description: Docker build arguments (multiline KEY=value format)
         type: string
         required: false
         default: ""
-      TAG_FLAVOR_SUFFIX:
+      tag_flavor_suffix:
         description: Tag flavor suffix applied to all generated tags (e.g. -arm64, -debug)
         type: string
         required: false
         default: ""
-      TAG_FLAVOR_PREFIX:
+      tag_flavor_prefix:
         description: Tag flavor prefix applied to all generated tags
         type: string
         required: false
         default: ""
-      VERSION_TAG_V_PREFIX:
+      version_tag_v_prefix:
         description: Whether semver image tags should use a leading v prefix
         type: boolean
         required: false
         default: false
-      CUSTOM_TAGS:
+      custom_tags:
         description: Custom tags (newline separated)
         type: string
         required: false
         default: ""
-      SECURITY_SCAN_ENABLED:
+      security_scan_enabled:
         description: Enable container vulnerability scan
         type: boolean
         required: false
         default: false
-      SECURITY_SCAN_SEVERITY:
+      security_scan_severity:
         description: Comma-separated severities to scan and display (UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL)
         type: string
         required: false
         default: "CRITICAL"
-      SECURITY_SCAN_EXIT_CODE:
+      security_scan_exit_code:
         description: Exit code used by vulnerability scanner (use 0 to never fail)
         type: string
         required: false
         default: "1"
-      SBOM_ENABLED:
+      security_scan_trivyignore:
+        description:
+        type: string
+        required: false
+        default: ".trivyignore"
+      sbom_enabled:
         description: Enable SBOM generation
         type: boolean
         required: false
         default: false
-      SLACK_NOTIFY_ON_SUCCESS:
+      slack_notify_on_success:
         description: Send Slack notification on successful build
         type: boolean
         required: false
         default: false
+      cache_backend:
+        description: >
+          Cache backend: "gha" (default, GitHub Actions cache) or "registry"
+          (stores cache manifest in the container registry — recommended for
+          ECR-hosted images to avoid the 10 GB GHA cache limit).
+        type: string
+        required: false
+        default: "gha"
+      default_branch:
+        description: >
+          Default branch name used for cache fallback. Feature branches pull
+          cache from this branch on first run.
+        type: string
+        required: false
+        default: "main"
     secrets:
-      TOKEN:
+      token:
         description: Registry Token
         required: false
-      AWS_IAM_ROLE:
+      aws_iam_role:
         description: AWS IAM Role to assume
         required: false
-      BUILD_SECRETS:
+      build_secrets:
         description: Build secrets (multiline KEY=value format)
         required: false
-      SLACK_WEBHOOK:
+      slack_webhook:
         description: Slack incoming webhook URL
         required: false
+
+permissions: {}
 
 jobs:
   build:
     name: Docker build and push to registry
-    runs-on: ${{ startsWith(inputs.RUNNER, '[') && fromJSON(inputs.RUNNER) || inputs.RUNNER }}
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     outputs:
       tag-names: ${{ steps.meta.outputs.tag-names }}
       tags: ${{ steps.meta.outputs.tags }}
+      image-ref: ${{ steps.image_ref.outputs.image-ref }}
       digest: ${{ steps.build_push.outputs.digest }}
       imageid: ${{ steps.build_push.outputs.imageid }}
       metadata: ${{ steps.build_push.outputs.metadata }}
       scan_artifact_name: docker-build-trivy-scan-report
       sbom_artifact_name: docker-build-cyclonedx-sbom
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
+        with:
+          image: "public.ecr.aws/eks-distro-build-tooling/binfmt-misc:qemu-v9.2.2"
+          platforms: "arm64,arm"
       # Auth
       ## AWS
-      - uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6
-        if: inputs.DOCKER_PUSH && inputs.AWS_REGION != ''
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        if: inputs.aws_region != '' && (inputs.docker_push || inputs.cache_backend == 'registry')
         with:
-          role-to-assume: ${{ secrets.AWS_IAM_ROLE }}
+          role-to-assume: ${{ secrets.aws_iam_role }}
           role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}
-          aws-region: ${{ inputs.AWS_REGION }}
+          aws-region: ${{ inputs.aws_region }}
       - name: Login to Amazon ECR
-        if: inputs.DOCKER_PUSH && inputs.AWS_REGION != ''
+        if: inputs.aws_region != '' && (inputs.docker_push || inputs.cache_backend == 'registry')
         id: ecr
-        uses: aws-actions/amazon-ecr-login@183a1442edf41672e66566b7fc560e297a290896 # v2
+        uses: aws-actions/amazon-ecr-login@fa648b43de3d4d023bcb3f89ed6940096949c419 # v2.1.5
       ## GHCR
       - name: Login to GitHub Container Registry
-        if: inputs.DOCKER_PUSH && inputs.REGISTRY == 'ghcr.io' && inputs.AWS_REGION == ''
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: inputs.docker_push && inputs.registry == 'ghcr.io' && inputs.aws_region == ''
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
-          username: ${{ inputs.USERNAME != '' && inputs.USERNAME || github.actor }}
-          password: ${{ secrets.TOKEN }}
+          username: ${{ inputs.username != '' && inputs.username || github.actor }}
+          password: ${{ secrets.token }}
       ## Other
       - name: Login to registry (using username and token)
-        if: inputs.DOCKER_PUSH && inputs.REGISTRY != '' && inputs.REGISTRY != 'ghcr.io' && inputs.USERNAME != ''
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        if: inputs.docker_push && inputs.registry != '' && inputs.registry != 'ghcr.io' && inputs.username != ''
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
-          registry: ${{ inputs.REGISTRY }}
-          username: ${{ inputs.USERNAME }}
-          password: ${{ secrets.TOKEN }}
+          registry: ${{ inputs.registry }}
+          username: ${{ inputs.username }}
+          password: ${{ secrets.token }}
+      - name: Compute cache parameters
+        id: cache
+        shell: bash
+        run: |
+          image="${{ inputs.image != '' && inputs.image || github.repository }}"
+          BACKEND="${{ inputs.cache_backend }}"
+          default_branch="${{ inputs.default_branch }}"
+
+          sanitize_oci_tag() {
+            # OCI tag grammar: [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}
+            # Lowercase, replace any disallowed char with '-', cap at 128.
+            printf '%s' "$1" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed 's/[^a-z0-9_.-]/-/g' \
+              | cut -c1-128
+          }
+
+          REF_NAME_RAW="${{ github.ref_name }}"
+          REF_NAME="$(sanitize_oci_tag "$REF_NAME_RAW")"
+          DEFAULT_BRANCH_SAFE="$(sanitize_oci_tag "$default_branch")"
+
+          SCOPE="${REF_NAME}-${image}"
+          DEFAULT_SCOPE="${DEFAULT_BRANCH_SAFE}-${image}"
+
+          if [[ "$BACKEND" == "registry" ]]; then
+            if [[ -n "${{ inputs.aws_region }}" ]]; then
+              REGISTRY_BASE="${{ steps.ecr.outputs.registry }}/${image}"
+            else
+              REGISTRY_BASE="${{ inputs.registry }}/${image}"
+            fi
+
+            CACHE_TAG="buildcache-${REF_NAME}"
+            DEFAULT_CACHE_TAG="buildcache-${DEFAULT_BRANCH_SAFE}"
+
+            CACHE_FROM="type=registry,ref=${REGISTRY_BASE}:${CACHE_TAG}"
+            if [[ "$REF_NAME" != "$DEFAULT_BRANCH_SAFE" ]]; then
+              CACHE_FROM="${CACHE_FROM}
+          type=registry,ref=${REGISTRY_BASE}:${DEFAULT_CACHE_TAG}"
+            fi
+            CACHE_TO="type=registry,ref=${REGISTRY_BASE}:${CACHE_TAG},mode=max"
+          else
+            CACHE_FROM="type=gha,scope=${SCOPE}"
+            if [[ "$REF_NAME" != "$DEFAULT_BRANCH_SAFE" ]]; then
+              CACHE_FROM="${CACHE_FROM}
+          type=gha,scope=${DEFAULT_SCOPE}"
+            fi
+            CACHE_TO="type=gha,mode=max,scope=${SCOPE}"
+          fi
+
+          {
+            echo "cache-from<<CEOF"
+            echo "$CACHE_FROM"
+            echo "CEOF"
+            echo "cache-to<<CEOF"
+            echo "$CACHE_TO"
+            echo "CEOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Prepare Docker meta
         id: meta
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
         with:
-          images: ${{ inputs.AWS_REGION != '' && steps.ecr.outputs.registry || inputs.REGISTRY }}/${{ inputs.IMAGE != '' && inputs.IMAGE || github.repository }}
+          images: ${{ inputs.aws_region != '' && steps.ecr.outputs.registry || inputs.registry }}/${{ inputs.image != '' && inputs.image || github.repository }}
           flavor: |
             latest=false
-            prefix=${{ inputs.TAG_FLAVOR_PREFIX }}
-            suffix=${{ inputs.TAG_FLAVOR_SUFFIX }}
+            prefix=${{ inputs.tag_flavor_prefix }}
+            suffix=${{ inputs.tag_flavor_suffix }}
           tags: |
-            # Default branch push: add sha-<shortsha>
-            type=sha,prefix=${{ inputs.TAG_FLAVOR_PREFIX }}sha-,format=short,enable={{is_default_branch}}
-            # Feature branch push: add sha-<shortsha>
-            type=sha,prefix=${{ inputs.TAG_FLAVOR_PREFIX }}sha-,format=short,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/') }}
-            # Pull requests: add sha-<shortsha>
-            type=sha,prefix=${{ inputs.TAG_FLAVOR_PREFIX }}sha-,format=short,enable=${{ github.event_name == 'pull_request' }}
+            # Default branch push: add branch name (e.g. main)
+            type=ref,event=branch,enable={{is_default_branch}}
+            # Primary tag: always add sha-<shortsha> for a stable image reference
+            type=sha,prefix=${{ inputs.tag_flavor_prefix }}sha-,format=short
             # Feature branches: feature/<name> -> <name>
             type=match,pattern=^feature/(.+)$,group=1,value=${{ github.ref_name }},enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/') }}
             # Pull requests: PR #123 -> pr-123
             type=ref,event=pr,enable=${{ github.event_name == 'pull_request' }}
             # Version tag X.Y.Z -> X.Y.Z and vX.Y.Z
             type=semver,pattern={{version}}
-            type=semver,pattern=v{{version}},enable=${{ inputs.VERSION_TAG_V_PREFIX }}
+            type=semver,pattern=v{{version}},enable=${{ inputs.version_tag_v_prefix }}
             # Version tag X.Y.Z -> X.Y and vX.Y
             type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern=v{{major}}.{{minor}},enable=${{ inputs.VERSION_TAG_V_PREFIX }}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ inputs.version_tag_v_prefix }}
             # Version tag X.Y.Z -> X and vX
             type=semver,pattern={{major}}
-            type=semver,pattern=v{{major}},enable=${{ inputs.VERSION_TAG_V_PREFIX }}
+            type=semver,pattern=v{{major}},enable=${{ inputs.version_tag_v_prefix }}
+            # Version tag push (v*): add latest
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
             # Scheduled workflow: nightly tag
             type=schedule,pattern=nightly
             # Scheduled workflow: UTC date tag YYYYMMDD
             type=schedule,pattern={{date 'YYYYMMDD'}}
             # User-provided custom tags
-            ${{ inputs.CUSTOM_TAGS }}
+            ${{ inputs.custom_tags }}
+      - name: Resolve primary image ref
+        id: image_ref
+        shell: bash
+        env:
+          IMAGE_BASE: ${{ inputs.aws_region != '' && steps.ecr.outputs.registry || inputs.registry }}/${{ inputs.image != '' && inputs.image || github.repository }}
+          IMAGE_TAG_PREFIX: ${{ inputs.tag_flavor_prefix }}sha-
+          IMAGE_TAG_SUFFIX: ${{ inputs.tag_flavor_suffix }}
+          META_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            if [[ "$tag" == "${IMAGE_BASE}:${IMAGE_TAG_PREFIX}"*"$IMAGE_TAG_SUFFIX" ]]; then
+              echo "image-ref=$tag" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done <<< "$META_TAGS"
+
+          echo "failed to resolve sha-based image ref from metadata tags" >&2
+          exit 1
       - name: Build and push
         id: build_push
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7
         with:
-          platforms: ${{ inputs.DOCKER_PLATFORMS }}
-          context: ${{ inputs.DOCKER_CONTEXT }}
-          file: ${{ inputs.DOCKERFILE }}
-          push: ${{ inputs.DOCKER_PUSH }}
-          build-args: ${{ inputs.BUILD_ARGS }}
-          secrets: ${{ secrets.BUILD_SECRETS }}
+          platforms: ${{ inputs.docker_platforms }}
+          context: ${{ inputs.docker_context }}
+          file: ${{ inputs.dockerfile }}
+          push: ${{ inputs.docker_push }}
+          build-args: ${{ inputs.build_args }}
+          secrets: ${{ secrets.build_secrets }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           attests: |
             type=provenance,mode=max
             type=sbom
-          cache-from: type=gha,scope=${{ github.ref_name }}-${{ inputs.IMAGE }}
-          cache-to: type=gha,mode=max,scope=${{ github.ref_name }}-${{ inputs.IMAGE }}
+          cache-from: ${{ steps.cache.outputs.cache-from }}
+          cache-to: ${{ steps.cache.outputs.cache-to }}
       - name: Run Trivy vulnerability scanner
         id: security_scan
-        if: ${{ inputs.SECURITY_SCAN_ENABLED && inputs.DOCKER_PUSH }}
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        if: ${{ inputs.security_scan_enabled && inputs.docker_push }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_EXIT_ON_EOL: "1"
         with:
@@ -241,12 +354,13 @@ jobs:
           hide-progress: true
           format: "table"
           output: "scan-report.txt"
-          exit-code: "${{ inputs.SECURITY_SCAN_EXIT_CODE }}"
+          exit-code: "${{ inputs.security_scan_exit_code }}"
           vuln-type: "os,library"
-          severity: "${{ inputs.SECURITY_SCAN_SEVERITY }}"
+          severity: "${{ inputs.security_scan_severity }}"
+          trivyignores: "${{ inputs.security_scan_trivyignore }}"
       - name: Generate SBOM (CycloneDX)
-        if: ${{ always() && inputs.SBOM_ENABLED && inputs.DOCKER_PUSH }}
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        if: ${{ always() && inputs.sbom_enabled && inputs.docker_push }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: "${{ fromJSON(steps.meta.outputs.json).tags[0] }}"
           hide-progress: true
@@ -254,7 +368,7 @@ jobs:
           output: "sbom.json"
           exit-code: "0"
       - name: Publish Trivy Output to Summary
-        if: ${{ always() && inputs.SECURITY_SCAN_ENABLED && inputs.DOCKER_PUSH && hashFiles('scan-report.txt') != '' }}
+        if: ${{ always() && inputs.security_scan_enabled && inputs.docker_push && hashFiles('scan-report.txt') != '' }}
         run: |
           if [[ -s scan-report.txt ]]; then
             {
@@ -268,14 +382,14 @@ jobs:
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
       - name: Upload scan report artifact
-        if: ${{ always() && inputs.SECURITY_SCAN_ENABLED && inputs.DOCKER_PUSH && hashFiles('scan-report.txt') != '' }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        if: ${{ always() && inputs.security_scan_enabled && inputs.docker_push && hashFiles('scan-report.txt') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: docker-build-trivy-scan-report
           path: scan-report.txt
       - name: Upload SBOM artifact
-        if: ${{ always() && inputs.SBOM_ENABLED && inputs.DOCKER_PUSH && hashFiles('sbom.json') != '' }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        if: ${{ always() && inputs.sbom_enabled && inputs.docker_push && hashFiles('sbom.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: docker-build-cyclonedx-sbom
           path: sbom.json
@@ -284,9 +398,9 @@ jobs:
         if: ${{ always() }}
         shell: bash
         env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          slack_webhook: ${{ secrets.slack_webhook }}
         run: |
-          if [[ -n "${SLACK_WEBHOOK}" ]]; then
+          if [[ -n "${slack_webhook}" ]]; then
             echo true
             echo "has_webhook=true" >> "${GITHUB_OUTPUT}"
           else
@@ -294,11 +408,11 @@ jobs:
             echo "has_webhook=false" >> "${GITHUB_OUTPUT}"
           fi
       - name: Send Slack notification
-        if: ${{ always() && steps.check_slack_webhook.outputs.has_webhook == 'true' && (job.status != 'success' || inputs.SLACK_NOTIFY_ON_SUCCESS) }}
+        if: ${{ always() && steps.check_slack_webhook.outputs.has_webhook == 'true' && (job.status != 'success' || inputs.slack_notify_on_success) }}
         continue-on-error: true
-        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3
         with:
-          webhook: ${{ secrets.SLACK_WEBHOOK }}
+          webhook: ${{ secrets.slack_webhook }}
           webhook-type: incoming-webhook
           payload: |
             text: "Docker build ${{ job.status }}: ${{ github.repository }}"
@@ -316,6 +430,6 @@ jobs:
                       - type: mrkdwn
                         text: "*Ref:*\n${{ github.ref_type }}: ${{ github.ref_name }}"
                       - type: mrkdwn
-                        text: "*Image:*\n${{ inputs.IMAGE != '' && inputs.IMAGE || github.repository }}"
+                        text: "*Image:*\n${{ inputs.image != '' && inputs.image || github.repository }}"
                       - type: mrkdwn
                         text: "*Run:*\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

@@ -1,5 +1,5 @@
-name: Helm Release Google Artifact Registry (GAR)
-
+---
+name: Helm Release / Google Artifact Registry
 on:
   workflow_call:
     inputs:
@@ -61,9 +61,9 @@ on:
         required: false
         default: ubuntu-24.04
     secrets:
-      GITHUB_APP_ID:
+      github_app_id:
         required: false
-      GITHUB_APP_KEY:
+      github_app_key:
         required: false
     outputs:
       chart_name:
@@ -85,9 +85,15 @@ on:
         description: Pushed OCI reference
         value: ${{ jobs.release.outputs.upload_identifier }}
 
+permissions: {}
+
 jobs:
   release:
-    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || inputs.runner }}
+    name: Helm Release to GAR
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: write
+      id-token: write
     outputs:
       chart_name: ${{ steps.core.outputs.chart_name }}
       chart_version: ${{ steps.core.outputs.chart_version }}
@@ -98,13 +104,14 @@ jobs:
     steps:
       - name: Generate GitHub App token
         if: ${{ inputs.push_chart && inputs.bump_version_in_git }}
-        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         id: app-token
         with:
-          app-id: ${{ secrets.GITHUB_APP_ID }}
-          private-key: ${{ secrets.GITHUB_APP_KEY }}
+          client-id: ${{ secrets.github_app_id }}
+          private-key: ${{ secrets.github_app_key }}
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           token: ${{ steps.app-token.outputs.token != '' && steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
@@ -131,7 +138,7 @@ jobs:
 
       - name: Login to GAR
         if: ${{ inputs.push_chart }}
-        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ${{ inputs.gar_registry }}
           username: oauth2accesstoken
@@ -139,7 +146,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@5b8826cfc79c3a060cec9b2406886a248ee23fef
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@da4df43fbec5a971b01b32ab7e76329a1ea5f6dd
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.gar_registry }}
