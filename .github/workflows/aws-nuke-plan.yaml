@@ -1,0 +1,541 @@
+---
+name: AWS Nuke / Plan
+# Plan-phase of the two-phase aws-nuke pattern.
+#
+# Runs aws-nuke in dry-run mode against the consumer-supplied config, uploads
+# the full plan output as an artifact, computes a SHA-256 of the resource
+# set, and opens an audit issue with the hash embedded for later approval.
+#
+# Why two phases: the apply phase refuses to run unless the resource-set
+# hash recorded on this issue matches the resource set actually present at
+# apply time. This prevents resources created during the approval window
+# from being silently nuked.
+on:
+  workflow_call:
+    inputs:
+      aws_account_id:
+        description: Declared AWS account ID. Verified via aws sts get-caller-identity before any destructive action.
+        type: string
+        required: true
+      aws_region:
+        description: AWS region used for STS calls (sts.amazonaws.com is global; any valid region works).
+        type: string
+        required: false
+        default: us-east-1
+      nuke_config_path:
+        description: Path to the consumer-side aws-nuke.yaml config file (relative to the repository root).
+        type: string
+        required: true
+      regions_allowlist:
+        description: >-
+          Explicit allowlist of regions the consumer config is permitted to target. Newline- or
+          comma-separated. Never default to all regions. Validated against the regions: block of
+          the supplied config file.
+        type: string
+        required: true
+      assignee_resolution:
+        description: >-
+          Newline-separated Owner-tag-value -> github-handle fallback chain (e.g. "Owner=alice").
+          Used to assign the audit issue to the right owner. Falls back to default_assignee, then
+          to a maintainer of the consumer repo.
+        type: string
+        required: false
+        default: ""
+      default_assignee:
+        description: Fallback GitHub handle if no Owner-tag mapping matches.
+        type: string
+        required: false
+        default: ""
+      paused:
+        description: Top-level pause switch. When true, the workflow exits early without running aws-nuke.
+        type: boolean
+        required: false
+        default: false
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
+      aws_nuke_version:
+        description: aws-nuke release version (pinned, not "latest", so the hash is reproducible).
+        type: string
+        required: false
+        default: 3.50.0
+      artifact_retention_days:
+        description: Plan artifact retention in days. Must be >= 90 for audit purposes.
+        type: number
+        required: false
+        default: 90
+    secrets:
+      aws_iam_role:
+        description: AWS IAM role ARN to assume via OIDC. Trust policy must restrict by repository, repository_owner, and ref.
+        required: true
+    outputs:
+      issue_number:
+        description: The audit issue number, when created.
+        value: ${{ jobs.plan.outputs.issue_number }}
+      resource_set_hash:
+        description: SHA-256 of the planned resource set.
+        value: ${{ jobs.plan.outputs.resource_set_hash }}
+      artifact_name:
+        description: Name of the uploaded plan artifact.
+        value: ${{ jobs.plan.outputs.artifact_name }}
+      empty_plan:
+        description: "true when the dry-run produced zero resources (no issue created)."
+        value: ${{ jobs.plan.outputs.empty_plan }}
+
+permissions: {}
+
+jobs:
+  plan:
+    name: aws-nuke plan (dry-run)
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    timeout-minutes: 60
+    outputs:
+      issue_number: ${{ steps.create_issue.outputs.issue_number }}
+      resource_set_hash: ${{ steps.hash.outputs.resource_set_hash }}
+      artifact_name: ${{ steps.upload_meta.outputs.artifact_name }}
+      empty_plan: ${{ steps.extract.outputs.empty_plan }}
+    steps:
+      - name: Honor pause switch
+        id: pause
+        env:
+          PAUSED_INPUT: ${{ inputs.paused }}
+          NUKE_FREEZE: ${{ vars.NUKE_FREEZE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${PAUSED_INPUT}" == "true" || "${NUKE_FREEZE,,}" == "true" ]]; then
+            echo "::notice::aws-nuke plan paused (paused=${PAUSED_INPUT}, NUKE_FREEZE=${NUKE_FREEZE}). Exiting." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Production-account guard
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          PROD_ACCOUNTS: ${{ vars.RUNESTRA_PROD_ACCOUNTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${PROD_ACCOUNTS:-}" ]]; then
+            echo "::warning::RUNESTRA_PROD_ACCOUNTS org variable is unset. Production-account guard cannot enforce."
+            exit 0
+          fi
+          IFS=',' read -r -a accounts <<< "${PROD_ACCOUNTS}"
+          for acct in "${accounts[@]}"; do
+            trimmed="$(printf '%s' "$acct" | tr -d '[:space:]')"
+            if [[ -n "$trimmed" && "$trimmed" == "${AWS_ACCOUNT_ID}" ]]; then
+              echo "::error::Refusing to run aws-nuke against production account ${AWS_ACCOUNT_ID} (matched RUNESTRA_PROD_ACCOUNTS)" >&2
+              exit 1
+            fi
+          done
+
+      - name: Cron jitter
+        if: ${{ steps.pause.outputs.skip != 'true' && github.event_name == 'schedule' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          jitter=$(( RANDOM % 120 ))
+          echo "Sleeping ${jitter}s to spread scheduled runs."
+          sleep "${jitter}"
+
+      - name: Checkout consumer repository
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install AWS CLI v2
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@c47e122588cecca276e0487c10644f1579af3dac
+
+      - name: Configure AWS credentials (OIDC)
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        with:
+          role-to-assume: ${{ secrets.aws_iam_role }}
+          role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}-nuke-plan
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Verify caller identity matches declared account
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          DECLARED_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(aws sts get-caller-identity --query Account --output text)"
+          if [[ "${actual}" != "${DECLARED_ACCOUNT_ID}" ]]; then
+            echo "::error::STS account mismatch. Declared=${DECLARED_ACCOUNT_ID} actual=${actual}. Refusing to run." >&2
+            exit 1
+          fi
+          echo "Account verified: ${actual}"
+
+      - name: Validate config regions against allowlist
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          NUKE_CONFIG: ${{ inputs.nuke_config_path }}
+          REGIONS_ALLOWLIST: ${{ inputs.regions_allowlist }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "${NUKE_CONFIG}" ]]; then
+            echo "::error::nuke_config_path '${NUKE_CONFIG}' not found in repository." >&2
+            exit 1
+          fi
+
+          # Normalize allowlist: newlines or commas -> one entry per line.
+          mapfile -t allow < <(printf '%s\n' "${REGIONS_ALLOWLIST}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | sort -u)
+          if (( ${#allow[@]} == 0 )); then
+            echo "::error::regions_allowlist is empty. Explicit regions required." >&2
+            exit 1
+          fi
+
+          # Extract regions: from config (simple YAML grep; sufficient for the documented schema).
+          mapfile -t config_regions < <(awk '
+            /^regions:[[:space:]]*$/ { in_block=1; next }
+            in_block && /^[a-zA-Z]/ { in_block=0 }
+            in_block && /^[[:space:]]*-/ { sub(/^[[:space:]]*-[[:space:]]*/, ""); gsub(/["'\'']/, ""); print }
+          ' "${NUKE_CONFIG}" | sort -u)
+
+          if (( ${#config_regions[@]} == 0 )); then
+            echo "::error::nuke config has no regions: block; explicit regions required." >&2
+            exit 1
+          fi
+
+          for r in "${config_regions[@]}"; do
+            allowed=0
+            for a in "${allow[@]}"; do
+              if [[ "${r}" == "${a}" ]]; then allowed=1; break; fi
+            done
+            if (( allowed == 0 )); then
+              echo "::error::Config region '${r}' is not in regions_allowlist." >&2
+              exit 1
+            fi
+          done
+
+          printf '%s\n' "${config_regions[@]}" > regions.txt
+          echo "Validated $(wc -l < regions.txt) region(s) against allowlist."
+
+      - name: Install aws-nuke
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@c47e122588cecca276e0487c10644f1579af3dac
+        with:
+          version: ${{ inputs.aws_nuke_version }}
+
+      - name: Run aws-nuke dry-run
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          NUKE_CONFIG: ${{ inputs.nuke_config_path }}
+        shell: bash
+        run: |
+          # Drop -e so the pipeline below can fail without aborting before we
+          # capture the real aws-nuke exit code via PIPESTATUS.
+          set -uo pipefail
+          # Dry-run is the default for `aws-nuke run`; --no-dry-run would make it destructive.
+          # stdbuf forces line buffering so progress is visible live in the workflow log
+          # (long aws-nuke runs otherwise look stuck). Tee preserves file outputs for
+          # downstream hashing/parsing while echoing both streams to the GHA log.
+          stdbuf -oL -eL aws-nuke run \
+            --config "${NUKE_CONFIG}" \
+            --log-level info \
+            --log-format json \
+            --no-prompt \
+            2> >(tee nuke-plan.log >&2) \
+            | tee nuke-plan.json
+          rc=${PIPESTATUS[0]}
+          if (( rc != 0 )); then
+            echo "::warning::aws-nuke dry-run exited with rc=${rc}. Proceeding to parse partial output."
+          fi
+
+      - name: Extract resource set
+        id: extract
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # aws-nuke's JSON log lines carry resource events with msg ~= "would remove resource".
+          # We extract (region, type, id) tuples, sort deterministically, and write resource-set.txt.
+          jq -r '
+            select(type == "object") |
+            select(.msg // "" | test("would remove"; "i")) |
+            [
+              (.region // .Region // ""),
+              (.type // .ResourceType // ""),
+              (.name // .id // .ID // .ResourceID // "")
+            ] | @tsv
+          ' nuke-plan.json 2>/dev/null \
+            | awk -F'\t' 'NF==3 && $2 != "" && $3 != ""' \
+            | sort -u > resource-set.txt || true
+
+          count="$(wc -l < resource-set.txt | tr -d ' ')"
+          echo "resource_count=${count}" >> "$GITHUB_OUTPUT"
+          if [[ "${count}" == "0" ]]; then
+            echo "empty_plan=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "## aws-nuke plan"
+              echo ""
+              echo "No resources matched. No issue created."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "empty_plan=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute resource-set hash
+        id: hash
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(sha256sum resource-set.txt | awk '{print $1}')"
+          printf '%s\n' "${sha}" > resource-set.sha256
+          echo "resource_set_hash=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Hash: ${sha}"
+
+      - name: Upload plan artifact
+        id: upload
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: aws-nuke-plan-${{ github.run_id }}
+          path: |
+            nuke-plan.json
+            nuke-plan.log
+            resource-set.txt
+            resource-set.sha256
+            regions.txt
+          retention-days: ${{ inputs.artifact_retention_days }}
+          if-no-files-found: error
+
+      - name: Capture artifact name
+        id: upload_meta
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        shell: bash
+        run: |
+          echo "artifact_name=aws-nuke-plan-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Re-entrancy check
+        id: reentrancy
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          HASH: ${{ steps.hash.outputs.resource_set_hash }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use a stable machine-readable marker embedded in the issue body to detect duplicates,
+          # so fuzzy title matching can't be exploited.
+          marker="<!-- nuke:hash=${HASH} account=${AWS_ACCOUNT_ID} -->"
+          existing="$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label nuke:pending \
+            --state open \
+            --json number,body \
+            --jq ".[] | select(.body | contains(\"${marker}\")) | .number" \
+            | head -n1)"
+          if [[ -n "${existing}" ]]; then
+            echo "existing_issue=${existing}" >> "$GITHUB_OUTPUT"
+          else
+            echo "existing_issue=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post re-run notice on existing issue
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.reentrancy.outputs.existing_issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ARTIFACT: ${{ steps.upload_meta.outputs.artifact_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue comment "${ISSUE}" \
+            --repo "${{ github.repository }}" \
+            --body "Plan re-run produced the same resource set. Run: ${RUN_URL} (artifact: \`${ARTIFACT}\`)."
+
+      - name: Resolve assignees
+        id: assignees
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAP: ${{ inputs.assignee_resolution }}
+          DEFAULT: ${{ inputs.default_assignee }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Extract distinct Owner tag values from the plan JSON (best-effort).
+          mapfile -t owners < <(jq -r '
+            select(type == "object") |
+            (.tags // .Tags // {}) |
+            (."Owner" // ."owner" // empty)
+          ' nuke-plan.json 2>/dev/null | sort -u | grep -v '^$' || true)
+
+          assignees=()
+          while IFS= read -r line; do
+            line="${line%%#*}"
+            line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            [[ -z "$line" ]] && continue
+            key="${line%%=*}"
+            val="${line#*=}"
+            for o in "${owners[@]}"; do
+              if [[ "$o" == "$key" ]]; then
+                assignees+=("$val")
+              fi
+            done
+          done <<< "${MAP}"
+
+          if (( ${#assignees[@]} == 0 )) && [[ -n "${DEFAULT}" ]]; then
+            assignees+=("${DEFAULT}")
+          fi
+
+          if (( ${#assignees[@]} == 0 )); then
+            fallback="$(gh api "repos/${{ github.repository }}/collaborators?permission=maintain" --jq '.[0].login // empty' 2>/dev/null || true)"
+            if [[ -n "${fallback}" ]]; then
+              assignees+=("${fallback}")
+            fi
+          fi
+
+          # Deduplicate, drop empty entries.
+          if (( ${#assignees[@]} > 0 )); then
+            mapfile -t assignees < <(printf '%s\n' "${assignees[@]}" | grep -v '^$' | sort -u)
+          fi
+
+          printf '%s\n' "${assignees[@]:-}" > assignees.txt
+          csv="$(paste -sd ',' assignees.txt || true)"
+          echo "assignees_csv=${csv}" >> "$GITHUB_OUTPUT"
+
+      - name: Render issue body
+        id: render
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          HASH: ${{ steps.hash.outputs.resource_set_hash }}
+          ARTIFACT: ${{ steps.upload_meta.outputs.artifact_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESOURCE_COUNT: ${{ steps.extract.outputs.resource_count }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          short_hash="${HASH:0:12}"
+          regions_csv="$(paste -sd ',' regions.txt || true)"
+
+          {
+            echo "<!-- nuke:hash=${HASH} account=${AWS_ACCOUNT_ID} -->"
+            echo ""
+            echo "## aws-nuke plan pending approval"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Account | \`${AWS_ACCOUNT_ID}\` |"
+            echo "| Regions | \`${regions_csv}\` |"
+            echo "| Resource count | \`${RESOURCE_COUNT}\` |"
+            echo "| Plan run | [${RUN_ID}](${RUN_URL}) |"
+            echo "| Artifact | \`${ARTIFACT}\` (download from the plan run) |"
+            echo ""
+            echo "### Resource-set SHA-256"
+            echo ""
+            echo "\`\`\`"
+            echo "${HASH}"
+            echo "\`\`\`"
+            echo ""
+            echo "### Resources by type"
+            echo ""
+            awk -F'\t' '{print $2"\t"$1"\t"$3}' resource-set.txt \
+              | sort \
+              | awk -F'\t' 'BEGIN{prev=""} { if ($1 != prev) { if (prev != "") print ""; print "**" $1 "**"; prev=$1 } print "- `" $2 "` `" $3 "`" }'
+            echo ""
+            echo "### To approve"
+            echo ""
+            echo "Comment **exactly** the following on this issue:"
+            echo ""
+            echo "\`\`\`"
+            echo "/approve nuke-${RUN_ID}"
+            echo "\`\`\`"
+            echo ""
+            echo "- Ambiguous text (\"approved\", \"lgtm\", \"Approved!\") will be rejected."
+            echo "- Your handle must appear in the consumer repo's CODEOWNERS on the default branch."
+            echo "- If the resource set changes between plan and approval, apply will refuse on hash mismatch."
+            echo "- Title prefix \`nuke:pending\` (and this comment) are load-bearing — do not edit."
+          } > issue-body.md
+
+          short_regions_csv="$(printf '%s' "${regions_csv}" | head -c 60)"
+          echo "title=aws-nuke pending: account=${AWS_ACCOUNT_ID} regions=${short_regions_csv} hash=${short_hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure aws-nuke labels exist
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `gh issue create --label` (and `gh issue edit --add-label` in the apply phase)
+          # fail if the label is missing in the consumer repo. Create the three labels
+          # idempotently up front so first-time consumers don't need manual setup.
+          ensure_label() {
+            local name="$1" color="$2" desc="$3"
+            if gh label create "${name}" \
+                --repo "${{ github.repository }}" \
+                --color "${color}" \
+                --description "${desc}" 2>/dev/null; then
+              echo "Created label: ${name}"
+              return 0
+            fi
+            # Either it already exists, or creation failed for another reason.
+            # Verify presence so we surface real failures instead of swallowing them.
+            if gh label list --repo "${{ github.repository }}" \
+                --search "${name}" \
+                --json name \
+                --jq ".[] | select(.name == \"${name}\") | .name" \
+                | grep -qx "${name}"; then
+              echo "Label already present: ${name}"
+            else
+              echo "::error::Failed to ensure label '${name}' exists in ${{ github.repository }}." >&2
+              return 1
+            fi
+          }
+          ensure_label "nuke:pending"  "FBCA04" "aws-nuke: plan awaiting approval"
+          ensure_label "nuke:applying" "0E8A16" "aws-nuke: apply in progress"
+          ensure_label "nuke:failed"   "B60205" "aws-nuke: apply failed"
+
+      - name: Create audit issue
+        id: create_issue
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSIGNEES_CSV: ${{ steps.assignees.outputs.assignees_csv }}
+          ISSUE_TITLE: ${{ steps.render.outputs.title }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra=()
+          if [[ -n "${ASSIGNEES_CSV}" ]]; then
+            extra+=(--assignee "${ASSIGNEES_CSV}")
+          fi
+          url="$(gh issue create \
+            --repo "${{ github.repository }}" \
+            --label nuke:pending \
+            --title "${ISSUE_TITLE}" \
+            --body-file issue-body.md \
+            "${extra[@]}")"
+          num="${url##*/}"
+          echo "issue_number=${num}" >> "$GITHUB_OUTPUT"
+          echo "issue_url=${url}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## aws-nuke plan"
+            echo ""
+            echo "- Audit issue: ${url}"
+            echo "- Resource-set SHA-256: \`${{ steps.hash.outputs.resource_set_hash }}\`"
+            echo "- Artifact: \`aws-nuke-plan-${{ github.run_id }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

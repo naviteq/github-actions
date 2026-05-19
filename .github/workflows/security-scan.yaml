@@ -102,6 +102,31 @@ on:
         required: false
         type: string
         default: ""
+      checkov_full_scan:
+        description: Scan the full Checkov directory instead of only files changed between base_ref and head_ref.
+        required: false
+        type: boolean
+        default: false
+      checkov_base_ref:
+        description: Base ref (commit SHA, branch, or tag) Checkov diffs against. When empty, falls back to origin/<default-branch>.
+        required: false
+        type: string
+        default: ""
+      checkov_head_ref:
+        description: Head ref (commit SHA, branch, or tag) marking the tip of the Checkov scan range. When empty, falls back to github.sha.
+        required: false
+        type: string
+        default: ""
+      checkov_submodules:
+        description: Submodule checkout mode for the Checkov scan. Accepts "true", "recursive", or "false".
+        required: false
+        type: string
+        default: "false"
+      checkov_enable_cache:
+        description: Cache the Checkov pip install between runs.
+        required: false
+        type: boolean
+        default: true
       enable_codeql:
         description: Enable CodeQL scanning
         required: false
@@ -200,6 +225,7 @@ jobs:
       security-events: write
       actions: read
       contents: read
+      pull-requests: read
     with:
       runner: ${{ inputs.checkov_runner != '' && inputs.checkov_runner || inputs.runner }}
       directory: ${{ inputs.checkov_directory }}
@@ -207,3 +233,8 @@ jobs:
       soft_fail: ${{ inputs.checkov_soft_fail }}
       check: ${{ inputs.checkov_check }}
       skip_check: ${{ inputs.checkov_skip_check }}
+      full_scan: ${{ inputs.checkov_full_scan }}
+      base_ref: ${{ inputs.checkov_base_ref }}
+      head_ref: ${{ inputs.checkov_head_ref }}
+      submodules: ${{ inputs.checkov_submodules }}
+      enable_cache: ${{ inputs.checkov_enable_cache }}

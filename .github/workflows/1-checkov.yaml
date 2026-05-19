@@ -21,3 +21,4 @@ jobs:
       security-events: write
       actions: read
       contents: read
+      pull-requests: read

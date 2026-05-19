@@ -1,0 +1,125 @@
+---
+name: Install aws-nuke
+description: >-
+  Download a pinned release of ekristen/aws-nuke v3 from GitHub, verify its
+  SHA-256 checksum against the publisher-signed checksums.txt, and place the
+  binary on PATH. Linux x64/arm64 only.
+
+inputs:
+  version:
+    description: >-
+      aws-nuke release version (e.g. 3.50.0). Must match an existing release
+      tag of ekristen/aws-nuke. Use a pinned version, not "latest", so the
+      plan-phase resource-set hash is reproducible across runs.
+    required: true
+  checksum:
+    description: >-
+      Optional override for the expected SHA-256 of the downloaded archive.
+      When empty, the checksum is fetched from the release's checksums.txt
+      and verified inline. Provide a literal hex digest only to defend
+      against a compromised release checksums file.
+    required: false
+    default: ""
+
+outputs:
+  version:
+    description: Installed aws-nuke version string (e.g. 3.50.0)
+    value: ${{ steps.verify.outputs.version }}
+
+# renovate: datasource=github-releases depName=ekristen/aws-nuke
+# When bumping the default version downstream, validate the JSON output
+# schema is unchanged — the plan-phase hash relies on it.
+
+runs:
+  using: composite
+  steps:
+    - name: Download and verify aws-nuke
+      shell: bash
+      env:
+        AWS_NUKE_VERSION: ${{ inputs.version }}
+        AWS_NUKE_CHECKSUM_OVERRIDE: ${{ inputs.checksum }}
+      run: |
+        set -euo pipefail
+
+        if [[ "$RUNNER_OS" != "Linux" ]]; then
+          echo "aws-nuke install supports Linux runners only (got: $RUNNER_OS)" >&2
+          exit 1
+        fi
+
+        case "$RUNNER_ARCH" in
+          X64)   ARCH="amd64" ;;
+          ARM64) ARCH="arm64" ;;
+          *)
+            echo "Unsupported architecture: $RUNNER_ARCH" >&2
+            exit 1
+            ;;
+        esac
+
+        BASE_URL="https://github.com/ekristen/aws-nuke/releases/download/v${AWS_NUKE_VERSION}"
+        ARCHIVE="aws-nuke-v${AWS_NUKE_VERSION}-linux-${ARCH}.tar.gz"
+        WORK_DIR="$(mktemp -d)"
+        trap 'rm -rf "$WORK_DIR"' EXIT
+
+        echo "Downloading ${BASE_URL}/${ARCHIVE}"
+        curl -fsSL --retry 3 -o "${WORK_DIR}/${ARCHIVE}" "${BASE_URL}/${ARCHIVE}"
+
+        if [[ -n "${AWS_NUKE_CHECKSUM_OVERRIDE}" ]]; then
+          EXPECTED="${AWS_NUKE_CHECKSUM_OVERRIDE}"
+        else
+          echo "Fetching checksums.txt"
+          curl -fsSL --retry 3 -o "${WORK_DIR}/checksums.txt" "${BASE_URL}/checksums.txt"
+          EXPECTED="$(awk -v f="${ARCHIVE}" '$2 == f {print $1}' "${WORK_DIR}/checksums.txt")"
+        fi
+
+        if [[ -z "${EXPECTED}" ]]; then
+          echo "No SHA-256 found for ${ARCHIVE}" >&2
+          exit 1
+        fi
+
+        ACTUAL="$(sha256sum "${WORK_DIR}/${ARCHIVE}" | awk '{print $1}')"
+        if [[ "${EXPECTED}" != "${ACTUAL}" ]]; then
+          echo "Checksum mismatch for ${ARCHIVE}" >&2
+          echo "  expected: ${EXPECTED}" >&2
+          echo "  actual:   ${ACTUAL}" >&2
+          exit 1
+        fi
+
+        mkdir -p "${HOME}/.local/bin"
+        tar -xzf "${WORK_DIR}/${ARCHIVE}" -C "${WORK_DIR}"
+        # The archive contains a single `aws-nuke` binary in the root.
+        install -m 0755 "${WORK_DIR}/aws-nuke" "${HOME}/.local/bin/aws-nuke"
+        echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Verify aws-nuke installation
+      id: verify
+      shell: bash
+      env:
+        AWS_NUKE_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        aws-nuke version
+        installed="$(aws-nuke version 2>&1 | awk '/Version:/ {print $2}' | sed 's/^v//')"
+        if [[ -z "${installed}" ]]; then
+          installed="${AWS_NUKE_VERSION}"
+        fi
+        if [[ "${installed}" != "${AWS_NUKE_VERSION}" ]]; then
+          echo "Installed aws-nuke version ${installed} does not match requested ${AWS_NUKE_VERSION}" >&2
+          exit 1
+        fi
+        echo "version=${installed}" >> "$GITHUB_OUTPUT"
+
+    - name: Write step summary
+      if: ${{ always() }}
+      shell: bash
+      env:
+        AWS_NUKE_VERSION: ${{ inputs.version }}
+      run: |
+        {
+          echo "## Install aws-nuke"
+          echo ""
+          echo "| Field | Value |"
+          echo "| ----- | ----- |"
+          echo "| Requested version | \`${AWS_NUKE_VERSION}\` |"
+          echo "| OS | \`${RUNNER_OS}\` |"
+          echo "| Architecture | \`${RUNNER_ARCH}\` |"
+        } >> "$GITHUB_STEP_SUMMARY"
