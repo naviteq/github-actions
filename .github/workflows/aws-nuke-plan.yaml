@@ -109,12 +109,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "::group::Evaluate pause switch and freeze flag"
           if [[ "${PAUSED_INPUT}" == "true" || "${NUKE_FREEZE,,}" == "true" ]]; then
             echo "::notice::aws-nuke plan paused (paused=${PAUSED_INPUT}, NUKE_FREEZE=${NUKE_FREEZE}). Exiting." >&2
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "::endgroup::"
 
       - name: Production-account guard
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -124,6 +126,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check declared account against production-account allowlist"
           if [[ -z "${PROD_ACCOUNTS:-}" ]]; then
             echo "::warning::RUNESTRA_PROD_ACCOUNTS org variable is unset. Production-account guard cannot enforce."
             exit 0
@@ -142,9 +146,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "::group::Apply cron jitter to stagger scheduled runs"
           jitter=$(( RANDOM % 120 ))
           echo "Sleeping ${jitter}s to spread scheduled runs."
           sleep "${jitter}"
+          echo "::endgroup::"
 
       - name: Checkout consumer repository
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -152,7 +158,7 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@c47e122588cecca276e0487c10644f1579af3dac
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@69831297433ce2fef8d766102e592d1f9a4099fe
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -169,6 +175,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Verify STS caller identity matches declared account"
           actual="$(aws sts get-caller-identity --query Account --output text)"
           if [[ "${actual}" != "${DECLARED_ACCOUNT_ID}" ]]; then
             echo "::error::STS account mismatch. Declared=${DECLARED_ACCOUNT_ID} actual=${actual}. Refusing to run." >&2
@@ -184,19 +192,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
 
+          echo "::group::Verify nuke config file exists"
           if [[ ! -f "${NUKE_CONFIG}" ]]; then
             echo "::error::nuke_config_path '${NUKE_CONFIG}' not found in repository." >&2
             exit 1
           fi
+          echo "::endgroup::"
 
+          echo "::group::Normalize regions allowlist"
           # Normalize allowlist: newlines or commas -> one entry per line.
           mapfile -t allow < <(printf '%s\n' "${REGIONS_ALLOWLIST}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | sort -u)
           if (( ${#allow[@]} == 0 )); then
             echo "::error::regions_allowlist is empty. Explicit regions required." >&2
             exit 1
           fi
+          echo "::endgroup::"
 
+          echo "::group::Extract regions from nuke config"
           # Extract regions: from config (simple YAML grep; sufficient for the documented schema).
           mapfile -t config_regions < <(awk '
             /^regions:[[:space:]]*$/ { in_block=1; next }
@@ -208,7 +222,9 @@ jobs:
             echo "::error::nuke config has no regions: block; explicit regions required." >&2
             exit 1
           fi
+          echo "::endgroup::"
 
+          echo "::group::Verify each config region is in allowlist"
           for r in "${config_regions[@]}"; do
             allowed=0
             for a in "${allow[@]}"; do
@@ -222,10 +238,11 @@ jobs:
 
           printf '%s\n' "${config_regions[@]}" > regions.txt
           echo "Validated $(wc -l < regions.txt) region(s) against allowlist."
+          echo "::endgroup::"
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@c47e122588cecca276e0487c10644f1579af3dac
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@69831297433ce2fef8d766102e592d1f9a4099fe
         with:
           version: ${{ inputs.aws_nuke_version }}
 
@@ -238,6 +255,8 @@ jobs:
           # Drop -e so the pipeline below can fail without aborting before we
           # capture the real aws-nuke exit code via PIPESTATUS.
           set -uo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Run aws-nuke dry-run and capture plan output"
           # Dry-run is the default for `aws-nuke run`; --no-dry-run would make it destructive.
           # stdbuf forces line buffering so progress is visible live in the workflow log
           # (long aws-nuke runs otherwise look stuck). Tee preserves file outputs for
@@ -260,7 +279,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
 
+          echo "::group::Extract resource tuples from aws-nuke plan"
           # aws-nuke's JSON log lines carry resource events with msg ~= "would remove resource".
           # We extract (region, type, id) tuples, sort deterministically, and write resource-set.txt.
           jq -r '
@@ -274,7 +295,9 @@ jobs:
           ' nuke-plan.json 2>/dev/null \
             | awk -F'\t' 'NF==3 && $2 != "" && $3 != ""' \
             | sort -u > resource-set.txt || true
+          echo "::endgroup::"
 
+          echo "::group::Record resource count and empty-plan flag"
           count="$(wc -l < resource-set.txt | tr -d ' ')"
           echo "resource_count=${count}" >> "$GITHUB_OUTPUT"
           if [[ "${count}" == "0" ]]; then
@@ -287,6 +310,7 @@ jobs:
           else
             echo "empty_plan=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "::endgroup::"
 
       - name: Compute resource-set hash
         id: hash
@@ -294,10 +318,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "::group::Compute SHA-256 of resource set"
           sha="$(sha256sum resource-set.txt | awk '{print $1}')"
           printf '%s\n' "${sha}" > resource-set.sha256
           echo "resource_set_hash=${sha}" >> "$GITHUB_OUTPUT"
           echo "Hash: ${sha}"
+          echo "::endgroup::"
 
       - name: Upload plan artifact
         id: upload
@@ -331,6 +357,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "::group::Look up existing pending issue with matching hash marker"
           # Use a stable machine-readable marker embedded in the issue body to detect duplicates,
           # so fuzzy title matching can't be exploited.
           marker="<!-- nuke:hash=${HASH} account=${AWS_ACCOUNT_ID} -->"
@@ -346,6 +373,7 @@ jobs:
           else
             echo "existing_issue=" >> "$GITHUB_OUTPUT"
           fi
+          echo "::endgroup::"
 
       - name: Post re-run notice on existing issue
         if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue != '' }}
@@ -357,9 +385,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "::group::Comment re-run notice on existing audit issue"
           gh issue comment "${ISSUE}" \
             --repo "${{ github.repository }}" \
             --body "Plan re-run produced the same resource set. Run: ${RUN_URL} (artifact: \`${ARTIFACT}\`)."
+          echo "::endgroup::"
 
       - name: Resolve assignees
         id: assignees
@@ -371,14 +401,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
 
+          echo "::group::Extract Owner tag values from plan output"
           # Extract distinct Owner tag values from the plan JSON (best-effort).
           mapfile -t owners < <(jq -r '
             select(type == "object") |
             (.tags // .Tags // {}) |
             (."Owner" // ."owner" // empty)
           ' nuke-plan.json 2>/dev/null | sort -u | grep -v '^$' || true)
+          echo "::endgroup::"
 
+          echo "::group::Map Owner tag values to GitHub handles via resolution chain"
           assignees=()
           while IFS= read -r line; do
             line="${line%%#*}"
@@ -392,7 +426,9 @@ jobs:
               fi
             done
           done <<< "${MAP}"
+          echo "::endgroup::"
 
+          echo "::group::Apply default assignee and repo-maintainer fallbacks"
           if (( ${#assignees[@]} == 0 )) && [[ -n "${DEFAULT}" ]]; then
             assignees+=("${DEFAULT}")
           fi
@@ -403,7 +439,9 @@ jobs:
               assignees+=("${fallback}")
             fi
           fi
+          echo "::endgroup::"
 
+          echo "::group::Deduplicate assignees and export CSV"
           # Deduplicate, drop empty entries.
           if (( ${#assignees[@]} > 0 )); then
             mapfile -t assignees < <(printf '%s\n' "${assignees[@]}" | grep -v '^$' | sort -u)
@@ -412,6 +450,7 @@ jobs:
           printf '%s\n' "${assignees[@]:-}" > assignees.txt
           csv="$(paste -sd ',' assignees.txt || true)"
           echo "assignees_csv=${csv}" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
 
       - name: Render issue body
         id: render
@@ -426,10 +465,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
 
+          echo "::group::Compute short hash and regions CSV for issue body"
           short_hash="${HASH:0:12}"
           regions_csv="$(paste -sd ',' regions.txt || true)"
+          echo "::endgroup::"
 
+          echo "::group::Render issue body markdown to issue-body.md"
           {
             echo "<!-- nuke:hash=${HASH} account=${AWS_ACCOUNT_ID} -->"
             echo ""
@@ -451,9 +494,44 @@ jobs:
             echo ""
             echo "### Resources by type"
             echo ""
+            echo "**Total: ${RESOURCE_COUNT} resources across ${type_count} types**"
+            echo ""
+            # Group rows by type into one <details> per type. The blank lines
+            # after <summary> and before </details> are load-bearing: GitHub's
+            # Markdown-in-HTML requires them to re-enter markdown parsing mode
+            # so the inner `- ` bullets render as a list instead of literal text.
             awk -F'\t' '{print $2"\t"$1"\t"$3}' resource-set.txt \
               | sort \
-              | awk -F'\t' 'BEGIN{prev=""} { if ($1 != prev) { if (prev != "") print ""; print "**" $1 "**"; prev=$1 } print "- `" $2 "` `" $3 "`" }'
+              | awk -F'\t' -v counts_file=type-counts.tsv '
+                  BEGIN {
+                    while ((getline line < counts_file) > 0) {
+                      n = split(line, parts, "\t")
+                      if (n >= 2) counts[parts[1]] = parts[2]
+                    }
+                    close(counts_file)
+                    prev = ""
+                  }
+                  {
+                    if ($1 != prev) {
+                      if (prev != "") {
+                        print ""
+                        print "</details>"
+                        print ""
+                      }
+                      print "<details>"
+                      print "<summary><strong>" $1 "</strong> (" counts[$1] ")</summary>"
+                      print ""
+                      prev = $1
+                    }
+                    print "- `" $2 "` `" $3 "`"
+                  }
+                  END {
+                    if (prev != "") {
+                      print ""
+                      print "</details>"
+                    }
+                  }
+                '
             echo ""
             echo "### To approve"
             echo ""
@@ -468,9 +546,12 @@ jobs:
             echo "- If the resource set changes between plan and approval, apply will refuse on hash mismatch."
             echo "- Title prefix \`nuke:pending\` (and this comment) are load-bearing — do not edit."
           } > issue-body.md
+          echo "::endgroup::"
 
+          echo "::group::Build issue title"
           short_regions_csv="$(printf '%s' "${regions_csv}" | head -c 60)"
           echo "title=aws-nuke pending: account=${AWS_ACCOUNT_ID} regions=${short_regions_csv} hash=${short_hash}" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
 
       - name: Ensure aws-nuke labels exist
         if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
@@ -479,6 +560,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Ensure aws-nuke labels exist in consumer repo"
           # `gh issue create --label` (and `gh issue edit --add-label` in the apply phase)
           # fail if the label is missing in the consumer repo. Create the three labels
           # idempotently up front so first-time consumers don't need manual setup.
@@ -507,6 +590,7 @@ jobs:
           ensure_label "nuke:pending"  "FBCA04" "aws-nuke: plan awaiting approval"
           ensure_label "nuke:applying" "0E8A16" "aws-nuke: apply in progress"
           ensure_label "nuke:failed"   "B60205" "aws-nuke: apply failed"
+          echo "::endgroup::"
 
       - name: Create audit issue
         id: create_issue
@@ -518,6 +602,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Open audit issue on consumer repository"
           extra=()
           if [[ -n "${ASSIGNEES_CSV}" ]]; then
             extra+=(--assignee "${ASSIGNEES_CSV}")
@@ -531,7 +618,9 @@ jobs:
           num="${url##*/}"
           echo "issue_number=${num}" >> "$GITHUB_OUTPUT"
           echo "issue_url=${url}" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
 
+          echo "::group::Write step summary"
           {
             echo "## aws-nuke plan"
             echo ""
@@ -539,3 +628,4 @@ jobs:
             echo "- Resource-set SHA-256: \`${{ steps.hash.outputs.resource_set_hash }}\`"
             echo "- Artifact: \`aws-nuke-plan-${{ github.run_id }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"

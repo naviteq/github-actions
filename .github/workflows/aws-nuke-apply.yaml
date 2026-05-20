@@ -107,6 +107,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "::group::Evaluate pause switch and freeze flag"
           if [[ "${PAUSED_INPUT}" == "true" || "${NUKE_FREEZE,,}" == "true" ]]; then
             gh issue comment "${ISSUE}" \
               --repo "${{ github.repository }}" \
@@ -116,6 +117,7 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "::endgroup::"
 
       - name: Ensure aws-nuke labels exist
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -124,6 +126,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Ensure aws-nuke labels exist in consumer repo"
           # `gh issue edit --add-label` fails if the label is missing in the consumer repo.
           # Plan phase normally creates these, but be defensive in case they were deleted
           # or this apply is being run against a manually-created issue.
@@ -161,6 +165,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check declared account against production-account allowlist"
           if [[ -z "${PROD_ACCOUNTS:-}" ]]; then
             echo "::warning::RUNESTRA_PROD_ACCOUNTS org variable is unset. Production-account guard cannot enforce."
             exit 0
@@ -188,6 +194,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Re-validate approval comment against strict regex"
           # Use grep -P -x with a fully anchored pattern. -x means the entire line must match;
           # this rejects trailing text like "/approve nuke-123 please".
           pattern='^/approve[[:space:]]+nuke-'"${PLAN_RUN_ID}"'$'
@@ -209,20 +217,60 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Resolve default branch"
           default_branch="$(gh api "repos/${{ github.repository }}" --jq .default_branch)"
           if [[ -z "${default_branch}" ]]; then
             echo "::error::Could not resolve default branch." >&2
             exit 1
           fi
+          echo "::endgroup::"
 
+          echo "::group::Fetch CODEOWNERS from default branch"
           codeowners=""
           for path in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
-            body="$(gh api "repos/${{ github.repository }}/contents/${path}?ref=${default_branch}" --jq '.content // empty' 2>/dev/null || true)"
-            if [[ -n "${body}" ]]; then
-              codeowners="$(printf '%s' "${body}" | base64 -d)"
-              echo "Loaded CODEOWNERS from ${path}@${default_branch}"
-              break
+            # Capture the raw API response. Avoid `gh api --jq` here: some `gh`
+            # versions JSON-encode the extracted string (re-emitting literal
+            # `\n`) instead of returning raw text, which then breaks strict
+            # `base64 -d`. Pipe through `jq -r` explicitly for guaranteed raw
+            # output.
+            response="$(gh api "repos/${{ github.repository }}/contents/${path}?ref=${default_branch}" 2>/dev/null || true)"
+            if [[ -z "${response}" ]]; then
+              continue
             fi
+            # 404 / error bodies are JSON without a `.content` field — skip.
+            content="$(printf '%s' "${response}" | jq -r '.content // empty' 2>/dev/null || true)"
+            if [[ -z "${content}" ]]; then
+              continue
+            fi
+            encoding="$(printf '%s' "${response}" | jq -r '.encoding // empty' 2>/dev/null || true)"
+            if [[ "${encoding}" != "base64" ]]; then
+              # >1 MB files come back with encoding="none" and the body must be
+              # fetched via download_url. Fall through to the next candidate
+              # path rather than attempting to decode non-base64 content.
+              echo "::notice::Skipping ${path}@${default_branch}: unexpected encoding '${encoding}'."
+              continue
+            fi
+            # GitHub wraps content at 60 chars with \n (occasionally \r\n on
+            # some clients). Strip every whitespace byte before decode so
+            # strict `base64 -d` does not reject the payload.
+            cleaned="$(printf '%s' "${content}" | tr -d '[:space:]')"
+            if ! decoded="$(printf '%s' "${cleaned}" | base64 -d 2>/dev/null)"; then
+              # A present-but-undecodable CODEOWNERS is a hard fail, not a
+              # fall-through: silently trying the next path would let a
+              # corrupted file mask the intended approvers and apply against
+              # a different set of owners (security regression).
+              echo "::error::Failed to base64-decode CODEOWNERS body from ${path}@${default_branch} (cleaned length=${#cleaned})." >&2
+              gh issue comment "${ISSUE}" \
+                --repo "${{ github.repository }}" \
+                --body "Apply refused: CODEOWNERS at \`${path}\` on \`${default_branch}\` failed base64 decode."
+              gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label nuke:failed || true
+              exit 1
+            fi
+            codeowners="${decoded}"
+            echo "Loaded CODEOWNERS from ${path}@${default_branch}"
+            break
           done
 
           if [[ -z "${codeowners}" ]]; then
@@ -233,7 +281,9 @@ jobs:
             echo "::error::No CODEOWNERS file on default branch." >&2
             exit 1
           fi
+          echo "::endgroup::"
 
+          echo "::group::Extract owner handles from CODEOWNERS"
           # Collect @handles from non-comment lines.
           owners="$(printf '%s\n' "${codeowners}" \
             | sed 's/#.*$//' \
@@ -249,7 +299,9 @@ jobs:
             echo "::error::CODEOWNERS lists no approvers." >&2
             exit 1
           fi
+          echo "::endgroup::"
 
+          echo "::group::Verify approver against CODEOWNERS handles and team memberships"
           actor_lc="$(printf '%s' "${ACTOR}" | tr '[:upper:]' '[:lower:]')"
           match=0
           while IFS= read -r owner; do
@@ -275,6 +327,7 @@ jobs:
             echo "::error::Approver ${ACTOR} not in CODEOWNERS." >&2
             exit 1
           fi
+          echo "::endgroup::"
 
       - name: In-progress marker
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -284,6 +337,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Mark audit issue as apply-in-progress"
           labels="$(gh issue view "${ISSUE}" --repo "${{ github.repository }}" --json labels --jq '[.labels[].name]')"
           if echo "${labels}" | grep -qE '"nuke:applying"'; then
             echo "::error::Issue ${ISSUE} already has nuke:applying label — refusing concurrent apply." >&2
@@ -297,7 +352,7 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@c47e122588cecca276e0487c10644f1579af3dac
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@69831297433ce2fef8d766102e592d1f9a4099fe
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -314,6 +369,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Verify STS caller identity matches declared account"
           actual="$(aws sts get-caller-identity --query Account --output text)"
           if [[ "${actual}" != "${DECLARED_ACCOUNT_ID}" ]]; then
             echo "::error::STS account mismatch. Declared=${DECLARED_ACCOUNT_ID} actual=${actual}. Refusing to run." >&2
@@ -328,19 +385,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
 
+          echo "::group::Verify nuke config file exists"
           if [[ ! -f "${NUKE_CONFIG}" ]]; then
             echo "::error::nuke_config_path '${NUKE_CONFIG}' not found in repository." >&2
             exit 1
           fi
+          echo "::endgroup::"
 
+          echo "::group::Parse allowlist and extract config regions"
           mapfile -t allow < <(printf '%s\n' "${REGIONS_ALLOWLIST}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | sort -u)
           mapfile -t config_regions < <(awk '
             /^regions:[[:space:]]*$/ { in_block=1; next }
             in_block && /^[a-zA-Z]/ { in_block=0 }
             in_block && /^[[:space:]]*-/ { sub(/^[[:space:]]*-[[:space:]]*/, ""); gsub(/["'\'']/, ""); print }
           ' "${NUKE_CONFIG}" | sort -u)
+          echo "::endgroup::"
 
+          echo "::group::Verify each config region is in allowlist"
           for r in "${config_regions[@]}"; do
             allowed=0
             for a in "${allow[@]}"; do
@@ -351,6 +414,7 @@ jobs:
               exit 1
             fi
           done
+          echo "::endgroup::"
 
       - name: Download plan artifact
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -369,12 +433,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
 
+          echo "::group::Verify plan artifact contains resource-set.txt"
           if [[ ! -f plan/resource-set.txt ]]; then
             echo "::error::plan artifact missing resource-set.txt." >&2
             exit 1
           fi
+          echo "::endgroup::"
 
+          echo "::group::Recompute hash and extract issue marker"
           recomputed="$(sha256sum plan/resource-set.txt | awk '{print $1}')"
           embedded="$(gh issue view "${ISSUE}" --repo "${{ github.repository }}" --json body --jq .body \
             | grep -oE 'nuke:hash=[0-9a-f]{64}' \
@@ -389,7 +457,9 @@ jobs:
             echo "::error::Hash marker not found in issue body." >&2
             exit 1
           fi
+          echo "::endgroup::"
 
+          echo "::group::Compare recomputed hash against issue-embedded hash"
           if [[ "${recomputed}" != "${embedded}" ]]; then
             gh issue comment "${ISSUE}" \
               --repo "${{ github.repository }}" \
@@ -400,10 +470,11 @@ jobs:
           fi
 
           echo "Hash verified: ${recomputed}"
+          echo "::endgroup::"
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@c47e122588cecca276e0487c10644f1579af3dac
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@69831297433ce2fef8d766102e592d1f9a4099fe
         with:
           version: ${{ inputs.aws_nuke_version }}
 
@@ -416,6 +487,9 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Run aws-nuke with --no-dry-run (destructive)"
           # stdbuf forces line buffering so progress is visible live in the workflow log
           # — destructive runs can take a long time and silent steps look stuck. Tee
           # preserves the full apply log file for upload as an artifact.
@@ -426,12 +500,16 @@ jobs:
             --log-level info \
             2>&1 | tee nuke-apply.log
           rc=${PIPESTATUS[0]}
+          echo "::endgroup::"
+
+          echo "::group::Record aws-nuke exit code and status"
           echo "nuke_exit_code=${rc}" >> "$GITHUB_OUTPUT"
           if (( rc == 0 )); then
             echo "status=success" >> "$GITHUB_OUTPUT"
           else
             echo "status=failure" >> "$GITHUB_OUTPUT"
           fi
+          echo "::endgroup::"
           exit 0
 
       - name: Upload apply log
@@ -457,6 +535,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Build SNS audit payload"
           payload="$(jq -n \
             --arg account "${AWS_ACCOUNT_ID}" \
             --arg regions "${REGIONS}" \
@@ -475,10 +556,14 @@ jobs:
               plan_run_id: $plan_run,
               repository: $repo
             }')"
+          echo "::endgroup::"
+
+          echo "::group::Publish audit event to SNS topic"
           aws sns publish \
             --topic-arn "${AUDIT_TOPIC_ARN}" \
             --message "${payload}" \
             --subject "aws-nuke-apply ${STATUS}" || echo "::warning::SNS publish failed; continuing."
+          echo "::endgroup::"
 
       - name: Success path — close audit issue
         if: ${{ steps.pause.outputs.skip != 'true' && steps.nuke.outputs.status == 'success' }}
@@ -489,13 +574,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Post success comment on audit issue"
           gh issue comment "${ISSUE}" \
             --repo "${{ github.repository }}" \
             --body "Apply succeeded. Log artifact: \`aws-nuke-apply-${{ github.run_id }}\` (run: ${RUN_URL})."
+          echo "::endgroup::"
+
+          echo "::group::Remove pending labels and close audit issue"
           gh issue edit "${ISSUE}" --repo "${{ github.repository }}" \
             --remove-label nuke:pending \
             --remove-label nuke:applying || true
           gh issue close "${ISSUE}" --repo "${{ github.repository }}"
+          echo "::endgroup::"
 
       - name: Failure path — leave issue open
         if: ${{ steps.pause.outputs.skip != 'true' && steps.nuke.outputs.status == 'failure' }}
@@ -507,10 +599,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Post failure comment on audit issue"
           gh issue comment "${ISSUE}" \
             --repo "${{ github.repository }}" \
             --body "Apply failed (exit ${EXIT_CODE}). Log artifact: \`aws-nuke-apply-${{ github.run_id }}\` (run: ${RUN_URL}). Issue remains open."
+          echo "::endgroup::"
+
+          echo "::group::Update labels to nuke:failed"
           gh issue edit "${ISSUE}" --repo "${{ github.repository }}" \
             --add-label nuke:failed \
             --remove-label nuke:applying || true
+          echo "::endgroup::"
           exit 1
