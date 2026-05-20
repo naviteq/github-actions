@@ -24,7 +24,8 @@ runs:
         AWS_CLI_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Download and install AWS CLI v2 for ${RUNNER_OS}/${RUNNER_ARCH}"
         case "$RUNNER_OS" in
           Linux)
             case "$RUNNER_ARCH" in
@@ -81,6 +82,8 @@ runs:
       env:
         AWS_CLI_VERSION: ${{ inputs.version }}
       run: |
+        set -uo pipefail
+        echo "::group::Write AWS CLI install summary"
         INSTALLED_VERSION="$(aws --version 2>&1 | awk '{print $1}' | cut -d/ -f2)" || INSTALLED_VERSION="unknown"
         {
           echo "## Setup AWS CLI v2"
@@ -92,3 +95,4 @@ runs:
           echo "| OS | \`${RUNNER_OS}\` |"
           echo "| Architecture | \`${RUNNER_ARCH}\` |"
         } >> "$GITHUB_STEP_SUMMARY"
+        echo "::endgroup::"

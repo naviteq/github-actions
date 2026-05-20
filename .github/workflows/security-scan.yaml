@@ -118,10 +118,10 @@ on:
         type: string
         default: ""
       checkov_submodules:
-        description: Submodule checkout mode for the Checkov scan. Accepts "true", "recursive", or "false".
+        description: Submodule checkout mode for the Checkov scan. Accepts "true", "recursive", or "false". When empty, falls back to vars.DEFAULT_ORG_SUBMODULES or "false".
         required: false
         type: string
-        default: "false"
+        default: ""
       checkov_enable_cache:
         description: Cache the Checkov pip install between runs.
         required: false
