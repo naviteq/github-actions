@@ -51,7 +51,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
 
+          echo "::group::Detect runner architecture and resolve asset name"
           ARCH="$(uname -m)"
           case "$ARCH" in
             x86_64) ASSET_ARCH="x64" ;;
@@ -68,18 +70,25 @@ jobs:
           ASSET="gitleaks_${GITLEAKS_VERSION}_${OS}_${ASSET_ARCH}.tar.gz"
           CHECKSUMS="gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           BASE_URL="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          echo "::endgroup::"
 
+          echo "::group::Download Gitleaks archive and checksum file"
           echo "Downloading ${BASE_URL}/${ASSET}"
           curl -fsSL "${BASE_URL}/${ASSET}" -o "${ASSET}"
           curl -fsSL "${BASE_URL}/${CHECKSUMS}" -o "${CHECKSUMS}"
+          echo "::endgroup::"
 
+          echo "::group::Verify Gitleaks archive checksum"
           grep " ${ASSET}$" "${CHECKSUMS}" > "${ASSET}.sha256"
           sha256sum -c "${ASSET}.sha256"
+          echo "::endgroup::"
 
+          echo "::group::Install Gitleaks binary"
           tar -xzf "${ASSET}"
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
 
           gitleaks version
+          echo "::endgroup::"
 
       - name: Run Gitleaks scan
         env:
@@ -88,7 +97,7 @@ jobs:
           HEAD_REF: ${{ inputs.head_ref || github.sha }}
         run: |
           set -uo pipefail
-
+          echo "::group::Run Gitleaks (full=${FULL_SCAN}, range=${BASE_REF}..${HEAD_REF})"
           if [[ "${FULL_SCAN}" == "true" ]]; then
             gitleaks git --verbose \
               --report-format json --report-path gitleaks-report.json || true
@@ -97,6 +106,7 @@ jobs:
               --log-opts="--no-merges ${BASE_REF}..${HEAD_REF}" \
               --report-format json --report-path gitleaks-report.json || true
           fi
+          echo "::endgroup::"
 
       - name: Publish results to GitHub Summary
         shell: bash
@@ -105,6 +115,10 @@ jobs:
           BASE_REF: ${{ inputs.base_ref || format('origin/{0}', github.event.repository.default_branch) }}
           HEAD_REF: ${{ inputs.head_ref || github.sha }}
         run: |
+          set -uo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Write Gitleaks results to step summary"
           {
             echo "## 🔐 Gitleaks Secret Scan Results"
 
@@ -123,7 +137,10 @@ jobs:
               echo "✅ No secrets detected."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
 
+          echo "::group::Fail the job if Gitleaks detected secrets"
           if jq -e 'length > 0' gitleaks-report.json > /dev/null; then
             exit 1
           fi
+          echo "::endgroup::"

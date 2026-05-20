@@ -41,8 +41,10 @@ runs:
       run: |
         set -euo pipefail
 
+        echo "::group::Detect runner OS and architecture"
         if [[ "$RUNNER_OS" != "Linux" ]]; then
           echo "aws-nuke install supports Linux runners only (got: $RUNNER_OS)" >&2
+          echo "::endgroup::"
           exit 1
         fi
 
@@ -51,6 +53,7 @@ runs:
           ARM64) ARCH="arm64" ;;
           *)
             echo "Unsupported architecture: $RUNNER_ARCH" >&2
+            echo "::endgroup::"
             exit 1
             ;;
         esac
@@ -58,11 +61,16 @@ runs:
         BASE_URL="https://github.com/ekristen/aws-nuke/releases/download/v${AWS_NUKE_VERSION}"
         ARCHIVE="aws-nuke-v${AWS_NUKE_VERSION}-linux-${ARCH}.tar.gz"
         WORK_DIR="$(mktemp -d)"
-        trap 'rm -rf "$WORK_DIR"' EXIT
+        # Combine workdir cleanup with closing whatever group is open on exit.
+        trap 'rm -rf "$WORK_DIR"; echo "::endgroup::"' EXIT
+        echo "::endgroup::"
 
+        echo "::group::Download aws-nuke archive"
         echo "Downloading ${BASE_URL}/${ARCHIVE}"
         curl -fsSL --retry 3 -o "${WORK_DIR}/${ARCHIVE}" "${BASE_URL}/${ARCHIVE}"
+        echo "::endgroup::"
 
+        echo "::group::Resolve expected SHA-256 (override or checksums.txt)"
         if [[ -n "${AWS_NUKE_CHECKSUM_OVERRIDE}" ]]; then
           EXPECTED="${AWS_NUKE_CHECKSUM_OVERRIDE}"
         else
@@ -75,7 +83,9 @@ runs:
           echo "No SHA-256 found for ${ARCHIVE}" >&2
           exit 1
         fi
+        echo "::endgroup::"
 
+        echo "::group::Verify archive checksum"
         ACTUAL="$(sha256sum "${WORK_DIR}/${ARCHIVE}" | awk '{print $1}')"
         if [[ "${EXPECTED}" != "${ACTUAL}" ]]; then
           echo "Checksum mismatch for ${ARCHIVE}" >&2
@@ -83,12 +93,15 @@ runs:
           echo "  actual:   ${ACTUAL}" >&2
           exit 1
         fi
+        echo "::endgroup::"
 
+        echo "::group::Install aws-nuke binary and update PATH"
         mkdir -p "${HOME}/.local/bin"
         tar -xzf "${WORK_DIR}/${ARCHIVE}" -C "${WORK_DIR}"
         # The archive contains a single `aws-nuke` binary in the root.
         install -m 0755 "${WORK_DIR}/aws-nuke" "${HOME}/.local/bin/aws-nuke"
         echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+        echo "::endgroup::"
 
     - name: Verify aws-nuke installation
       id: verify
@@ -97,6 +110,8 @@ runs:
         AWS_NUKE_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Verify installed aws-nuke version matches requested"
         aws-nuke version
         installed="$(aws-nuke version 2>&1 | awk '/Version:/ {print $2}' | sed 's/^v//')"
         if [[ -z "${installed}" ]]; then
@@ -114,6 +129,8 @@ runs:
       env:
         AWS_NUKE_VERSION: ${{ inputs.version }}
       run: |
+        set -euo pipefail
+        echo "::group::Write aws-nuke install summary"
         {
           echo "## Install aws-nuke"
           echo ""
@@ -123,3 +140,4 @@ runs:
           echo "| OS | \`${RUNNER_OS}\` |"
           echo "| Architecture | \`${RUNNER_ARCH}\` |"
         } >> "$GITHUB_STEP_SUMMARY"
+        echo "::endgroup::"
