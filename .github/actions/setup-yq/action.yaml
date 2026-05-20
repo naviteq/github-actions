@@ -22,8 +22,14 @@ runs:
         YQ_VERSION: ${{ inputs.version }}
       run: |
         set -e -x
+        trap 'echo "::endgroup::"' EXIT
+
+        echo "::group::Install wget via apt"
         sudo apt-get update
         sudo apt-get install -y wget
+        echo "::endgroup::"
+
+        echo "::group::Resolve yq asset for runner architecture"
         case "$RUNNER_ARCH" in
           X64) ASSET_ARCH="amd64" ;;
           X86) ASSET_ARCH="amd64" ;;
@@ -34,8 +40,12 @@ runs:
             ;;
         esac
         OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        echo "::endgroup::"
+
+        echo "::group::Download yq binary and install to /usr/local/bin"
         sudo wget -q -O /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_${OS}_${ASSET_ARCH}"
         sudo chmod +x /usr/local/bin/yq
+        echo "::endgroup::"
 
     - name: Verify yq installation
       id: verify
