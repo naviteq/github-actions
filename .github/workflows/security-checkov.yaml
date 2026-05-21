@@ -61,10 +61,10 @@ on:
         type: string
         default: ""
       submodules:
-        description: Submodule checkout mode passed to actions/checkout. Accepts "true", "recursive", or "false".
+        description: Submodule checkout mode passed to actions/checkout. Accepts "true", "recursive", or "false". When empty, falls back to vars.DEFAULT_ORG_SUBMODULES or "false".
         required: false
         type: string
-        default: "false"
+        default: ""
       enable_cache:
         description: Cache the Checkov pip install between runs (keyed on the upstream action SHA).
         required: false
@@ -74,7 +74,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: checkov-security-${{ github.workflow }}-${{ github.ref }}-${{ inputs.framework || 'all' }}-${{ inputs.full_scan || 'false' }}-${{ inputs.base_ref || 'default' }}-${{ inputs.head_ref || 'default' }}-${{ inputs.submodules || 'false' }}-${{ inputs.enable_cache && 'cache-on' || 'cache-off' }}
+  group: checkov-security-${{ github.workflow }}-${{ github.ref }}-${{ inputs.framework || 'all' }}-${{ inputs.full_scan || 'false' }}-${{ inputs.base_ref || 'default' }}-${{ inputs.head_ref || 'default' }}-${{ inputs.submodules != '' && inputs.submodules || (vars.DEFAULT_ORG_SUBMODULES || 'false') }}-${{ inputs.enable_cache && 'cache-on' || 'cache-off' }}
   cancel-in-progress: true
 
 jobs:
@@ -93,12 +93,13 @@ jobs:
       CHECKOV_CHECK: ${{ inputs.check || '' }}
       CHECKOV_SKIP_CHECK: ${{ inputs.skip_check || '' }}
       CHECKOV_CONFIG_FILE: ${{ inputs.config_file || '' }}
+      CHECKOV_SUBMODULES: ${{ inputs.submodules != '' && inputs.submodules || (vars.DEFAULT_ORG_SUBMODULES || 'false') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
-          submodules: ${{ inputs.submodules }}
+          submodules: ${{ env.CHECKOV_SUBMODULES }}
 
       - name: Cache Checkov install
         if: ${{ inputs.enable_cache }}
@@ -122,19 +123,24 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
 
+          echo "::group::Resolve base and head refs"
           BASE_REF="${BASE_REF_INPUT:-origin/${DEFAULT_BRANCH}}"
           HEAD_REF="${HEAD_REF_INPUT:-${GITHUB_SHA}}"
 
           BASE_SHA="$(git rev-parse "${BASE_REF}")"
           HEAD_SHA="$(git rev-parse "${HEAD_REF}")"
+          echo "::endgroup::"
 
+          echo "::group::Export diff range to step outputs"
           {
             echo "base_ref=${BASE_REF}"
             echo "head_ref=${HEAD_REF}"
             echo "base_sha=${BASE_SHA}"
             echo "head_sha=${HEAD_SHA}"
           } >> "${GITHUB_OUTPUT}"
+          echo "::endgroup::"
 
       - name: Detect changed IaC files
         id: changed
@@ -204,7 +210,9 @@ jobs:
           IAC_FILES: ${{ steps.changed.outputs.iac_files }}
         run: |
           set -uo pipefail
+          trap 'echo "::endgroup::"' EXIT
 
+          echo "::group::Select changed-file list for framework ${FRAMEWORK}"
           case "${FRAMEWORK}" in
             terraform|terraform_plan) files_json="${TERRAFORM_FILES}" ;;
             kubernetes)               files_json="${KUBERNETES_FILES}" ;;
@@ -220,7 +228,9 @@ jobs:
 
           printf 'Framework=%s — changed-files matched %d file(s):\n' "${FRAMEWORK}" "${#matched[@]}"
           printf '  %s\n' "${matched[@]:-(none)}"
+          echo "::endgroup::"
 
+          echo "::group::Filter matched files to configured directory"
           # Limit to files under the configured directory.
           declare -a in_dir=()
           for f in "${matched[@]}"; do
@@ -229,7 +239,9 @@ jobs:
               in_dir+=("${f}")
             fi
           done
+          echo "::endgroup::"
 
+          echo "::group::Expand matched files to chart directories (helm only)"
           # For the helm framework, scanning individual templates is fragile —
           # the chart must be rendered as a whole. Expand any matched file to
           # the nearest ancestor directory containing Chart.yaml (or .yml).
@@ -265,7 +277,9 @@ jobs:
               done
             fi
           fi
+          echo "::endgroup::"
 
+          echo "::group::Deduplicate matched files and write checkov-files.txt"
           # Deduplicate while preserving order.
           declare -A seen=()
           declare -a unique=()
@@ -283,7 +297,18 @@ jobs:
           for f in "${unique[@]}"; do
             printf '%s\n' "${f}" >> checkov-files.txt
           done
+          echo "::endgroup::"
 
+          echo "::group::Export resolved file list to step outputs"
+          # bridgecrewio/checkov-action parses the `file:` input as a
+          # comma-separated list. Emit the resolved paths as a single CSV line
+          # so every matched file reaches `checkov -f` instead of only the
+          # first line of a multi-line value.
+          files_csv=""
+          if [[ ${#unique[@]} -gt 0 ]]; then
+            files_csv="$(printf '%s,' "${unique[@]}")"
+            files_csv="${files_csv%,}"
+          fi
           {
             if [[ ${#unique[@]} -eq 0 ]]; then
               echo "has_changes=false"
@@ -293,10 +318,9 @@ jobs:
             echo "count=${#unique[@]}"
             echo "base_ref=${BASE_REF}"
             echo "head_ref=${HEAD_REF}"
-            echo 'files<<CHECKOV_FILES_EOF'
-            cat checkov-files.txt
-            echo 'CHECKOV_FILES_EOF'
+            echo "files=${files_csv}"
           } >> "${GITHUB_OUTPUT}"
+          echo "::endgroup::"
 
       - name: Run Checkov (full scan)
         if: ${{ inputs.full_scan }}
@@ -339,6 +363,8 @@ jobs:
           CHANGED_COUNT: ${{ steps.resolved.outputs.count }}
           HAS_CHANGES: ${{ steps.resolved.outputs.has_changes }}
         run: |
+          set -euo pipefail
+          echo "::group::Write Checkov scan summary to step summary"
           {
             echo "## Checkov IaC Scan"
             echo ""
@@ -366,6 +392,7 @@ jobs:
               echo "_No Checkov CLI report was generated._"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
 
       - name: Upload SARIF file
         uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4.35.5

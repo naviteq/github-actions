@@ -102,6 +102,9 @@ runs:
       env:
         CHART_PATH: ${{ inputs.chart_path }}
       run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Verify chart directory and Chart.yaml exist"
         if [[ ! -d "$CHART_PATH" ]]; then
           echo "Chart path does not exist: $CHART_PATH"
           exit 1
@@ -137,6 +140,10 @@ runs:
         CHART_VERSION_OVERRIDE: ${{ inputs.chart_version }}
         APP_VERSION_OVERRIDE: ${{ inputs.app_version }}
       run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+
+        echo "::group::Resolve appVersion from inputs, refs, or git tags"
         EXISTING_APP_VERSION="$(yq -r '.appVersion // ""' Chart.yaml)"
 
         if [[ -n "$APP_VERSION_OVERRIDE" ]]; then
@@ -164,7 +171,9 @@ runs:
         else
           CHART_VERSION="$(echo "$APP_VERSION" | sed 's/^v//')"
         fi
+        echo "::endgroup::"
 
+        echo "::group::Apply resolved version and appVersion to Chart.yaml"
         echo "Updating Chart.yaml"
 
         APP_VERSION="$APP_VERSION" CHART_VERSION="$CHART_VERSION" yq -i '
@@ -173,6 +182,7 @@ runs:
         ' Chart.yaml
 
         cat Chart.yaml
+        echo "::endgroup::"
 
     - name: Read chart metadata
       id: meta
@@ -180,6 +190,8 @@ runs:
       env:
         CHART_FILE: ${{ inputs.chart_path }}/Chart.yaml
       run: |
+        set -euo pipefail
+        echo "::group::Extract chart name, version, and appVersion"
         CHART_NAME=$(yq -r '.name // ""' "$CHART_FILE")
         CHART_VERSION=$(yq -r '.version // ""' "$CHART_FILE")
         APP_VERSION=$(yq -r '.appVersion // ""' "$CHART_FILE")
@@ -187,15 +199,19 @@ runs:
         echo "chart_name=$CHART_NAME" >> "$GITHUB_OUTPUT"
         echo "chart_version=$CHART_VERSION" >> "$GITHUB_OUTPUT"
         echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+        echo "::endgroup::"
 
     - name: Package chart
       id: package
       shell: bash
       run: |
+        set -euo pipefail
+        echo "::group::Package Helm chart and compute SHA-256"
         PACKAGE_FILE=$(helm package "${{ inputs.chart_path }}" | awk '{print $NF}')
         SHA256=$(sha256sum "$PACKAGE_FILE" | awk '{print $1}')
         echo "package_file=$PACKAGE_FILE" >> "$GITHUB_OUTPUT"
         echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+        echo "::endgroup::"
 
     # Intentional: version bump commit runs only when chart push is enabled.
     - name: Commit file to branch
@@ -226,12 +242,15 @@ runs:
         CHART_VERSION: ${{ steps.meta.outputs.chart_version }}
         PUSH_CHART: ${{ inputs.push_chart }}
       run: |
+        set -euo pipefail
+        echo "::group::Resolve OCI upload identifier"
         if [[ "$PUSH_CHART" == "true" ]]; then
           OCI_TAG="${CHART_VERSION//+/_}"
           echo "upload_identifier=oci://${{ inputs.oci_registry }}/${{ inputs.oci_repo }}/$CHART_NAME:$OCI_TAG" >> "$GITHUB_OUTPUT"
         else
           echo "upload_identifier=" >> "$GITHUB_OUTPUT"
         fi
+        echo "::endgroup::"
 
     - name: Step summary
       if: ${{ always() }}
@@ -250,6 +269,8 @@ runs:
         SHA256: ${{ steps.package.outputs.sha256 }}
         UPLOAD_IDENTIFIER: ${{ steps.upload_meta.outputs.upload_identifier }}
       run: |
+        set -euo pipefail
+        echo "::group::Write Helm release summary to step summary"
         {
           echo "## Helm Release OCI"
           echo ""
@@ -268,3 +289,4 @@ runs:
             echo "- Upload identifier: \`(skipped)\`"
           fi
         } >> "$GITHUB_STEP_SUMMARY"
+        echo "::endgroup::"
