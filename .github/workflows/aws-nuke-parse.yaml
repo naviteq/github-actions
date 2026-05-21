@@ -1,0 +1,122 @@
+---
+name: AWS Nuke / Parse approval comment
+# Reusable comment-parsing logic for the consumer-side `issue_comment`
+# trampoline that fires aws-nuke-apply.yaml.
+#
+# The caller's workflow must be triggered by `on: issue_comment` (which is
+# NOT a valid trigger for reusable workflows themselves). `workflow_call`
+# propagates the caller's `github` event context unchanged, so the parse
+# step reads `github.event.comment.body` and `github.event.issue.body`
+# directly — do NOT refactor these into inputs.
+#
+# This workflow is convenience plumbing only. `aws-nuke-apply.yaml`
+# re-validates every claim emitted here (regex, account via STS, hash
+# against the issue body, regions allowlist, CODEOWNERS). The security
+# boundary is unchanged.
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
+    outputs:
+      matched:
+        description: '"true" when the comment is a well-formed approval AND the audit-issue body carries the required markers. Consumers gate the apply job on `matched == ''true''`.'
+        value: ${{ jobs.parse.outputs.matched }}
+      plan_run_id:
+        description: Plan workflow run id parsed from the `/approve nuke-<run-id>` comment.
+        value: ${{ jobs.parse.outputs.plan_run_id }}
+      aws_account_id:
+        description: AWS account id extracted from the audit-issue body. Re-validated against STS by aws-nuke-apply.yaml.
+        value: ${{ jobs.parse.outputs.aws_account_id }}
+      regions_allowlist:
+        description: Regions allowlist (CSV) extracted from the audit-issue body. Re-validated against the consumer config by aws-nuke-apply.yaml.
+        value: ${{ jobs.parse.outputs.regions_allowlist }}
+      resource_set_hash:
+        description: Plan resource-set SHA-256 extracted from the audit-issue body. Re-validated against the live resource set by aws-nuke-apply.yaml.
+        value: ${{ jobs.parse.outputs.resource_set_hash }}
+
+permissions: {}
+
+jobs:
+  parse:
+    name: Parse approval comment
+    if: >-
+      github.event.issue.pull_request == null
+      && contains(github.event.issue.labels.*.name, 'nuke:pending')
+      && startsWith(github.event.comment.body, '/approve nuke-')
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      issues: read
+    outputs:
+      matched: ${{ steps.match.outputs.matched }}
+      plan_run_id: ${{ steps.match.outputs.plan_run_id }}
+      aws_account_id: ${{ steps.match.outputs.aws_account_id }}
+      regions_allowlist: ${{ steps.match.outputs.regions_allowlist }}
+      resource_set_hash: ${{ steps.match.outputs.resource_set_hash }}
+    steps:
+      - id: match
+        # The regexes below pin to the exact issue-body shape emitted by
+        # aws-nuke-plan.yaml:
+        #   - `<!-- nuke:hash=<hash> account=<id> -->`  (plan step ~line 597)
+        #   - `| Account | \`<id>\` |`                  (plan step ~line 616)
+        #   - `| Regions | \`<csv>\` |`                 (plan step ~line 617)
+        # If the plan-side rendering changes, this step must change with it.
+        # The test case `case_parse_extracts_fields_from_issue_body` in
+        # z-test-aws-nuke.yaml acts as a drift detector.
+        shell: bash
+        env:
+          BODY: ${{ github.event.comment.body }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::Parse approval command from comment"
+          printf 'Comment body: %s\n' "${BODY}"
+          if [[ "${BODY}" =~ ^/approve[[:space:]]+nuke-([0-9]+)$ ]]; then
+            plan_run_id="${BASH_REMATCH[1]}"
+            printf 'Matched approval: plan_run_id=%s\n' "${plan_run_id}"
+            echo "plan_run_id=${plan_run_id}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Comment does not match '/approve nuke-<id>' — not an approval, skipping apply"
+            echo "matched=false" >> "$GITHUB_OUTPUT"
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Extract account / regions / hash from issue body"
+          if ! printf '%s\n' "${ISSUE_BODY}" | perl -ne '
+            if (/^<!--[[:space:]]*nuke:hash=([^[:space:]]+)[[:space:]]+account=([^[:space:]]+)[[:space:]]*-->$/) {
+              $hash = $1;
+              $account = $2;
+            }
+            if (/^\|[[:space:]]*Account[[:space:]]*\|[[:space:]]*`([^`]+)`[[:space:]]*\|$/) {
+              $account = $1;
+            }
+            if (/^\|[[:space:]]*Regions[[:space:]]*\|[[:space:]]*`([^`]+)`[[:space:]]*\|$/) {
+              $regions = $1;
+            }
+            END {
+              exit 1 if !$account || !$regions || !$hash;
+              print STDERR "extracted aws_account_id=$account\n";
+              print STDERR "extracted regions_allowlist=$regions\n";
+              print STDERR "extracted resource_set_hash=$hash\n";
+              print "aws_account_id=$account\n";
+              print "regions_allowlist=$regions\n";
+              print "resource_set_hash=$hash\n";
+            }
+          ' >> "$GITHUB_OUTPUT"; then
+            echo "Failed to extract one or more of: account, regions, hash from issue body"
+            echo "matched=false" >> "$GITHUB_OUTPUT"
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Mark approval as matched"
+          echo "All inputs parsed cleanly; apply job will run."
+          echo "matched=true" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"

@@ -24,7 +24,9 @@ runs:
       run: |
         shopt -s nullglob
         set -x
+        trap 'echo "::endgroup::"' EXIT
 
+        echo "::group::Resolve composite-action paths from glob patterns"
         actions=()
         for pattern in ${{ inputs.actions }}; do
           matches=( $pattern )
@@ -37,5 +39,8 @@ runs:
           echo "No composite actions matched '${{ inputs.actions }}'; skipping composite-action-lint."
           exit 0
         fi
+        echo "::endgroup::"
 
+        echo "::group::Run composite-action-lint on resolved actions"
         composite-action-lint "${actions[@]}"
+        echo "::endgroup::"

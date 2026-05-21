@@ -13,6 +13,8 @@ runs:
     - name: Generate release-please config if absent
       shell: bash
       run: |
+        set -euo pipefail
+        echo "::group::Generate release-please-config.json if absent"
         if [ -f release-please-config.json ]; then
           echo "Using existing release-please-config.json"
         else
@@ -40,10 +42,13 @@ runs:
         }
         RELEASE_PLEASE_CONFIG
         fi
+        echo "::endgroup::"
 
     - name: Generate release-please manifest if absent
       shell: bash
       run: |
+        set -euo pipefail
+        echo "::group::Generate .release-please-manifest.json from latest tag if absent"
         if [ -f .release-please-manifest.json ]; then
           echo "Using existing .release-please-manifest.json"
         else
@@ -54,3 +59,4 @@ runs:
           echo "Seeding manifest at version: $LATEST_VERSION (from tag: $LATEST_TAG)"
           printf '{ ".": "%s" }\n' "$LATEST_VERSION" > .release-please-manifest.json
         fi
+        echo "::endgroup::"

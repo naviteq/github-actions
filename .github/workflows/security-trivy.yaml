@@ -162,6 +162,8 @@ jobs:
         if: always()
         shell: bash
         run: |
+          set -uo pipefail
+          echo "::group::Write Trivy scan summary to step summary"
           {
             echo "## 🔎 Trivy Scan Results"
 
@@ -196,3 +198,4 @@ jobs:
               echo "</details>"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "::endgroup::"
