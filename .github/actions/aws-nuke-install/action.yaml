@@ -8,7 +8,7 @@ description: >-
 inputs:
   version:
     description: >-
-      aws-nuke release version (e.g. 3.50.0). Must match an existing release
+      aws-nuke release version (e.g. 3.64.4). Must match an existing release
       tag of ekristen/aws-nuke. Use a pinned version, not "latest", so the
       plan-phase resource-set hash is reproducible across runs.
     required: true
@@ -23,12 +23,8 @@ inputs:
 
 outputs:
   version:
-    description: Installed aws-nuke version string (e.g. 3.50.0)
+    description: Installed aws-nuke version string (e.g. 3.64.4)
     value: ${{ steps.verify.outputs.version }}
-
-# renovate: datasource=github-releases depName=ekristen/aws-nuke
-# When bumping the default version downstream, validate the JSON output
-# schema is unchanged — the plan-phase hash relies on it.
 
 runs:
   using: composite
