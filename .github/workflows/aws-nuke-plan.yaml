@@ -60,7 +60,8 @@ on:
         description: aws-nuke release version (pinned, not "latest", so the hash is reproducible).
         type: string
         required: false
-        default: 3.50.0
+        # renovate: datasource=github-releases depName=ekristen/aws-nuke
+        default: 3.64.4
       artifact_retention_days:
         description: Plan artifact retention in days. Must be >= 90 for audit purposes.
         type: number
@@ -262,7 +263,7 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@159715a6ee54bc8df6dab17c48b756a0f377573a
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@e3588c94676801f22bbbed61bbf00d70670ccf7c
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -346,7 +347,7 @@ jobs:
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@159715a6ee54bc8df6dab17c48b756a0f377573a
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@e3588c94676801f22bbbed61bbf00d70670ccf7c
         with:
           version: ${{ inputs.aws_nuke_version }}
 
@@ -592,7 +593,22 @@ jobs:
           regions_csv="$(paste -sd ',' regions.txt || true)"
           echo "::endgroup::"
 
-          echo "::group::Render issue body markdown to issue-body.md"
+          # GitHub's GraphQL `createIssue` mutation rejects bodies longer than
+          # 65,536 characters. On large environments the per-resource bullets
+          # alone can blow past that, so the render below is bounded: the
+          # markers, table, hash and footer are load-bearing (the parse step
+          # regexes them) and are never truncated; only the per-type <details>
+          # bullets are trimmed, with a notice pointing operators at the full
+          # artifact. The 2 KB safety margin absorbs UTF-8 expansion and any
+          # future header additions before hitting the hard cap.
+          GH_ISSUE_BODY_MAX=65536
+          BODY_SAFETY_MARGIN=2048
+          effective_cap=$(( GH_ISSUE_BODY_MAX - BODY_SAFETY_MARGIN ))
+          # Reserve a fixed byte budget for the truncation notice so it always
+          # has room to render between the details and the suffix.
+          TRUNCATION_NOTICE_BYTES=512
+
+          echo "::group::Render static prefix (markers + table + hash + total) to issue-body.md"
           {
             echo "<!-- nuke:hash=${HASH} account=${AWS_ACCOUNT_ID} -->"
             if [[ "${AUTO_APPROVE_ALLOWED}" == "true" ]]; then
@@ -629,43 +645,13 @@ jobs:
             echo ""
             echo "**Total: ${RESOURCE_COUNT} resources across ${TYPE_COUNT} types**"
             echo ""
-            # Group rows by type into one <details> per type. The blank lines
-            # after <summary> and before </details> are load-bearing: GitHub's
-            # Markdown-in-HTML requires them to re-enter markdown parsing mode
-            # so the inner `- ` bullets render as a list instead of literal text.
-            awk -F'\t' '{print $2"\t"$1"\t"$3}' resource-set.txt \
-              | sort \
-              | awk -F'\t' -v counts_file=type-counts.tsv '
-                  BEGIN {
-                    while ((getline line < counts_file) > 0) {
-                      n = split(line, parts, "\t")
-                      if (n >= 2) counts[parts[1]] = parts[2]
-                    }
-                    close(counts_file)
-                    prev = ""
-                  }
-                  {
-                    if ($1 != prev) {
-                      if (prev != "") {
-                        print ""
-                        print "</details>"
-                        print ""
-                      }
-                      print "<details>"
-                      print "<summary><strong>" $1 "</strong> (" counts[$1] ")</summary>"
-                      print ""
-                      prev = $1
-                    }
-                    print "- `" $2 "` `" $3 "`"
-                  }
-                  END {
-                    if (prev != "") {
-                      print ""
-                      print "</details>"
-                    }
-                  }
-                '
-            echo ""
+          } > issue-body.md
+          prefix_bytes=$(wc -c < issue-body.md | tr -d ' ')
+          echo "prefix_bytes=${prefix_bytes}"
+          echo "::endgroup::"
+
+          echo "::group::Render static suffix (approval instructions) to suffix.md"
+          {
             if [[ "${AUTO_APPROVE_ALLOWED}" == "true" ]]; then
               echo "### Auto-approve"
               echo ""
@@ -684,7 +670,119 @@ jobs:
               echo "- If the resource set changes between plan and approval, apply will refuse on hash mismatch."
               echo "- Title prefix \`nuke:pending\` (and this comment) are load-bearing — do not edit."
             fi
-          } > issue-body.md
+          } > suffix.md
+          suffix_bytes=$(wc -c < suffix.md | tr -d ' ')
+          echo "suffix_bytes=${suffix_bytes}"
+          echo "::endgroup::"
+
+          echo "::group::Render <details> resource bullets within byte budget"
+          # The <details> section is the only part that can grow unbounded with
+          # the resource set, so it is the only part we truncate. Hash drift
+          # detection is unaffected: aws-nuke-apply.yaml hashes resource-set.txt
+          # (the artifact), not the rendered body.
+          # Group rows by type into one <details> per type. The blank lines
+          # after <summary> and before </details> are load-bearing: GitHub's
+          # Markdown-in-HTML requires them to re-enter markdown parsing mode
+          # so the inner `- ` bullets render as a list instead of literal text.
+          available_for_details=$(( effective_cap - prefix_bytes - suffix_bytes - TRUNCATION_NOTICE_BYTES ))
+          if (( available_for_details < 0 )); then
+            available_for_details=0
+          fi
+          echo "available_for_details=${available_for_details}"
+
+          awk -F'\t' '{print $2"\t"$1"\t"$3}' resource-set.txt \
+            | sort \
+            | awk -F'\t' -v counts_file=type-counts.tsv -v budget="${available_for_details}" -v rendered_file=rendered-count.txt '
+                BEGIN {
+                  while ((getline line < counts_file) > 0) {
+                    n = split(line, parts, "\t")
+                    if (n >= 2) counts[parts[1]] = parts[2]
+                  }
+                  close(counts_file)
+                  prev = ""
+                  used = 0
+                  emitted = 0
+                  truncated = 0
+                  in_block = 0
+                }
+                function emit(line,    len) {
+                  len = length(line) + 1
+                  if (used + len > budget) {
+                    truncated = 1
+                    return 0
+                  }
+                  print line
+                  used += len
+                  return 1
+                }
+                # `next` (not `exit`) is load-bearing: aborting the second
+                # awk would SIGPIPE the upstream sort/awk and trip pipefail.
+                # Read every record but stop emitting once `truncated` flips.
+                {
+                  if (truncated) next
+                  if ($1 != prev) {
+                    if (prev != "") {
+                      if (!emit("")) { next }
+                      if (!emit("</details>")) { next }
+                      in_block = 0
+                      if (!emit("")) { next }
+                    }
+                    if (!emit("<details>")) { next }
+                    in_block = 1
+                    if (!emit("<summary><strong>" $1 "</strong> (" counts[$1] ")</summary>")) { next }
+                    if (!emit("")) { next }
+                    prev = $1
+                  }
+                  if (!emit("- `" $2 "` `" $3 "`")) { next }
+                  emitted++
+                }
+                END {
+                  if (in_block) {
+                    # Close the currently open block cleanly. These tail bytes
+                    # are intentionally not budget-tracked — the
+                    # TRUNCATION_NOTICE_BYTES reservation above covers them.
+                    print ""
+                    print "</details>"
+                  }
+                  print emitted > rendered_file
+                  print (truncated ? 1 : 0) >> rendered_file
+                }
+              ' > details.md
+          echo "::endgroup::"
+
+          echo "::group::Assemble issue-body.md (details + optional truncation notice + suffix)"
+          emitted_bullets=$(sed -n '1p' rendered-count.txt)
+          truncated_flag=$(sed -n '2p' rendered-count.txt)
+          emitted_bullets="${emitted_bullets:-0}"
+          truncated_flag="${truncated_flag:-0}"
+
+          cat details.md >> issue-body.md
+
+          if [[ "${truncated_flag}" == "1" ]]; then
+            {
+              echo ""
+              echo "> **Note:** Resource list truncated to fit GitHub's 65,536-character issue-body limit."
+              echo "> Showing ${emitted_bullets} of ${RESOURCE_COUNT} resources. The full plan is in the"
+              echo "> artifact \`${ARTIFACT}\` attached to the [plan run](${RUN_URL})."
+              echo ""
+            } >> issue-body.md
+            echo "render_truncated=true" >> "$GITHUB_OUTPUT"
+            echo "rendered_bullets=${emitted_bullets}" >> "$GITHUB_OUTPUT"
+          else
+            echo "render_truncated=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "" >> issue-body.md
+          cat suffix.md >> issue-body.md
+          echo "::endgroup::"
+
+          echo "::group::Assert final body fits under GitHub's 65,536-character limit"
+          final_bytes=$(wc -c < issue-body.md | tr -d ' ')
+          echo "final_bytes=${final_bytes} (max=${GH_ISSUE_BODY_MAX})"
+          if (( final_bytes > GH_ISSUE_BODY_MAX )); then
+            echo "::error::Rendered issue body is ${final_bytes} bytes, exceeds GitHub's ${GH_ISSUE_BODY_MAX}-character limit." >&2
+            exit 1
+          fi
           echo "::endgroup::"
 
           echo "::group::Build issue title"
@@ -738,6 +836,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ASSIGNEES_CSV: ${{ steps.assignees.outputs.assignees_csv }}
           ISSUE_TITLE: ${{ steps.render.outputs.title }}
+          RENDER_TRUNCATED: ${{ steps.render.outputs.render_truncated }}
+          RENDERED_BULLETS: ${{ steps.render.outputs.rendered_bullets }}
         shell: bash
         run: |
           set -euo pipefail
@@ -766,6 +866,9 @@ jobs:
             echo "- Audit issue: ${url}"
             echo "- Resource-set SHA-256: \`${{ steps.hash.outputs.resource_set_hash }}\`"
             echo "- Artifact: \`aws-nuke-plan-${{ github.run_id }}\`"
+            if [[ "${RENDER_TRUNCATED}" == "true" ]]; then
+              echo "- Resource list truncated in audit issue (showing ${RENDERED_BULLETS} of ${{ steps.extract.outputs.resource_count }}) — full set in artifact \`aws-nuke-plan-${{ github.run_id }}\`."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::endgroup::"
 

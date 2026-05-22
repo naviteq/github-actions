@@ -74,7 +74,8 @@ on:
         description: aws-nuke release version. Should match what the plan phase used.
         type: string
         required: false
-        default: 3.50.0
+        # renovate: datasource=github-releases depName=ekristen/aws-nuke
+        default: 3.64.4
       artifact_retention_days:
         description: Apply-log artifact retention in days. Must be >= 90 for audit purposes.
         type: number
@@ -425,7 +426,7 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@159715a6ee54bc8df6dab17c48b756a0f377573a
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@e3588c94676801f22bbbed61bbf00d70670ccf7c
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -547,7 +548,7 @@ jobs:
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@159715a6ee54bc8df6dab17c48b756a0f377573a
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@e3588c94676801f22bbbed61bbf00d70670ccf7c
         with:
           version: ${{ inputs.aws_nuke_version }}
 
