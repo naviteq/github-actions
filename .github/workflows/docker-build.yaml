@@ -4,10 +4,10 @@ on:
   workflow_call:
     outputs:
       tag-names:
-        description: Generated docker tag names without image base name
+        description: JSON-encoded array of generated docker tag names without the image base. Consume with fromJSON().
         value: ${{ jobs.build.outputs.tag-names }}
       tags:
-        description: Generated image tags
+        description: JSON-encoded array of generated image tags (registry/image:tag). Consume with fromJSON().
         value: ${{ jobs.build.outputs.tags }}
       image-ref:
         description: Primary image reference in the form repo/image:<primary_tag>
@@ -166,8 +166,8 @@ jobs:
       packages: write
       id-token: write
     outputs:
-      tag-names: ${{ steps.meta.outputs.tag-names }}
-      tags: ${{ steps.meta.outputs.tags }}
+      tag-names: ${{ steps.tag_outputs.outputs.tag-names }}
+      tags: ${{ steps.tag_outputs.outputs.tags }}
       image-ref: ${{ steps.image_ref.outputs.image-ref }}
       digest: ${{ steps.build_push.outputs.digest }}
       imageid: ${{ steps.build_push.outputs.imageid }}
@@ -314,6 +314,47 @@ jobs:
             type=schedule,pattern={{date 'YYYYMMDD'}}
             # User-provided custom tags
             ${{ inputs.custom_tags }}
+      - name: Derive tag list outputs
+        id: tag_outputs
+        shell: bash
+        env:
+          META_JSON: ${{ steps.meta.outputs.json }}
+          IMAGE_BASE: ${{ inputs.aws_region != '' && steps.ecr.outputs.registry || inputs.registry }}/${{ inputs.image != '' && inputs.image || github.repository }}
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Parse tag list from meta JSON"
+          tags_json="$(jq -c '.tags' <<<"$META_JSON")"
+          if ! jq -e 'type == "array"' <<<"$tags_json" >/dev/null; then
+            echo "meta json .tags is not a JSON array" >&2
+            exit 1
+          fi
+          echo "tags=$tags_json"
+          echo "::endgroup::"
+
+          echo "::group::Derive tag-names by stripping image base prefix"
+          prefix="${IMAGE_BASE}:"
+          tag_names=()
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            tag_names+=("${tag#"$prefix"}")
+          done < <(jq -r '.tags[]' <<<"$META_JSON")
+
+          if (( ${#tag_names[@]} == 0 )); then
+            tag_names_json="[]"
+          else
+            tag_names_json="$(printf '%s\n' "${tag_names[@]}" | jq -R . | jq -sc .)"
+          fi
+          echo "tag-names=$tag_names_json"
+          echo "::endgroup::"
+
+          echo "::group::Export JSON arrays to step outputs"
+          {
+            echo "tags=$tags_json"
+            echo "tag-names=$tag_names_json"
+          } >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
       - name: Resolve primary image ref
         id: image_ref
         shell: bash

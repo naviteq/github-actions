@@ -66,7 +66,7 @@ on:
         default: "task-definition.json"
     outputs:
       tags:
-        description: Generated image tags
+        description: JSON-encoded array of generated image tags (registry/image:tag). Consume with fromJSON().
         value: ${{ jobs.build.outputs.tags }}
       digest:
         description: Built image digest
@@ -104,7 +104,7 @@ permissions:
 
 jobs:
   build:
-    uses: naviteq/github-actions/.github/workflows/docker-build.yaml@15050fb75f713de00be8dfe26b6df2b8d2c60532
+    uses: naviteq/github-actions/.github/workflows/docker-build.yaml@3d669c46ee4b3410aeccd814c3828670c79f07df
     permissions:
       id-token: write
       contents: read
@@ -143,12 +143,17 @@ jobs:
           role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}
           aws-region: ${{ inputs.aws_region }}
 
-      - name: Get list of Docker tags
+      - name: Resolve first Docker tag
         id: get-tag
         shell: bash
+        env:
+          TAGS_JSON: ${{ needs.build.outputs.tags }}
         run: |
-          first_tag=$(echo "${{ needs.build.outputs.tags }}" | tr ',' '\n' | head -1)
+          set -euo pipefail
+          echo "::group::Pick first tag from JSON array"
+          first_tag=$(jq -er '.[0]' <<<"$TAGS_JSON")
           echo "first_tag=$first_tag" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
 
       - name: Fill in the new image ID in the Amazon ECS task definition
         id: task-def
