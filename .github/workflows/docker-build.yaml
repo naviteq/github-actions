@@ -178,16 +178,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4
         with:
           image: "public.ecr.aws/eks-distro-build-tooling/binfmt-misc:qemu-v9.2.2"
           platforms: "arm64,arm"
       # Auth
       ## AWS
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
         if: inputs.aws_region != '' && (inputs.docker_push || inputs.cache_backend == 'registry')
         with:
           role-to-assume: ${{ secrets.aws_iam_role }}
@@ -200,7 +200,7 @@ jobs:
       ## GHCR
       - name: Login to GitHub Container Registry
         if: inputs.docker_push && inputs.registry == 'ghcr.io' && inputs.aws_region == ''
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ inputs.username != '' && inputs.username || github.actor }}
@@ -208,7 +208,7 @@ jobs:
       ## Other
       - name: Login to registry (using username and token)
         if: inputs.docker_push && inputs.registry != '' && inputs.registry != 'ghcr.io' && inputs.username != ''
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ${{ inputs.registry }}
           username: ${{ inputs.username }}
@@ -281,7 +281,7 @@ jobs:
           echo "::endgroup::"
       - name: Prepare Docker meta
         id: meta
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6
         with:
           images: ${{ inputs.aws_region != '' && steps.ecr.outputs.registry || inputs.registry }}/${{ inputs.image != '' && inputs.image || github.repository }}
           flavor: |

@@ -1,0 +1,257 @@
+---
+name: Deploy services to ECS
+on:
+  workflow_call:
+    inputs:
+      docker_context:
+        description: Docker build context
+        type: string
+        required: false
+        default: "."
+      docker_platforms:
+        description: Target Docker platforms (e.g. linux/amd64,linux/arm64 or linux/arm/v7)
+        type: string
+        required: false
+        default: "linux/amd64,linux/arm64"
+      dockerfile:
+        description: Path to Dockerfile (relative to context). Leave empty to use default {context}/Dockerfile
+        type: string
+        required: false
+        default: ""
+      build_args:
+        description: Docker build arguments (multiline KEY=value format)
+        type: string
+        required: false
+        default: ""
+      custom_tags:
+        description: Custom tags (newline separated)
+        type: string
+        required: false
+        default: ""
+      registry:
+        description: Registry URL
+        type: string
+        required: false
+        default: ""
+      username:
+        description: Registry Username
+        type: string
+        required: false
+        default: ""
+      image:
+        description: Image name
+        type: string
+        required: false
+      aws_region:
+        description: AWS Region
+        type: string
+        required: false
+      runner:
+        description: GitHub Actions runner to use for the build job. Supports a single label or a JSON array of labels.
+        type: string
+        required: false
+        default: "ubuntu-24.04"
+      ecs_cluster:
+        description: ECS cluster name
+        type: string
+        required: true
+      ecs_service:
+        description: ECS service name
+        type: string
+        required: true
+      task_definition:
+        description: Task definition file to deploy to ECS (in JSON format).
+        type: string
+        required: false
+        default: "task-definition.json"
+    outputs:
+      tags:
+        description: Generated image tags
+        value: ${{ jobs.build.outputs.tags }}
+      digest:
+        description: Built image digest
+        value: ${{ jobs.build.outputs.digest }}
+      imageid:
+        description: Built image ID
+        value: ${{ jobs.build.outputs.imageid }}
+      metadata:
+        description: Build metadata JSON
+        value: ${{ jobs.build.outputs.metadata }}
+      scan_artifact_name:
+        description: Security scan artifact name
+        value: ${{ jobs.build.outputs.scan_artifact_name }}
+      task-definition-arn:
+        description: The ARN of the registered ECS task definition
+        value: ${{ jobs.deploy.outputs.task-definition-arn }}
+    secrets:
+      token:
+        description: Registry Token
+        required: false
+      aws_iam_role:
+        description: AWS IAM Role to assume
+        required: false
+      build_secrets:
+        description: Build secrets (multiline KEY=value format)
+        required: false
+      slack_webhook:
+        description: Slack incoming webhook URL
+        required: false
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    uses: naviteq/github-actions/.github/workflows/docker-build.yaml@15050fb75f713de00be8dfe26b6df2b8d2c60532
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    with:
+      aws_region: ${{ inputs.aws_region }}
+      registry: ${{ inputs.registry }}
+      username: ${{ inputs.username }}
+      image: ${{ inputs.image }}
+      runner: ${{ inputs.runner }}
+      docker_context: ${{ inputs.docker_context }}
+      docker_platforms: ${{ inputs.docker_platforms }}
+      build_args: ${{ inputs.build_args }}
+      custom_tags: ${{ inputs.custom_tags }}
+      version_tag_v_prefix: true
+      docker_push: true
+      security_scan_enabled: true
+      security_scan_severity: CRITICAL
+      security_scan_exit_code: "0"
+    secrets: inherit
+
+  deploy:
+    needs: build
+    runs-on: ${{ inputs.runner }}
+    env:
+      SLACK_WEBHOOK: ${{ secrets.slack_webhook }}
+    outputs:
+      task-definition-arn: ${{ steps.deploy.outputs.task-definition-arn }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
+        with:
+          role-to-assume: ${{ secrets.aws_iam_role }}
+          role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Get list of Docker tags
+        id: get-tag
+        shell: bash
+        run: |
+          first_tag=$(echo "${{ needs.build.outputs.tags }}" | tr ',' '\n' | head -1)
+          echo "first_tag=$first_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@6853cfae8c3a7d978fbf68b5a55453395541dfbb # v1.8.5
+        with:
+          task-definition: ${{ inputs.task_definition }}
+          container-name: nginx
+          image: "${{ steps.get-tag.outputs.first_tag }}"
+
+      - name: Deploy to ECS
+        id: deploy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@a310a830f5c14e583e35d84e4e1ec7dd177c3c9c #v.2.6.2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ inputs.ecs_service }}
+          cluster: ${{ inputs.ecs_cluster }}
+          wait-for-service-stability: true
+
+      - name: Send Slack notification
+        if:  ${{ success() && env.SLACK_WEBHOOK != '' }}
+        continue-on-error: true
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3
+        with:
+          webhook: ${{ secrets.slack_webhook }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "✅ ECS deployment ${{ job.status }}: ${{ github.repository }}"
+            attachments:
+              - color: "${{ job.status == 'success' && '#2eb886' || (job.status == 'cancelled' && '#9ca3af' || '#e01e5a') }}"
+                blocks:
+                  - type: section
+                    text:
+                      type: mrkdwn
+                      text: "*ECS deployment ${{ job.status }}*"
+                  - type: section
+                    fields:
+                      - type: mrkdwn
+                        text: "*Repository:*\n${{ github.repository }}"
+                      - type: mrkdwn
+                        text: "*Ref:*\n${{ github.ref_type }}: ${{ github.ref_name }}"
+                      - type: mrkdwn
+                        text: "*ECS service:*\n${{ inputs.ecs_service }}"
+                      - type: mrkdwn
+                        text: "*Task definition revision:*\n${{ steps.deploy.outputs.task-definition-arn }}"
+
+      - name: Get rolled-back task definition
+        id: get-rollback-task-def
+        if: ${{ failure() && steps.deploy.outcome == 'failure' }}
+        shell: bash
+        run: |
+          rollback_task_def=$(aws ecs describe-services \
+            --cluster "${{ inputs.ecs_cluster }}" \
+            --services "${{ inputs.ecs_service }}" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          echo "rollback_task_def=$rollback_task_def" >> "$GITHUB_OUTPUT"
+
+      - name: Slack — failure
+        if: ${{ failure() && env.SLACK_WEBHOOK != '' && steps.deploy.outcome == 'failure' }}
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3
+        with:
+          webhook: ${{ secrets.slack_webhook }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "❌ ECS deployment failed — rolled back to previous version"
+            attachments:
+                blocks:
+                  - type: section
+                    fields:
+                      - type: mrkdwn
+                        text: "*Repository:*\n${{ github.repository }}"
+                      - type: mrkdwn
+                        text: "*Cluster:*\n`${{ inputs.ecs_cluster }}`"
+                      - type: mrkdwn
+                        text: "*Service:*\n`${{ inputs.ecs_service }}`"
+                      - type: mrkdwn
+                        text: "*Rolled back to:*\n`${{ steps.get-rollback-task-def.outputs.rollback_task_def }}`"
+                      - type: mrkdwn
+                        text: "*Failed commit:*\n`${{ github.sha }}`"
+                      - type: mrkdwn
+                        text: "*Logs:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
+
+      - name: Slack — unknown failure
+        if: ${{ failure() && env.SLACK_WEBHOOK != '' }}
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3
+        with:
+          webhook: ${{ secrets.slack_webhook }}
+          webhook-type: incoming-webhook
+          payload: |
+            text: "❌ ECS deployment failed — one of the CI steps failed"
+            attachments:
+                blocks:
+                  - type: section
+                    fields:
+                      - type: mrkdwn
+                        text: "*Repository:*\n${{ github.repository }}"
+                      - type: mrkdwn
+                        text: "*Cluster:*\n`${{ inputs.ecs_cluster }}`"
+                      - type: mrkdwn
+                        text: "*Service:*\n`${{ inputs.ecs_service }}`"
+                      - type: mrkdwn
+                        text: "*Unknown failure*\n"
+                      - type: mrkdwn
+                        text: "*Failed commit:*\n`${{ github.sha }}`"
+                      - type: mrkdwn
+                        text: "*Logs:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"

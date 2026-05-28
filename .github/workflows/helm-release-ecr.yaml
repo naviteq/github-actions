@@ -133,7 +133,7 @@ jobs:
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ inputs.push_chart }}
-        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
         with:
           role-to-assume: ${{ secrets.aws_role_to_assume }}
           aws-region: ${{ secrets.aws_region }}
@@ -145,7 +145,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@db141a08851b18b05bd8d0360afb8a33043390cc
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@15050fb75f713de00be8dfe26b6df2b8d2c60532
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ecr_registry }}

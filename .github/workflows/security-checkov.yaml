@@ -150,47 +150,58 @@ jobs:
           base: ${{ steps.range.outputs.base_sha }}
           ref: ${{ steps.range.outputs.head_sha }}
           list-files: json
+          # Use the `added|modified` change-type selector so deleted paths
+          # are excluded from each `*_files` output. Without this, deletions
+          # reach `checkov -f` and the action errors with FileNotFoundError
+          # because the file no longer exists on the checked-out head_ref.
           filters: |
             terraform:
-              - '**/*.tf'
-              - '**/*.tf.json'
-              - '**/*.tfvars'
-              - '**/*.tfvars.json'
+              - added|modified:
+                  - '**/*.tf'
+                  - '**/*.tf.json'
+                  - '**/*.tfvars'
+                  - '**/*.tfvars.json'
             kubernetes:
-              - '**/*.yaml'
-              - '**/*.yml'
-              - '**/*.json'
+              - added|modified:
+                  - '**/*.yaml'
+                  - '**/*.yml'
+                  - '**/*.json'
             helm:
-              - '**/Chart.yaml'
-              - '**/Chart.yml'
-              - '**/values*.yaml'
-              - '**/values*.yml'
-              - '**/templates/**/*.yaml'
-              - '**/templates/**/*.yml'
+              - added|modified:
+                  - '**/Chart.yaml'
+                  - '**/Chart.yml'
+                  - '**/values*.yaml'
+                  - '**/values*.yml'
+                  - '**/templates/**/*.yaml'
+                  - '**/templates/**/*.yml'
             cloudformation:
-              - '**/*.yaml'
-              - '**/*.yml'
-              - '**/*.json'
-              - '**/*.template'
+              - added|modified:
+                  - '**/*.yaml'
+                  - '**/*.yml'
+                  - '**/*.json'
+                  - '**/*.template'
             dockerfile:
-              - '**/Dockerfile'
-              - '**/Dockerfile.*'
+              - added|modified:
+                  - '**/Dockerfile'
+                  - '**/Dockerfile.*'
             github_actions:
-              - '.github/workflows/**/*.yaml'
-              - '.github/workflows/**/*.yml'
-              - '.github/actions/**/action.yaml'
-              - '.github/actions/**/action.yml'
+              - added|modified:
+                  - '.github/workflows/**/*.yaml'
+                  - '.github/workflows/**/*.yml'
+                  - '.github/actions/**/action.yaml'
+                  - '.github/actions/**/action.yml'
             iac:
-              - '**/*.tf'
-              - '**/*.tf.json'
-              - '**/*.tfvars'
-              - '**/*.tfvars.json'
-              - '**/*.yaml'
-              - '**/*.yml'
-              - '**/*.json'
-              - '**/*.template'
-              - '**/Dockerfile'
-              - '**/Dockerfile.*'
+              - added|modified:
+                  - '**/*.tf'
+                  - '**/*.tf.json'
+                  - '**/*.tfvars'
+                  - '**/*.tfvars.json'
+                  - '**/*.yaml'
+                  - '**/*.yml'
+                  - '**/*.json'
+                  - '**/*.template'
+                  - '**/Dockerfile'
+                  - '**/Dockerfile.*'
 
       - name: Resolve framework matches
         id: resolved
@@ -231,13 +242,21 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Filter matched files to configured directory"
-          # Limit to files under the configured directory.
+          # Limit to files under the configured directory. paths-filter is the
+          # primary defence against deleted paths reaching `checkov -f`, but
+          # we belt-and-braces with an on-disk check here in case a path slips
+          # through (e.g. submodule churn, helm-expansion edge cases).
           declare -a in_dir=()
           for f in "${matched[@]}"; do
             [[ -z "${f}" ]] && continue
-            if [[ "${DIRECTORY}" == "." || "${f}" == "${DIRECTORY%/}/"* ]]; then
-              in_dir+=("${f}")
+            if [[ "${DIRECTORY}" != "." && "${f}" != "${DIRECTORY%/}/"* ]]; then
+              continue
             fi
+            if [[ ! -e "${f}" ]]; then
+              printf '  skip (not on disk): %s\n' "${f}"
+              continue
+            fi
+            in_dir+=("${f}")
           done
           echo "::endgroup::"
 
@@ -267,10 +286,12 @@ jobs:
                 # the chart directory is part of the rendering context.
                 if [[ "${d}" == "." ]]; then
                   while IFS= read -r charted; do
+                    [[ -z "${charted}" || ! -e "${charted}" ]] && continue
                     in_dir+=("${charted}")
                   done < <(git ls-files -- 'Chart.yaml' 'Chart.yml' 'values*.yaml' 'values*.yml' 'templates' 'charts')
                 else
                   while IFS= read -r charted; do
+                    [[ -z "${charted}" || ! -e "${charted}" ]] && continue
                     in_dir+=("${charted}")
                   done < <(git ls-files -- "${d}")
                 fi
@@ -395,7 +416,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@9e0d7b8d25671d64c341c19c0152d693099fb5ba # v4.35.5
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
         if: ${{ always() && inputs.upload_sarif && hashFiles('results.sarif') != '' }}
         with:
           sarif_file: results.sarif
