@@ -104,7 +104,7 @@ permissions:
 
 jobs:
   build:
-    uses: naviteq/github-actions/.github/workflows/docker-build.yaml@3d669c46ee4b3410aeccd814c3828670c79f07df
+    uses: naviteq/github-actions/.github/workflows/docker-build.yaml@46a4f98361f4b65e5dbe6f646979fbc4c73dfcfa
     permissions:
       id-token: write
       contents: read
