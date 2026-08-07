@@ -3,51 +3,16 @@ name: Deploy services to ECS
 on:
   workflow_call:
     inputs:
-      docker_context:
-        description: Docker build context
-        type: string
-        required: false
-        default: "."
-      docker_platforms:
-        description: Target Docker platforms (e.g. linux/amd64,linux/arm64 or linux/arm/v7)
-        type: string
-        required: false
-        default: "linux/amd64,linux/arm64"
-      dockerfile:
-        description: Path to Dockerfile (relative to context). Leave empty to use default {context}/Dockerfile
-        type: string
-        required: false
-        default: ""
-      build_args:
-        description: Docker build arguments (multiline KEY=value format)
-        type: string
-        required: false
-        default: ""
-      custom_tags:
-        description: Custom tags (newline separated)
-        type: string
-        required: false
-        default: ""
-      registry:
-        description: Registry URL
-        type: string
-        required: false
-        default: ""
-      username:
-        description: Registry Username
-        type: string
-        required: false
-        default: ""
       image:
-        description: Image name
+        description: Full image reference to deploy (registry/image:tag).
         type: string
-        required: false
+        required: true
       aws_region:
         description: AWS Region
         type: string
         required: false
       runner:
-        description: GitHub Actions runner to use for the build job. Supports a single label or a JSON array of labels.
+        description: GitHub Actions runner to use for the deploy job. Supports a single label or a JSON array of labels.
         type: string
         required: false
         default: "ubuntu-24.04"
@@ -60,38 +25,31 @@ on:
         type: string
         required: true
       task_definition:
-        description: Task definition file to deploy to ECS (in JSON format).
+        description: >-
+          Path to a task-definition JSON file in the repo to render and deploy. Used as a fallback
+          when task_definition_family is not set. Mutually exclusive with task_definition_family.
         type: string
         required: false
-        default: "task-definition.json"
+        default: ""
+      task_definition_family:
+        description: >-
+          ECS task definition family. When set, the latest active revision of this family is fetched
+          from the AWS API and rendered for deployment, instead of a task-definition file from the
+          repo. Takes precedence over task_definition.
+        type: string
+        required: false
+        default: ""
+      container_name:
+        description: Container name in the task definition to update with the new image.
+        type: string
+        required: true
     outputs:
-      tags:
-        description: JSON-encoded array of generated image tags (registry/image:tag). Consume with fromJSON().
-        value: ${{ jobs.build.outputs.tags }}
-      digest:
-        description: Built image digest
-        value: ${{ jobs.build.outputs.digest }}
-      imageid:
-        description: Built image ID
-        value: ${{ jobs.build.outputs.imageid }}
-      metadata:
-        description: Build metadata JSON
-        value: ${{ jobs.build.outputs.metadata }}
-      scan_artifact_name:
-        description: Security scan artifact name
-        value: ${{ jobs.build.outputs.scan_artifact_name }}
       task-definition-arn:
         description: The ARN of the registered ECS task definition
         value: ${{ jobs.deploy.outputs.task-definition-arn }}
     secrets:
-      token:
-        description: Registry Token
-        required: false
       aws_iam_role:
         description: AWS IAM Role to assume
-        required: false
-      build_secrets:
-        description: Build secrets (multiline KEY=value format)
         required: false
       slack_webhook:
         description: Slack incoming webhook URL
@@ -100,72 +58,38 @@ on:
 permissions:
   id-token: write
   contents: read
-  packages: write
 
 jobs:
-  build:
-    uses: naviteq/github-actions/.github/workflows/docker-build.yaml@46a4f98361f4b65e5dbe6f646979fbc4c73dfcfa
-    permissions:
-      id-token: write
-      contents: read
-      packages: write
-    with:
-      aws_region: ${{ inputs.aws_region }}
-      registry: ${{ inputs.registry }}
-      username: ${{ inputs.username }}
-      image: ${{ inputs.image }}
-      runner: ${{ inputs.runner }}
-      docker_context: ${{ inputs.docker_context }}
-      docker_platforms: ${{ inputs.docker_platforms }}
-      build_args: ${{ inputs.build_args }}
-      custom_tags: ${{ inputs.custom_tags }}
-      version_tag_v_prefix: true
-      docker_push: true
-      security_scan_enabled: true
-      security_scan_severity: CRITICAL
-      security_scan_exit_code: "0"
-    secrets: inherit
-
   deploy:
-    needs: build
     runs-on: ${{ inputs.runner }}
     env:
       SLACK_WEBHOOK: ${{ secrets.slack_webhook }}
     outputs:
       task-definition-arn: ${{ steps.deploy.outputs.task-definition-arn }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ secrets.aws_iam_role }}
           role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}
           aws-region: ${{ inputs.aws_region }}
 
-      - name: Resolve first Docker tag
-        id: get-tag
-        shell: bash
-        env:
-          TAGS_JSON: ${{ needs.build.outputs.tags }}
-        run: |
-          set -euo pipefail
-          echo "::group::Pick first tag from JSON array"
-          first_tag=$(jq -er '.[0]' <<<"$TAGS_JSON")
-          echo "first_tag=$first_tag" >> "$GITHUB_OUTPUT"
-          echo "::endgroup::"
-
       - name: Fill in the new image ID in the Amazon ECS task definition
         id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@6853cfae8c3a7d978fbf68b5a55453395541dfbb # v1.8.5
+        uses: aws-actions/amazon-ecs-render-task-definition@138c24f321fdbdf7edee4a685519d253cae2cdea # v1.9.0
         with:
-          task-definition: ${{ inputs.task_definition }}
-          container-name: nginx
-          image: "${{ steps.get-tag.outputs.first_tag }}"
+          # Family takes precedence: when set, the action pulls the latest active revision from AWS.
+          # Otherwise fall back to the task-definition file from the repo.
+          task-definition-family: ${{ inputs.task_definition_family }}
+          task-definition: ${{ inputs.task_definition_family == '' && inputs.task_definition || '' }}
+          container-name: ${{ inputs.container_name }}
+          image: "${{ inputs.image }}"
 
       - name: Deploy to ECS
         id: deploy
-        uses: aws-actions/amazon-ecs-deploy-task-definition@a310a830f5c14e583e35d84e4e1ec7dd177c3c9c #v.2.6.2
+        uses: aws-actions/amazon-ecs-deploy-task-definition@c465972ecbd160473f22e683363b422a5412a3de # v2.6.3
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ inputs.ecs_service }}
@@ -175,7 +99,7 @@ jobs:
       - name: Send Slack notification
         if:  ${{ success() && env.SLACK_WEBHOOK != '' }}
         continue-on-error: true
-        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4
         with:
           webhook: ${{ secrets.slack_webhook }}
           webhook-type: incoming-webhook
@@ -213,7 +137,7 @@ jobs:
 
       - name: Slack — failure
         if: ${{ failure() && env.SLACK_WEBHOOK != '' && steps.deploy.outcome == 'failure' }}
-        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4
         with:
           webhook: ${{ secrets.slack_webhook }}
           webhook-type: incoming-webhook
@@ -238,7 +162,7 @@ jobs:
 
       - name: Slack — unknown failure
         if: ${{ failure() && env.SLACK_WEBHOOK != '' }}
-        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4
         with:
           webhook: ${{ secrets.slack_webhook }}
           webhook-type: incoming-webhook

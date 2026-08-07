@@ -105,14 +105,14 @@ jobs:
           private-key: ${{ secrets.github_app_key }}
 
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           token: ${{ steps.app-token.outputs.token != '' && steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
 
       - name: Login to GitHub Registry
         if: ${{ inputs.push_chart }}
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ inputs.ghcr_registry }}
           username: ${{ github.actor }}
@@ -120,7 +120,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@46a4f98361f4b65e5dbe6f646979fbc4c73dfcfa
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@a99dd4c67d65f9b93fdfaefddea5e225c2277980
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ghcr_registry }}

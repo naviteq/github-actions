@@ -93,9 +93,9 @@ runs:
   using: composite
   steps:
     - name: Setup Helm
-      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5
+      uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
       with:
-        version: v3.18.3
+        version: v4.2.3
 
     - name: Validate chart
       shell: bash
@@ -216,7 +216,7 @@ runs:
     # Intentional: version bump commit runs only when chart push is enabled.
     - name: Commit file to branch
       if: ${{ inputs.push_chart == 'true' && inputs.bump_version_in_git == 'true' }}
-      uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7
+      uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7
       with:
         branch: ${{ inputs.bump_version_git_branch != '' && inputs.bump_version_git_branch || github.ref_name }}
         commit_user_name: ${{ inputs.commit_user_name != '' && inputs.commit_user_name || inputs.commiter_user_name }}
