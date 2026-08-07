@@ -61,7 +61,7 @@ on:
         type: string
         required: false
         # renovate: datasource=github-releases depName=ekristen/aws-nuke
-        default: 3.65.0
+        default: 3.66.0
       artifact_retention_days:
         description: Plan artifact retention in days. Must be >= 90 for audit purposes.
         type: number
@@ -259,15 +259,15 @@ jobs:
 
       - name: Checkout consumer repository
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@46a4f98361f4b65e5dbe6f646979fbc4c73dfcfa
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@47bfa49d6b8231b13bd493c04c8728c760926207
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ secrets.aws_iam_role }}
           role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}-nuke-plan
@@ -347,7 +347,7 @@ jobs:
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@46a4f98361f4b65e5dbe6f646979fbc4c73dfcfa
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@47bfa49d6b8231b13bd493c04c8728c760926207
         with:
           version: ${{ inputs.aws_nuke_version }}
 

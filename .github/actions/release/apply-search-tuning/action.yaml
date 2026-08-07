@@ -1,0 +1,66 @@
+---
+name: Apply release-please search-depth tuning
+description: >-
+  Merges optional history-walk tuning knobs (commit-batch-size,
+  commit-search-depth, release-search-depth, last-release-sha) into
+  release-please-config.json as top-level keys. release-please-action does
+  not expose these as action inputs — they are manifest-releaser config keys
+  read directly from the config file — so this action patches the file on
+  the runner rather than passing anything to the action's `with:` block.
+inputs:
+  commit_batch_size:
+    description: "Number of commits fetched per API request during history pagination. Empty skips injection (release-please default: 10)."
+    required: false
+    default: ""
+  commit_search_depth:
+    description: "Maximum number of commits walked back when searching commit history. Empty skips injection (release-please default: 500). Too small silently truncates the changelog."
+    required: false
+    default: ""
+  release_search_depth:
+    description: "Maximum number of past releases walked back when searching for the last release. Empty skips injection (release-please default: 400). Too small silently truncates the changelog."
+    required: false
+    default: ""
+  last_release_sha:
+    description: "Full commit SHA to use as the previous-release marker instead of auto-detecting it. Empty skips injection."
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Merge search-depth tuning into release-please-config.json
+      shell: bash
+      env:
+        COMMIT_BATCH_SIZE: ${{ inputs.commit_batch_size }}
+        COMMIT_SEARCH_DEPTH: ${{ inputs.commit_search_depth }}
+        RELEASE_SEARCH_DEPTH: ${{ inputs.release_search_depth }}
+        LAST_RELEASE_SHA: ${{ inputs.last_release_sha }}
+      run: |
+        set -euo pipefail
+        echo "::group::Apply release-please search-depth tuning to release-please-config.json"
+
+        apply_num() {
+          local key="$1" value="$2"
+          [ -n "$value" ] || return 0
+          local tmp
+          tmp="$(mktemp)"
+          jq --arg k "$key" --argjson v "$value" '.[$k] = $v' release-please-config.json > "$tmp"
+          mv "$tmp" release-please-config.json
+          echo "set ${key}=${value}"
+        }
+
+        apply_str() {
+          local key="$1" value="$2"
+          [ -n "$value" ] || return 0
+          local tmp
+          tmp="$(mktemp)"
+          jq --arg k "$key" --arg v "$value" '.[$k] = $v' release-please-config.json > "$tmp"
+          mv "$tmp" release-please-config.json
+          echo "set ${key}=${value}"
+        }
+
+        apply_num "commit-batch-size" "${COMMIT_BATCH_SIZE}"
+        apply_num "commit-search-depth" "${COMMIT_SEARCH_DEPTH}"
+        apply_num "release-search-depth" "${RELEASE_SEARCH_DEPTH}"
+        apply_str "last-release-sha" "${LAST_RELEASE_SHA}"
+
+        echo "::endgroup::"

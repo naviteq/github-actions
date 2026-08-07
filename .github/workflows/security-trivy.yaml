@@ -57,11 +57,11 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Log in to container registry
         if: ${{ inputs.scan_type == 'image' && inputs.registry != '' && inputs.registry_username != '' && env.REGISTRY_PASSWORD != '' }}
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ inputs.registry }}
           username: ${{ inputs.registry_username }}
@@ -154,7 +154,7 @@ jobs:
 
       - name: Upload SARIF to GitHub Security
         if: ${{ always() && hashFiles('trivy-report.sarif') != '' && inputs.upload_sarif }}
-        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
         with:
           sarif_file: trivy-report.sarif
 
