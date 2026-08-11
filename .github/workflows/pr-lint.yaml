@@ -1,0 +1,90 @@
+---
+name: PR Lint
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      types:
+        description: >
+          Newline-separated conventional-commit types the PR title may use.
+          Keep in sync with the calling repo's release-please configuration —
+          a type release-please does not recognise produces no version bump.
+        required: false
+        type: string
+        default: |
+          feat
+          fix
+          perf
+          revert
+          docs
+          refactor
+          test
+          build
+          ci
+          chore
+      require_scope:
+        description: "Whether the PR title must carry a scope, e.g. `feat(scope): …`."
+        required: false
+        type: boolean
+        default: false
+      subject_pattern:
+        description: >
+          Regex the subject (the part after `type(scope): `) must match.
+          The default rejects an uppercase first letter.
+        required: false
+        type: string
+        default: '^(?![A-Z]).+$'
+    outputs:
+      title:
+        description: The PR title that was validated.
+        value: ${{ jobs.conventional-pr-title.outputs.title }}
+
+permissions: {}
+
+jobs:
+  conventional-pr-title:
+    name: Conventional PR title
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      pull-requests: read
+    outputs:
+      title: ${{ github.event.pull_request.title }}
+    steps:
+      - name: Validate PR title against conventional commits
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: ${{ inputs.types }}
+          requireScope: ${{ inputs.require_scope }}
+          subjectPattern: ${{ inputs.subject_pattern }}
+          subjectPatternError: >
+            PR title subject must not start with an uppercase letter.
+            Use lowercase, e.g. `feat(terraform-aws-autoscaling): document ASG outputs`.
+
+  no-skip-ci-in-title:
+    name: No [skip ci] in PR title
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions: {}
+    steps:
+      - name: Reject CI-skip markers in PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          echo "::group::Check PR title for CI-skip markers"
+          # Squash-merge puts the PR title in the merge-commit subject, where
+          # these markers silently disable every workflow on the merge SHA.
+          pattern='\[(skip[- ]?ci|ci[- ]?skip|no[- ]?ci|skip[- ]?actions)\]|\*\*\*NO_CI\*\*\*'
+          if printf '%s' "${PR_TITLE}" | grep -qiE "${pattern}"; then
+            echo "::error title=PR title must not contain CI-skip markers::The repo squash-merges, so this title becomes the merge-commit subject and would disable every workflow on the merge SHA — including release-please. Rename the PR."
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "PR title is free of CI-skip markers"
+          echo "::endgroup::"
