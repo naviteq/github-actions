@@ -1,0 +1,146 @@
+---
+name: PR Lint
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      types:
+        description: >
+          Newline-separated conventional-commit types the PR title may use.
+          Keep in sync with the calling repo's release-please configuration —
+          a type release-please does not recognise produces no version bump.
+        required: false
+        type: string
+        default: |
+          feat
+          fix
+          perf
+          revert
+          docs
+          refactor
+          test
+          build
+          ci
+          chore
+      require_scope:
+        description: "Whether the PR title must carry a scope, e.g. `feat(scope): …`."
+        required: false
+        type: boolean
+        default: false
+      require_refs_trailer:
+        description: >
+          Whether a PR whose branch names a ticket must carry a matching
+          `Refs: KEY-123` line in its body. Squash-merge copies the body into
+          the commit, which is where the link lives once the scope drops it.
+        required: false
+        type: boolean
+        default: true
+      subject_pattern:
+        description: >
+          Regex the subject (the part after `type(scope): `) must match.
+          The default rejects an uppercase first letter.
+        required: false
+        type: string
+        default: '^(?![A-Z]).+$'
+    outputs:
+      title:
+        description: The PR title that was validated.
+        value: ${{ jobs.conventional-pr-title.outputs.title }}
+
+permissions: {}
+
+jobs:
+  conventional-pr-title:
+    name: Conventional PR title
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      pull-requests: read
+    outputs:
+      title: ${{ github.event.pull_request.title }}
+    steps:
+      - name: Validate PR title against conventional commits
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: ${{ inputs.types }}
+          requireScope: ${{ inputs.require_scope }}
+          subjectPattern: ${{ inputs.subject_pattern }}
+          subjectPatternError: >
+            PR title subject must not start with an uppercase letter.
+            Use lowercase, e.g. `feat(terraform-aws-autoscaling): document ASG outputs`.
+
+  no-ticket-scope:
+    name: Scope is a component, not a ticket
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions: {}
+    steps:
+      - name: Reject a ticket key in the PR title scope
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          REQUIRE_REFS: ${{ inputs.require_refs_trailer }}
+        run: |
+          set -euo pipefail
+          echo "::group::Check the PR title scope"
+          # release-please renders the scope into the changelog, which ships to
+          # clients. → see docs/ai-context/comment-policy.md
+          scope="$(printf '%s' "${PR_TITLE}" | sed -nE 's/^[a-z]+\(([^)]+)\)!?:.*/\1/p')"
+          if printf '%s' "${scope}" | grep -qE '^[A-Za-z]{2,}-[0-9]+$'; then
+            key="$(printf '%s' "${scope}" | tr '[:lower:]' '[:upper:]')"
+            echo "::error title=PR title scope must name a component::The scope '${scope}' is a ticket key. release-please renders it into the published CHANGELOG, where a client cannot open it. Name what changed instead — a chart, module, unit or workflow — and put 'Refs: ${key}' in the PR body."
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "Scope '${scope:-<none>}' is not a ticket key"
+          echo "::endgroup::"
+
+          echo "::group::Check the Refs trailer"
+          if [ "${REQUIRE_REFS}" != "true" ]; then
+            echo "Trailer check disabled by require_refs_trailer"
+            echo "::endgroup::"
+            exit 0
+          fi
+          # Upper-case only, so `renovate/grafana-12.x` is not read as a ticket.
+          ticket="$(printf '%s' "${HEAD_REF}" | grep -oE '(^|/)[A-Z]{2,}-[0-9]+' | head -1 | tr -d '/' || true)"
+          if [ -z "${ticket}" ]; then
+            echo "Branch '${HEAD_REF}' names no ticket; trailer not required"
+            echo "::endgroup::"
+            exit 0
+          fi
+          if printf '%s' "${PR_BODY}" | grep -qE "^[[:space:]]*Refs:.*\b${ticket}\b"; then
+            echo "PR body carries 'Refs: ${ticket}'"
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::error title=PR body must carry the Refs trailer::The branch names ${ticket}, but the body has no 'Refs: ${ticket}' line. Squash-merge copies the body into the commit — without it the ticket link is lost, because the scope no longer carries it."
+          echo "::endgroup::"
+          exit 1
+
+  no-skip-ci-in-title:
+    name: No [skip ci] in PR title
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions: {}
+    steps:
+      - name: Reject CI-skip markers in PR title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          echo "::group::Check PR title for CI-skip markers"
+          # Squash-merge puts the PR title in the merge-commit subject, where
+          # these markers silently disable every workflow on the merge SHA.
+          pattern='\[(skip[- ]?ci|ci[- ]?skip|no[- ]?ci|skip[- ]?actions)\]|\*\*\*NO_CI\*\*\*'
+          if printf '%s' "${PR_TITLE}" | grep -qiE "${pattern}"; then
+            echo "::error title=PR title must not contain CI-skip markers::The repo squash-merges, so this title becomes the merge-commit subject and would disable every workflow on the merge SHA — including release-please. Rename the PR."
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "PR title is free of CI-skip markers"
+          echo "::endgroup::"

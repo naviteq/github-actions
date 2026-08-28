@@ -14,9 +14,10 @@ on:
         type: string
         default: ""
       codeql_language:
-        description: CodeQL language to scan
-        required: true
+        description: CodeQL language to scan. Leave empty to skip CodeQL entirely.
+        required: false
         type: string
+        default: ""
       dependency_review_runner:
         description: GitHub Actions runner for Dependency Review. Supports a single label or a JSON array of labels.
         required: false
@@ -72,6 +73,31 @@ on:
         required: false
         type: string
         default: ""
+      trivy_scanners:
+        description: Trivy scanners to enable (vuln, misconfig, secret). Ignored when trivy_scan_type=config.
+        required: false
+        type: string
+        default: vuln
+      trivy_config:
+        description: Path to a Trivy configuration file (trivy.yaml)
+        required: false
+        type: string
+        default: ""
+      trivy_ignorefile:
+        description: Path to a Trivy ignore file. A single .trivyignore.yaml carries rationale and expiry.
+        required: false
+        type: string
+        default: ""
+      trivy_skip_dirs:
+        description: Comma-separated directories to exclude from the Trivy scan
+        required: false
+        type: string
+        default: ""
+      trivy_soft_fail:
+        description: Report Trivy findings without failing the job
+        required: false
+        type: boolean
+        default: false
       checkov_directory:
         description: Directory to scan with Checkov
         required: false
@@ -122,11 +148,36 @@ on:
         required: false
         type: string
         default: ""
+      checkov_config_file:
+        description: Path to the Checkov configuration file (.checkov.yaml). Required when the config carries a var-file.
+        required: false
+        type: string
+        default: ""
       checkov_enable_cache:
         description: Cache the Checkov pip install between runs.
         required: false
         type: boolean
         default: true
+      download_artifact:
+        description: Artifact downloaded into the workspace before scanning. Used to scan another job's output.
+        required: false
+        type: string
+        default: ""
+      download_path:
+        description: Directory the artifact is extracted into. Must match the path the producer uploaded from.
+        required: false
+        type: string
+        default: ""
+      upload_report_artifact:
+        description: Retain scanner reports as CI artifacts for the audit trail
+        required: false
+        type: boolean
+        default: true
+      report_retention_days:
+        description: Retention period for scanner report artifacts, in days
+        required: false
+        type: number
+        default: 90
       enable_codeql:
         description: Enable CodeQL scanning
         required: false
@@ -166,7 +217,7 @@ permissions: {}
 jobs:
   codeql:
     name: CodeQL
-    if: ${{ inputs.enable_codeql }}
+    if: ${{ inputs.enable_codeql && inputs.codeql_language != '' }}
     uses: ./.github/workflows/security-codeql.yaml
     permissions:
       actions: read
@@ -211,9 +262,18 @@ jobs:
       scan_type: ${{ inputs.trivy_scan_type }}
       image_ref: ${{ inputs.trivy_image_ref }}
       scan_ref: ${{ inputs.trivy_scan_ref }}
+      scanners: ${{ inputs.trivy_scanners }}
+      trivy_config: ${{ inputs.trivy_config }}
+      ignorefile: ${{ inputs.trivy_ignorefile }}
+      skip_dirs: ${{ inputs.trivy_skip_dirs }}
+      soft_fail: ${{ inputs.trivy_soft_fail }}
       registry: ${{ inputs.trivy_registry }}
       registry_username: ${{ inputs.trivy_registry_username }}
       upload_sarif: ${{ inputs.upload_sarif }}
+      download_artifact: ${{ inputs.download_artifact }}
+      download_path: ${{ inputs.download_path }}
+      upload_report_artifact: ${{ inputs.upload_report_artifact }}
+      report_retention_days: ${{ inputs.report_retention_days }}
     secrets:
       registry_password: ${{ secrets.trivy_registry_password }}
 
@@ -238,3 +298,9 @@ jobs:
       head_ref: ${{ inputs.checkov_head_ref }}
       submodules: ${{ inputs.checkov_submodules }}
       enable_cache: ${{ inputs.checkov_enable_cache }}
+      config_file: ${{ inputs.checkov_config_file }}
+      upload_sarif: ${{ inputs.upload_sarif }}
+      download_artifact: ${{ inputs.download_artifact }}
+      download_path: ${{ inputs.download_path }}
+      upload_report_artifact: ${{ inputs.upload_report_artifact }}
+      report_retention_days: ${{ inputs.report_retention_days }}

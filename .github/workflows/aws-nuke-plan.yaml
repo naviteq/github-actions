@@ -1,15 +1,7 @@
 ---
 name: AWS Nuke / Plan
-# Plan-phase of the two-phase aws-nuke pattern.
-#
-# Runs aws-nuke in dry-run mode against the consumer-supplied config, uploads
-# the full plan output as an artifact, computes a SHA-256 of the resource
-# set, and opens an audit issue with the hash embedded for later approval.
-#
-# Why two phases: the apply phase refuses to run unless the resource-set
-# hash recorded on this issue matches the resource set actually present at
-# apply time. This prevents resources created during the approval window
-# from being silently nuked.
+# Plan-phase of the two-phase aws-nuke pattern; the hash recorded here is what
+# stops the apply nuking anything created since. See docs/aws-nuke.md.
 on:
   workflow_call:
     inputs:
@@ -188,14 +180,8 @@ jobs:
           set -euo pipefail
           trap 'echo "::endgroup::"' EXIT
           echo "::group::Resolve auto-approve eligibility against org allowlist"
-          # Precedence (load-bearing): NUKE_FREEZE > RUNESTRA_PROD_ACCOUNTS >
-          # NUKE_AUTO_APPROVE_ACCOUNTS > human approval. Freeze is handled by
-          # the pause step above; prod guard is handled by the step above.
-          # Here we only enable auto-approve when ALL of: caller opted in,
-          # the account is on the org allowlist, the account is NOT on the
-          # prod blocklist (defense in depth — if both lists overlap, prod
-          # wins), AND App-token secrets are wired (a comment posted with
-          # the default GITHUB_TOKEN does not fire the apply trampoline).
+          # All four conditions are required, and the precedence they sit in is
+          # load-bearing — see docs/aws-nuke.md § Precedence.
           allowed="false"
           if [[ "${AUTO_APPROVE_INPUT}" != "true" ]]; then
             echo "auto-approve not requested by caller; skipping."
@@ -232,11 +218,8 @@ jobs:
                 exit 1
               fi
               if [[ "${APP_ID_SET}" != "true" || "${APP_KEY_SET}" != "true" ]]; then
-                # Hard-fail rather than silently degrade to human approval.
-                # Without an App token the bot's /approve comment is posted
-                # with GITHUB_TOKEN and the consumer's `issue_comment`
-                # trampoline never fires — auto-approve becomes a no-op and
-                # the operator has no signal that something is wrong.
+                # Hard-fail, never degrade quietly: without an App token
+                # auto-approve is a silent no-op. See docs/aws-nuke.md.
                 echo "::error::auto_approve=true requires both github_app_id and github_app_key secrets. Comments posted by GITHUB_TOKEN do not trigger downstream issue_comment workflows." >&2
                 exit 1
               fi
@@ -263,7 +246,7 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@47bfa49d6b8231b13bd493c04c8728c760926207
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@7311ca39b33442c0103cee62cda8d48a266e8fda
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -347,7 +330,7 @@ jobs:
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@47bfa49d6b8231b13bd493c04c8728c760926207
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@7311ca39b33442c0103cee62cda8d48a266e8fda
         with:
           version: ${{ inputs.aws_nuke_version }}
 
@@ -362,14 +345,13 @@ jobs:
           set -uo pipefail
           trap 'echo "::endgroup::"' EXIT
           echo "::group::Run aws-nuke dry-run and capture plan output"
-          # Dry-run is the default for `aws-nuke run`; --no-dry-run would make it destructive.
-          # stdbuf forces line buffering so progress is visible live in the workflow log
-          # (long aws-nuke runs otherwise look stuck). Tee preserves file outputs for
-          # downstream hashing/parsing while echoing both streams to the GHA log.
+          # Dry-run is the default for `aws-nuke run`; --no-dry-run belongs only
+          # in the apply phase. stdbuf line-buffers, tee keeps the file outputs.
           stdbuf -oL -eL aws-nuke run \
             --config "${NUKE_CONFIG}" \
             --log-level info \
             --log-format json \
+            --feature-flag filter-groups \
             --no-prompt \
             2> >(tee nuke-plan.log >&2) \
             | tee nuke-plan.json
@@ -417,10 +399,8 @@ jobs:
           fi
           echo "::endgroup::"
 
-          # Aggregate per-type counts only when the plan is non-empty. The render
-          # step is gated on empty_plan != 'true', so type_count is only ever
-          # consumed when this branch runs. Generating it unconditionally would
-          # waste work and could mislead a reader of the run log.
+          # Only when the plan is non-empty: the render step is gated the same
+          # way, so an unconditional count would just mislead the run log.
           if [[ "${count}" != "0" ]]; then
             echo "::group::Aggregate resource-type counts"
             awk -F'\t' '{count[$2]++} END {for (t in count) print t"\t"count[t]}' \
@@ -593,14 +573,8 @@ jobs:
           regions_csv="$(paste -sd ',' regions.txt || true)"
           echo "::endgroup::"
 
-          # GitHub's GraphQL `createIssue` mutation rejects bodies longer than
-          # 65,536 characters. On large environments the per-resource bullets
-          # alone can blow past that, so the render below is bounded: the
-          # markers, table, hash and footer are load-bearing (the parse step
-          # regexes them) and are never truncated; only the per-type <details>
-          # bullets are trimmed, with a notice pointing operators at the full
-          # artifact. The 2 KB safety margin absorbs UTF-8 expansion and any
-          # future header additions before hitting the hard cap.
+          # Bounded render: markers, table, hash and footer are never truncated
+          # because the parse step regexes them. See docs/aws-nuke.md.
           GH_ISSUE_BODY_MAX=65536
           BODY_SAFETY_MARGIN=2048
           effective_cap=$(( GH_ISSUE_BODY_MAX - BODY_SAFETY_MARGIN ))
@@ -612,12 +586,8 @@ jobs:
           {
             echo "<!-- nuke:hash=${HASH} account=${AWS_ACCOUNT_ID} -->"
             if [[ "${AUTO_APPROVE_ALLOWED}" == "true" ]]; then
-              # Machine-readable marker consumed by the apply workflow to
-              # detect that this issue's plan was sanctioned for auto-approve
-              # at plan time. The apply workflow ALSO re-resolves
-              # `vars.NUKE_AUTO_APPROVE_ACCOUNTS` (defense in depth) before
-              # honoring the marker — a hand-edited issue body alone cannot
-              # bypass the human gate.
+              # Marker the apply workflow reads; it re-resolves the org var too,
+              # so the marker alone grants nothing. See docs/aws-nuke.md.
               echo "<!-- nuke:auto-approve=true -->"
             fi
             echo ""
@@ -676,14 +646,8 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Render <details> resource bullets within byte budget"
-          # The <details> section is the only part that can grow unbounded with
-          # the resource set, so it is the only part we truncate. Hash drift
-          # detection is unaffected: aws-nuke-apply.yaml hashes resource-set.txt
-          # (the artifact), not the rendered body.
-          # Group rows by type into one <details> per type. The blank lines
-          # after <summary> and before </details> are load-bearing: GitHub's
-          # Markdown-in-HTML requires them to re-enter markdown parsing mode
-          # so the inner `- ` bullets render as a list instead of literal text.
+          # The blank lines after <summary> and before </details> are load-bearing:
+          # without them GitHub renders the inner bullets as literal text.
           available_for_details=$(( effective_cap - prefix_bytes - suffix_bytes - TRUNCATION_NOTICE_BYTES ))
           if (( available_for_details < 0 )); then
             available_for_details=0
@@ -715,9 +679,8 @@ jobs:
                   used += len
                   return 1
                 }
-                # `next` (not `exit`) is load-bearing: aborting the second
-                # awk would SIGPIPE the upstream sort/awk and trip pipefail.
-                # Read every record but stop emitting once `truncated` flips.
+                # `next`, not `exit`: aborting here would SIGPIPE the upstream
+                # sort/awk and trip pipefail. Read on, just stop emitting.
                 {
                   if (truncated) next
                   if ($1 != prev) {
@@ -738,8 +701,7 @@ jobs:
                 }
                 END {
                   if (in_block) {
-                    # Close the currently open block cleanly. These tail bytes
-                    # are intentionally not budget-tracked — the
+                    # These tail bytes are deliberately not budget-tracked: the
                     # TRUNCATION_NOTICE_BYTES reservation above covers them.
                     print ""
                     print "</details>"
@@ -799,9 +761,8 @@ jobs:
           set -euo pipefail
           trap 'echo "::endgroup::"' EXIT
           echo "::group::Ensure aws-nuke labels exist in consumer repo"
-          # `gh issue create --label` (and `gh issue edit --add-label` in the apply phase)
-          # fail if the label is missing in the consumer repo. Create the three labels
-          # idempotently up front so first-time consumers don't need manual setup.
+          # `gh issue create --label` fails on a missing label, so create all
+          # three idempotently — a first-time consumer sets up nothing by hand.
           ensure_label() {
             local name="$1" color="$2" desc="$3"
             if gh label create "${name}" \
@@ -873,20 +834,9 @@ jobs:
           echo "::endgroup::"
 
       # Auto-approve fan-out
-      # --------------------
-      # When the account is on the org-level allowlist AND a fresh audit
-      # issue was just opened, the plan bot posts the `/approve nuke-<run-id>`
-      # comment on the issue. The consumer's existing apply trampoline
-      # (`on: issue_comment`) picks that comment up and calls the apply
-      # workflow — same code path as a human approval, no separate chained
-      # job in this workflow.
-      #
-      # The comment MUST be posted with a GitHub App token (or PAT) rather
-      # than the default GITHUB_TOKEN — comments posted with GITHUB_TOKEN
-      # do not fire downstream `issue_comment` workflows. The eligibility
-      # step above hard-fails if `auto_approve=true` is set without the
-      # required `github_app_id`/`github_app_key` secrets, so by the time
-      # this step runs we know they are present.
+
+      # The bot comment takes the same path as a human approval, so nothing is
+      # chained from here. See docs/aws-nuke.md § Flow.
       - name: Generate GitHub App token for auto-approve
         id: app_token
         if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' && steps.auto_approve.outputs.auto_approve_allowed == 'true' }}
@@ -906,9 +856,8 @@ jobs:
           set -euo pipefail
           trap 'echo "::endgroup::"' EXIT
           echo "::group::Bot posts /approve comment to fire apply trampoline"
-          # Posting via App token ensures the consumer repo's `on: issue_comment`
-          # trampoline actually fires — comments posted with GITHUB_TOKEN are
-          # silently ignored by downstream workflow triggers.
+          # The App token is mandatory: a comment posted with GITHUB_TOKEN is
+          # silently ignored by downstream `issue_comment` triggers.
           gh issue comment "${ISSUE}" \
             --repo "${{ github.repository }}" \
             --body "/approve nuke-${RUN_ID}"

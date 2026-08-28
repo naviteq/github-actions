@@ -1,0 +1,115 @@
+---
+name: OCI Nuke / Parse approval comment
+# Convenience plumbing for the caller's issue_comment trampoline; the apply
+# workflow re-validates every claim emitted here. → see docs/oci-nuke.md
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
+    outputs:
+      matched:
+        description: '"true" when the comment is a well-formed approval AND the issue body carries the required markers. Gate the apply job on this.'
+        value: ${{ jobs.parse.outputs.matched }}
+      plan_run_id:
+        description: Plan run id parsed from the `/approve oci-nuke-<run-id>` comment.
+        value: ${{ jobs.parse.outputs.plan_run_id }}
+      compartment_id:
+        description: Compartment OCID read from the audit issue. Re-validated by the apply workflow.
+        value: ${{ jobs.parse.outputs.compartment_id }}
+      regions_allowlist:
+        description: Regions CSV read from the audit issue. Re-validated against the config by the apply workflow.
+        value: ${{ jobs.parse.outputs.regions_allowlist }}
+      plan_hash:
+        description: Plan hash read from the audit issue. Re-verified against the artifact by the apply workflow.
+        value: ${{ jobs.parse.outputs.plan_hash }}
+      oci_nuke_version:
+        description: Released tag the plan run installed, empty when it built from source. Pass straight through to the apply workflow.
+        value: ${{ jobs.parse.outputs.oci_nuke_version }}
+      source_ref:
+        description: Commit SHA the plan run built, empty when it installed a tag. Pass straight through to the apply workflow.
+        value: ${{ jobs.parse.outputs.source_ref }}
+
+permissions: {}
+
+jobs:
+  parse:
+    name: Parse approval comment
+    if: >-
+      github.event.issue.pull_request == null
+      && contains(github.event.issue.labels.*.name, 'oci-nuke:pending')
+      && startsWith(github.event.comment.body, '/approve oci-nuke-')
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      issues: read
+    outputs:
+      matched: ${{ steps.match.outputs.matched }}
+      plan_run_id: ${{ steps.match.outputs.plan_run_id }}
+      compartment_id: ${{ steps.match.outputs.compartment_id }}
+      regions_allowlist: ${{ steps.match.outputs.regions_allowlist }}
+      plan_hash: ${{ steps.match.outputs.plan_hash }}
+      oci_nuke_version: ${{ steps.match.outputs.oci_nuke_version }}
+      source_ref: ${{ steps.match.outputs.source_ref }}
+    steps:
+      - id: match
+        # These regexes pin to the body shape oci-nuke-plan.yaml emits; change
+        # both together. → see docs/oci-nuke.md
+        shell: bash
+        env:
+          BODY: ${{ github.event.comment.body }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+
+          echo "::group::Parse the approval command"
+          if [[ "${BODY}" =~ ^/approve[[:space:]]+oci-nuke-([0-9]+)$ ]]; then
+            plan_run_id="${BASH_REMATCH[1]}"
+            printf 'Matched approval: plan_run_id=%s\n' "${plan_run_id}"
+            echo "plan_run_id=${plan_run_id}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Comment is not '/approve oci-nuke-<id>' — skipping apply"
+            echo "matched=false" >> "$GITHUB_OUTPUT"
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Extract compartment, regions and hash from the issue body"
+          if ! printf '%s\n' "${ISSUE_BODY}" | perl -ne '
+            if (/^<!--\s*oci-nuke:hash=(\S+)\s+compartment=(\S+)\s*-->$/) {
+              $hash = $1;
+              $compartment = $2;
+            }
+            if (/^\|\s*Compartment\s*\|\s*`([^`]+)`\s*\|$/) {
+              $compartment = $1;
+            }
+            if (/^\|\s*Regions\s*\|\s*`([^`]+)`\s*\|$/) {
+              $regions = $1;
+            }
+            if (/^\|\s*Binary\s*\|\s*`(version|source_ref)=([^`]*)`\s*\|$/) {
+              $binary_kind = $1;
+              $binary_value = $2;
+            }
+            END {
+              exit 1 if !$compartment || !$regions || !$hash || !$binary_kind;
+              print "compartment_id=$compartment\n";
+              print "regions_allowlist=$regions\n";
+              print "plan_hash=$hash\n";
+              print "oci_nuke_version=" . ($binary_kind eq "version" ? $binary_value : "") . "\n";
+              print "source_ref=" . ($binary_kind eq "source_ref" ? $binary_value : "") . "\n";
+            }
+          ' >> "$GITHUB_OUTPUT"; then
+            echo "Could not extract compartment, regions or hash from the issue body"
+            echo "matched=false" >> "$GITHUB_OUTPUT"
+            echo "::endgroup::"
+            exit 0
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Mark the approval as matched"
+          echo "All values parsed; the apply job may run."
+          echo "matched=true" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"

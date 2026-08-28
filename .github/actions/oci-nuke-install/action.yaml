@@ -1,0 +1,123 @@
+---
+name: Install oci-nuke
+description: >-
+  Put an oci-nuke binary on PATH, from either a released tag or a full commit
+  SHA built in place. Exactly one source must be given: plan and apply are
+  separate runs, and two sources means the run cannot say which binary it used.
+
+inputs:
+  version:
+    description: >-
+      Released tag to `go install`, e.g. "v0.4.0". Never "latest" and never a
+      branch: plan and apply are separate runs, and a moving ref would change
+      the binary that performs the verification rescan and the real removal.
+      Mutually exclusive with source_ref.
+    required: false
+    default: ""
+  source_ref:
+    description: >-
+      Full 40-character commit SHA of naviteq-ltd/oci-nuke to check out and
+      build in place. Required while that repository is private, because
+      `go install` resolves through proxy.golang.org, which cannot read it.
+      Mutually exclusive with version.
+    required: false
+    default: ""
+  go_version:
+    description: Go toolchain used to build or install oci-nuke.
+    required: false
+    default: "1.26.x"
+  repository:
+    description: Repository to build from when source_ref is given.
+    required: false
+    default: naviteq-ltd/oci-nuke
+
+outputs:
+  source:
+    description: Which install path ran — "version" or "source_ref".
+    value: ${{ steps.resolve.outputs.source }}
+
+runs:
+  using: composite
+  steps:
+    - name: Require exactly one install source
+      id: resolve
+      shell: bash
+      env:
+        OCI_NUKE_VERSION: ${{ inputs.version }}
+        SOURCE_REF: ${{ inputs.source_ref }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Resolve oci-nuke install source"
+
+        if [[ -n "${OCI_NUKE_VERSION}" && -n "${SOURCE_REF}" ]]; then
+          echo "::error::pass either version or source_ref, never both — two install sources means the run cannot say which binary it used."
+          exit 1
+        fi
+        if [[ -z "${OCI_NUKE_VERSION}" && -z "${SOURCE_REF}" ]]; then
+          echo "::error::one of version or source_ref is required."
+          exit 1
+        fi
+        # A branch or tag here would move between the plan and apply runs.
+        if [[ -n "${SOURCE_REF}" ]] && ! printf '%s' "${SOURCE_REF}" | grep -Eq '^[0-9a-f]{40}$'; then
+          echo "::error::source_ref must be a full 40-character commit SHA, never a branch or tag name."
+          exit 1
+        fi
+
+        if [[ -n "${SOURCE_REF}" ]]; then
+          echo "source=source_ref" >> "$GITHUB_OUTPUT"
+        else
+          echo "source=version" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Set up Go
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version: ${{ inputs.go_version }}
+
+    - name: Check out oci-nuke source
+      if: ${{ inputs.source_ref != '' }}
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.source_ref }}
+        path: .oci-nuke-src
+
+    - name: Install oci-nuke
+      shell: bash
+      env:
+        OCI_NUKE_VERSION: ${{ inputs.version }}
+        SOURCE_REF: ${{ inputs.source_ref }}
+        OCI_NUKE_REPOSITORY: ${{ inputs.repository }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Install oci-nuke"
+
+        GOBIN="$(go env GOPATH)/bin"
+        mkdir -p "${GOBIN}"
+        if [[ -n "${SOURCE_REF}" ]]; then
+          (cd .oci-nuke-src && go build -o "${GOBIN}/oci-nuke" .)
+        else
+          go install "github.com/${OCI_NUKE_REPOSITORY}@${OCI_NUKE_VERSION}"
+        fi
+        echo "${GOBIN}" >> "$GITHUB_PATH"
+
+    - name: Write step summary
+      if: ${{ always() }}
+      shell: bash
+      env:
+        OCI_NUKE_VERSION: ${{ inputs.version }}
+        SOURCE_REF: ${{ inputs.source_ref }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Write oci-nuke install summary"
+        {
+          echo "## Install oci-nuke"
+          echo ""
+          echo "| Field | Value |"
+          echo "| ----- | ----- |"
+          echo "| Version | \`${OCI_NUKE_VERSION:-—}\` |"
+          echo "| Source ref | \`${SOURCE_REF:-—}\` |"
+        } >> "$GITHUB_STEP_SUMMARY"

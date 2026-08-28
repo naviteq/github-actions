@@ -70,6 +70,31 @@ on:
         required: false
         type: boolean
         default: true
+      download_artifact:
+        description: Artifact to download into the workspace before scanning. Used to scan another job's output.
+        required: false
+        type: string
+        default: ""
+      download_path:
+        description: Directory the artifact is extracted into. Must match the path the producer uploaded from.
+        required: false
+        type: string
+        default: ""
+      upload_report_artifact:
+        description: Retain the CLI and SARIF reports as a CI artifact
+        required: false
+        type: boolean
+        default: true
+      report_artifact_name:
+        description: Name of the retained report artifact
+        required: false
+        type: string
+        default: checkov-report
+      report_retention_days:
+        description: Retention period for the report artifact, in days
+        required: false
+        type: number
+        default: 90
 
 permissions: {}
 
@@ -100,6 +125,13 @@ jobs:
         with:
           fetch-depth: 0
           submodules: ${{ env.CHECKOV_SUBMODULES }}
+
+      - name: Download scan input artifact
+        if: ${{ inputs.download_artifact != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.download_artifact }}
+          path: ${{ inputs.download_path }}
 
       - name: Cache Checkov install
         if: ${{ inputs.enable_cache }}
@@ -150,10 +182,8 @@ jobs:
           base: ${{ steps.range.outputs.base_sha }}
           ref: ${{ steps.range.outputs.head_sha }}
           list-files: json
-          # Use the `added|modified` change-type selector so deleted paths
-          # are excluded from each `*_files` output. Without this, deletions
-          # reach `checkov -f` and the action errors with FileNotFoundError
-          # because the file no longer exists on the checked-out head_ref.
+          # `added|modified` keeps deleted paths out of the `*_files` outputs;
+          # a deletion reaching `checkov -f` errors. See docs/security-scan.md.
           filters: |
             terraform:
               - added|modified:
@@ -242,10 +272,8 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Filter matched files to configured directory"
-          # Limit to files under the configured directory. paths-filter is the
-          # primary defence against deleted paths reaching `checkov -f`, but
-          # we belt-and-braces with an on-disk check here in case a path slips
-          # through (e.g. submodule churn, helm-expansion edge cases).
+          # On-disk check as a second guard for paths that slip past the filter —
+          # submodule churn and helm expansion have both done it.
           declare -a in_dir=()
           for f in "${matched[@]}"; do
             [[ -z "${f}" ]] && continue
@@ -261,9 +289,8 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Expand matched files to chart directories (helm only)"
-          # For the helm framework, scanning individual templates is fragile —
-          # the chart must be rendered as a whole. Expand any matched file to
-          # the nearest ancestor directory containing Chart.yaml (or .yml).
+          # Helm charts must render whole, so widen any match to the nearest
+          # ancestor holding a Chart.yaml.
           if [[ "${FRAMEWORK}" == "helm" && ${#in_dir[@]} -gt 0 ]]; then
             declare -A chart_dirs=()
             for f in "${in_dir[@]}"; do
@@ -280,10 +307,8 @@ jobs:
             if [[ ${#chart_dirs[@]} -gt 0 ]]; then
               in_dir=()
               for d in "${!chart_dirs[@]}"; do
-                # For a root-level chart (".") scope to the canonical chart
-                # files only — otherwise git ls-files would pull in the
-                # entire repo. For nested charts, every tracked file under
-                # the chart directory is part of the rendering context.
+                # A root-level chart scopes to the canonical files only, or
+                # git ls-files would pull in the entire repo.
                 if [[ "${d}" == "." ]]; then
                   while IFS= read -r charted; do
                     [[ -z "${charted}" || ! -e "${charted}" ]] && continue
@@ -321,10 +346,8 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Export resolved file list to step outputs"
-          # bridgecrewio/checkov-action parses the `file:` input as a
-          # comma-separated list. Emit the resolved paths as a single CSV line
-          # so every matched file reaches `checkov -f` instead of only the
-          # first line of a multi-line value.
+          # The action parses `file:` as CSV, so emit one line — a multi-line
+          # value reaches `checkov -f` as its first entry only.
           files_csv=""
           if [[ ${#unique[@]} -gt 0 ]]; then
             files_csv="$(printf '%s,' "${unique[@]}")"
@@ -345,7 +368,7 @@ jobs:
 
       - name: Run Checkov (full scan)
         if: ${{ inputs.full_scan }}
-        uses: bridgecrewio/checkov-action@9b70310bcd306d11740313070b940167d6b23085 # v12.3115.0
+        uses: bridgecrewio/checkov-action@5659ddea96102e16d8f221b3d8402453c0b1c150 # v12.3121.0
         with:
           directory: ${{ env.CHECKOV_DIRECTORY }}
           framework: ${{ env.CHECKOV_FRAMEWORK }}
@@ -360,7 +383,7 @@ jobs:
 
       - name: Run Checkov (changed files)
         if: ${{ !inputs.full_scan && steps.resolved.outputs.has_changes == 'true' }}
-        uses: bridgecrewio/checkov-action@9b70310bcd306d11740313070b940167d6b23085 # v12.3115.0
+        uses: bridgecrewio/checkov-action@5659ddea96102e16d8f221b3d8402453c0b1c150 # v12.3121.0
         with:
           directory: ${{ env.CHECKOV_DIRECTORY }}
           file: ${{ steps.resolved.outputs.files }}
@@ -416,7 +439,18 @@ jobs:
           echo "::endgroup::"
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         if: ${{ always() && inputs.upload_sarif && hashFiles('results.sarif') != '' }}
         with:
           sarif_file: results.sarif
+
+      - name: Upload Checkov reports
+        if: ${{ always() && inputs.upload_report_artifact && hashFiles('checkov-report.txt', 'results.sarif') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ inputs.report_artifact_name }}
+          path: |
+            checkov-report.txt
+            results.sarif
+          retention-days: ${{ inputs.report_retention_days }}
+          if-no-files-found: warn

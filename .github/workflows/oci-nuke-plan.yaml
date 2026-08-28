@@ -1,0 +1,816 @@
+---
+name: OCI Nuke / Plan
+# Plan phase: dry-run, audit issue, human gate. The apply phase is a separate
+# run fired by an approval comment. → see docs/oci-nuke.md
+on:
+  workflow_call:
+    inputs:
+      compartment_id:
+        description: OCID of the compartment subtree to scan. Never the tenancy root — oci-nuke refuses that outright.
+        type: string
+        required: true
+      oidc_region:
+        description: OCI region for --auth github-oidc. Required, and not auto-detected for this auth method.
+        type: string
+        required: true
+      plan_environment:
+        description: >-
+          GitHub Environment this job runs under. It selects the OCI identity:
+          the token's subject carries it, and the trust rule matches on that.
+        type: string
+        required: true
+      regions_allowlist:
+        description: >-
+          Explicit allowlist of regions the config may target, newline- or
+          comma-separated. Validated against the config's regions: block.
+        type: string
+        required: true
+      config_path:
+        description: Path to the oci-nuke config file, relative to the caller repository's checkout root. Ignored when the config_inline secret is set.
+        type: string
+        required: false
+        default: config.yaml
+      oidc_audience:
+        description: Audience requested from GitHub's OIDC endpoint. Defaults to the identity domain's own URL, which is what its trust expects.
+        type: string
+        required: false
+        default: ""
+      assignee_resolution:
+        description: >-
+          Newline-separated `tag-value=github-handle` map. Matched against the
+          plan's freeform and defined tag values to assign the audit issue.
+        type: string
+        required: false
+        default: ""
+      default_assignee:
+        description: Fallback GitHub handle when no tag mapping matches.
+        type: string
+        required: false
+        default: ""
+      auto_approve:
+        description: >-
+          Opt in to a bot-posted approval. Only takes effect for compartments on
+          vars.NUKE_AUTO_APPROVE_COMPARTMENTS. → see docs/oci-nuke.md
+        type: boolean
+        required: false
+        default: false
+      paused:
+        description: Pause switch. vars.NUKE_FREEZE pauses every nuke workflow in the org.
+        type: boolean
+        required: false
+        default: false
+      oci_nuke_version:
+        description: Released oci-nuke tag to install, e.g. "v0.4.0". Mutually exclusive with source_ref; exactly one is required.
+        type: string
+        required: false
+        default: ""
+      source_ref:
+        description: Full 40-character commit SHA of naviteq-ltd/oci-nuke to build in place. Mutually exclusive with oci_nuke_version.
+        type: string
+        required: false
+        default: ""
+      artifact_retention_days:
+        description: Retention for the plan artifact. Must outlive the approval gap between plan and apply.
+        type: number
+        required: false
+        default: 90
+      go_version:
+        description: Go toolchain used to build or install oci-nuke.
+        type: string
+        required: false
+        default: "1.26.x"
+      runner:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
+    secrets:
+      oidc_domain_url:
+        description: The OCI Identity Domain's URL. Also the default --oidc-audience.
+        required: true
+      oidc_client_id:
+        description: The Confidential Application's OAuth client ID.
+        required: true
+      oidc_client_secret:
+        description: >-
+          The Confidential Application's OAuth client secret. Reaches no OCI API
+          on its own — read the secret model in docs/oci-nuke.md before assuming.
+        required: true
+      config_inline:
+        description: The whole oci-nuke config as a string, taking precedence over config_path. Keeps tenancy and compartment OCIDs out of the caller's tree.
+        required: false
+      github_app_id:
+        description: >-
+          Required when auto_approve is on. A comment posted by GITHUB_TOKEN
+          fires no downstream issue_comment workflow, so an App identity is not optional.
+        required: false
+      github_app_key:
+        description: Private key for the App identified by github_app_id. Required when auto_approve is on.
+        required: false
+    outputs:
+      issue_number:
+        description: Number of the audit issue this run opened.
+        value: ${{ jobs.plan.outputs.issue_number }}
+      plan_hash:
+        description: The plan artifact's own hash, as recorded in the audit issue.
+        value: ${{ jobs.plan.outputs.plan_hash }}
+      artifact_name:
+        description: Name of the uploaded plan artifact.
+        value: ${{ jobs.plan.outputs.artifact_name }}
+      empty_plan:
+        description: '"true" when the dry run found nothing to remove. No issue is opened.'
+        value: ${{ jobs.plan.outputs.empty_plan }}
+      auto_approve_allowed:
+        description: '"true" when auto-approve was requested, allowed by the org list, and wired.'
+        value: ${{ jobs.plan.outputs.auto_approve_allowed }}
+
+permissions: {}
+
+jobs:
+  plan:
+    name: oci-nuke plan (dry run)
+    environment: ${{ inputs.plan_environment }}
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    timeout-minutes: 60
+    outputs:
+      issue_number: ${{ steps.create_issue.outputs.issue_number }}
+      plan_hash: ${{ steps.extract.outputs.plan_hash }}
+      artifact_name: ${{ steps.upload_meta.outputs.artifact_name }}
+      empty_plan: ${{ steps.extract.outputs.empty_plan }}
+      auto_approve_allowed: ${{ steps.auto_approve.outputs.auto_approve_allowed }}
+    steps:
+      - name: Honor pause switch
+        id: pause
+        env:
+          PAUSED_INPUT: ${{ inputs.paused }}
+          NUKE_FREEZE: ${{ vars.NUKE_FREEZE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Evaluate pause switch and freeze flag"
+          if [[ "${PAUSED_INPUT}" == "true" || "${NUKE_FREEZE,,}" == "true" ]]; then
+            echo "::notice::oci-nuke plan paused (paused=${PAUSED_INPUT}, NUKE_FREEZE=${NUKE_FREEZE}). Exiting." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Production-compartment guard
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          COMPARTMENT_ID: ${{ inputs.compartment_id }}
+          PROD_COMPARTMENTS: ${{ vars.RUNESTRA_PROD_COMPARTMENTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check target compartment against the production list"
+          if [[ -z "${PROD_COMPARTMENTS:-}" ]]; then
+            echo "::warning::RUNESTRA_PROD_COMPARTMENTS org variable is unset. Production-compartment guard cannot enforce."
+            exit 0
+          fi
+          IFS=',' read -r -a prod <<< "${PROD_COMPARTMENTS}"
+          for c in "${prod[@]}"; do
+            trimmed="$(printf '%s' "$c" | tr -d '[:space:]')"
+            if [[ -n "$trimmed" && "$trimmed" == "${COMPARTMENT_ID}" ]]; then
+              echo "::error::Refusing to plan against production compartment ${COMPARTMENT_ID} (matched RUNESTRA_PROD_COMPARTMENTS)" >&2
+              exit 1
+            fi
+          done
+
+      - name: Resolve auto-approve eligibility
+        id: auto_approve
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          AUTO_APPROVE_INPUT: ${{ inputs.auto_approve }}
+          COMPARTMENT_ID: ${{ inputs.compartment_id }}
+          AUTO_APPROVE_COMPARTMENTS: ${{ vars.NUKE_AUTO_APPROVE_COMPARTMENTS }}
+          PROD_COMPARTMENTS: ${{ vars.RUNESTRA_PROD_COMPARTMENTS }}
+          APP_ID_SET: ${{ secrets.github_app_id != '' }}
+          APP_KEY_SET: ${{ secrets.github_app_key != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Resolve auto-approve eligibility against the org allowlist"
+          # Every condition is required, and their order is load-bearing.
+          # → see docs/oci-nuke.md § Precedence
+          allowed="false"
+          if [[ "${AUTO_APPROVE_INPUT}" != "true" ]]; then
+            echo "auto-approve not requested by caller; skipping."
+          elif [[ -z "${AUTO_APPROVE_COMPARTMENTS:-}" ]]; then
+            echo "::notice::auto_approve=true but NUKE_AUTO_APPROVE_COMPARTMENTS is unset; falling back to human approval."
+          else
+            IFS=',' read -r -a allow <<< "${AUTO_APPROVE_COMPARTMENTS}"
+            match=0
+            for c in "${allow[@]}"; do
+              trimmed="$(printf '%s' "$c" | tr -d '[:space:]')"
+              if [[ -n "$trimmed" && "$trimmed" == "${COMPARTMENT_ID}" ]]; then
+                match=1
+                break
+              fi
+            done
+            if (( match == 0 )); then
+              echo "::notice::Compartment ${COMPARTMENT_ID} is not on NUKE_AUTO_APPROVE_COMPARTMENTS; falling back to human approval."
+            else
+              prod_collision=0
+              if [[ -n "${PROD_COMPARTMENTS:-}" ]]; then
+                IFS=',' read -r -a prod <<< "${PROD_COMPARTMENTS}"
+                for c in "${prod[@]}"; do
+                  trimmed="$(printf '%s' "$c" | tr -d '[:space:]')"
+                  if [[ -n "$trimmed" && "$trimmed" == "${COMPARTMENT_ID}" ]]; then
+                    prod_collision=1
+                    break
+                  fi
+                done
+              fi
+              if (( prod_collision == 1 )); then
+                # Unreachable: the production guard above already failed the job.
+                echo "::error::Compartment ${COMPARTMENT_ID} is on both the production and auto-approve lists; refusing." >&2
+                exit 1
+              fi
+              if [[ "${APP_ID_SET}" != "true" || "${APP_KEY_SET}" != "true" ]]; then
+                # Hard-fail rather than degrade: without an App token the bot's
+                # comment fires nothing and auto-approve is a silent no-op.
+                echo "::error::auto_approve=true requires both github_app_id and github_app_key secrets." >&2
+                exit 1
+              fi
+              allowed="true"
+              echo "Auto-approve eligible: compartment ${COMPARTMENT_ID} matches the org allowlist."
+            fi
+          fi
+          echo "auto_approve_allowed=${allowed}" >> "$GITHUB_OUTPUT"
+
+      - name: Cron jitter
+        if: ${{ steps.pause.outputs.skip != 'true' && github.event_name == 'schedule' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Apply cron jitter to stagger scheduled runs"
+          jitter=$(( RANDOM % 120 ))
+          echo "Sleeping ${jitter}s to spread scheduled runs."
+          sleep "${jitter}"
+
+      - name: Checkout consumer repository
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install oci-nuke
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: naviteq/github-actions/.github/actions/oci-nuke-install@7311ca39b33442c0103cee62cda8d48a266e8fda
+        with:
+          version: ${{ inputs.oci_nuke_version }}
+          source_ref: ${{ inputs.source_ref }}
+          go_version: ${{ inputs.go_version }}
+
+      - name: Resolve config
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+          CONFIG_INLINE: ${{ secrets.config_inline }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Resolve oci-nuke config"
+          if [[ -n "${CONFIG_INLINE}" ]]; then
+            printf '%s\n' "${CONFIG_INLINE}" > "${RUNNER_TEMP}/oci-nuke-config.yaml"
+            echo "RESOLVED_CONFIG=${RUNNER_TEMP}/oci-nuke-config.yaml" >> "$GITHUB_ENV"
+            echo "config supplied inline"
+          else
+            if [[ ! -f "${CONFIG_PATH}" ]]; then
+              echo "::error::config_path '${CONFIG_PATH}' not found in the caller repository." >&2
+              exit 1
+            fi
+            echo "RESOLVED_CONFIG=${CONFIG_PATH}" >> "$GITHUB_ENV"
+            echo "config read from ${CONFIG_PATH}"
+          fi
+
+      - name: Validate config regions against allowlist
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          REGIONS_ALLOWLIST: ${{ inputs.regions_allowlist }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Normalize the regions allowlist"
+          mapfile -t allow < <(printf '%s\n' "${REGIONS_ALLOWLIST}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | sort -u)
+          if (( ${#allow[@]} == 0 )); then
+            echo "::error::regions_allowlist is empty. Explicit regions are required." >&2
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Extract the regions: block from the config"
+          mapfile -t config_regions < <(awk '
+            /^regions:[[:space:]]*$/ { in_block=1; next }
+            in_block && /^[a-zA-Z]/ { in_block=0 }
+            in_block && /^[[:space:]]*-/ { sub(/^[[:space:]]*-[[:space:]]*/, ""); gsub(/["'\'']/, ""); sub(/[[:space:]]*#.*$/, ""); print }
+          ' "${RESOLVED_CONFIG}" | grep -v '^$' | sort -u)
+          if (( ${#config_regions[@]} == 0 )); then
+            echo "::error::config has no regions: block; explicit regions are required." >&2
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Verify every config region is on the allowlist"
+          for r in "${config_regions[@]}"; do
+            ok=0
+            for a in "${allow[@]}"; do
+              if [[ "${r}" == "${a}" ]]; then ok=1; break; fi
+            done
+            if (( ok == 0 )); then
+              echo "::error::Config region '${r}' is not in regions_allowlist." >&2
+              exit 1
+            fi
+          done
+          printf '%s\n' "${config_regions[@]}" > regions.txt
+          echo "Validated $(wc -l < regions.txt | tr -d ' ') region(s) against the allowlist."
+
+      - name: Run oci-nuke (dry run)
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          COMPARTMENT_ID: ${{ inputs.compartment_id }}
+          OIDC_REGION: ${{ inputs.oidc_region }}
+          OIDC_AUDIENCE: ${{ inputs.oidc_audience }}
+          OCI_OIDC_DOMAIN_URL: ${{ secrets.oidc_domain_url }}
+          OCI_OIDC_CLIENT_ID: ${{ secrets.oidc_client_id }}
+          OCI_OIDC_CLIENT_SECRET: ${{ secrets.oidc_client_secret }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::oci-nuke dry run"
+
+          args=(run
+            --auth github-oidc
+            --config "${RESOLVED_CONFIG}"
+            --compartment-id "${COMPARTMENT_ID}"
+            --oidc-region "${OIDC_REGION}"
+            --plan-out oci-nuke-plan.json)
+          # Unset, GitHub mints the token for the owner URL, which no trust asks for.
+          audience="${OIDC_AUDIENCE:-${OCI_OIDC_DOMAIN_URL}}"
+          if [[ -n "${audience}" ]]; then
+            args+=(--oidc-audience "${audience}")
+          fi
+          stdbuf -oL -eL oci-nuke "${args[@]}" 2>&1 | tee oci-nuke-plan.log
+          rc=${PIPESTATUS[0]}
+          if (( rc != 0 )); then
+            echo "::error::oci-nuke dry run exited with rc=${rc}." >&2
+            exit "${rc}"
+          fi
+
+      - name: Extract resource set
+        id: extract
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Read the plan artifact's own hash and entries"
+          # oci-nuke computes the hash itself and --approved-plan enforces it at
+          # apply time; nothing here recomputes a competing one.
+          plan_hash="$(jq -r '.hash // empty' oci-nuke-plan.json)"
+          if [[ -z "${plan_hash}" ]]; then
+            echo "::error::plan artifact carries no hash." >&2
+            exit 1
+          fi
+          echo "plan_hash=${plan_hash}" >> "$GITHUB_OUTPUT"
+
+          jq -r '
+            (.body.entries // [])[]
+            | select(.state == "would-remove")
+            | [(.resource_type // ""), (.region // ""), (.resource_id // "")]
+            | @tsv
+          ' oci-nuke-plan.json \
+            | awk -F'\t' 'NF==3 && $1 != "" && $3 != ""' \
+            | sort -u > resource-set.tsv
+          echo "::endgroup::"
+
+          echo "::group::Record resource count and empty-plan flag"
+          count="$(wc -l < resource-set.tsv | tr -d ' ')"
+          echo "resource_count=${count}" >> "$GITHUB_OUTPUT"
+          if [[ "${count}" == "0" ]]; then
+            echo "empty_plan=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "## oci-nuke plan"
+              echo ""
+              echo "Nothing to remove. No issue created."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "empty_plan=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "::endgroup::"
+
+          if [[ "${count}" != "0" ]]; then
+            echo "::group::Aggregate per-type counts"
+            awk -F'\t' '{c[$1]++} END {for (t in c) print t"\t"c[t]}' resource-set.tsv > type-counts.tsv
+            echo "type_count=$(wc -l < type-counts.tsv | tr -d ' ')" >> "$GITHUB_OUTPUT"
+            echo "::endgroup::"
+          fi
+
+      - name: Upload plan artifact
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oci-nuke-plan-${{ github.run_id }}
+          path: |
+            oci-nuke-plan.json
+            oci-nuke-plan.log
+            resource-set.tsv
+            type-counts.tsv
+            regions.txt
+          retention-days: ${{ inputs.artifact_retention_days }}
+          if-no-files-found: error
+
+      - name: Capture artifact name
+        id: upload_meta
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        shell: bash
+        run: |
+          echo "artifact_name=oci-nuke-plan-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Re-entrancy check
+        id: reentrancy
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPARTMENT_ID: ${{ inputs.compartment_id }}
+          HASH: ${{ steps.extract.outputs.plan_hash }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Look for an open issue carrying the same hash marker"
+          # A machine-readable marker, not a fuzzy title match, so a duplicate
+          # cannot be forged by naming an issue convincingly.
+          marker="<!-- oci-nuke:hash=${HASH} compartment=${COMPARTMENT_ID} -->"
+          existing="$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label oci-nuke:pending \
+            --state open \
+            --json number,body \
+            --jq ".[] | select(.body | contains(\"${marker}\")) | .number" \
+            | head -n1)"
+          echo "existing_issue=${existing}" >> "$GITHUB_OUTPUT"
+
+      - name: Post re-run notice on the existing issue
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.reentrancy.outputs.existing_issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ARTIFACT: ${{ steps.upload_meta.outputs.artifact_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Comment a re-run notice on the existing audit issue"
+          gh issue comment "${ISSUE}" \
+            --repo "${{ github.repository }}" \
+            --body "Plan re-run produced the same resource set. Run: ${RUN_URL} (artifact: \`${ARTIFACT}\`)."
+
+      - name: Resolve assignees
+        id: assignees
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAP: ${{ inputs.assignee_resolution }}
+          DEFAULT: ${{ inputs.default_assignee }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Collect tag values from the plan log"
+          # oci-nuke logs every scanned resource's tags as prop:tag:<ns>:<key>=<value>.
+          mapfile -t owners < <(grep -oE 'prop:tag:[^= ]+=[^ ]+' oci-nuke-plan.log 2>/dev/null | sed 's/^.*=//' | sort -u | grep -v '^$' || true)
+          echo "::endgroup::"
+
+          echo "::group::Map tag values to GitHub handles"
+          assignees=()
+          while IFS= read -r line; do
+            line="${line%%#*}"
+            line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            [[ -z "$line" ]] && continue
+            key="${line%%=*}"
+            val="${line#*=}"
+            for o in "${owners[@]:-}"; do
+              if [[ "$o" == "$key" ]]; then assignees+=("$val"); fi
+            done
+          done <<< "${MAP}"
+          echo "::endgroup::"
+
+          echo "::group::Apply the default and repo-maintainer fallbacks"
+          if (( ${#assignees[@]} == 0 )) && [[ -n "${DEFAULT}" ]]; then
+            assignees+=("${DEFAULT}")
+          fi
+          if (( ${#assignees[@]} == 0 )); then
+            fallback="$(gh api "repos/${{ github.repository }}/collaborators?permission=maintain" --jq '.[0].login // empty' 2>/dev/null || true)"
+            if [[ -n "${fallback}" ]]; then assignees+=("${fallback}"); fi
+          fi
+          if (( ${#assignees[@]} > 0 )); then
+            mapfile -t assignees < <(printf '%s\n' "${assignees[@]}" | grep -v '^$' | sort -u)
+          fi
+          printf '%s\n' "${assignees[@]:-}" > assignees.txt
+          echo "assignees_csv=$(paste -sd ',' assignees.txt || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Render issue body
+        id: render
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          COMPARTMENT_ID: ${{ inputs.compartment_id }}
+          HASH: ${{ steps.extract.outputs.plan_hash }}
+          ARTIFACT: ${{ steps.upload_meta.outputs.artifact_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESOURCE_COUNT: ${{ steps.extract.outputs.resource_count }}
+          TYPE_COUNT: ${{ steps.extract.outputs.type_count }}
+          AUTO_APPROVE_ALLOWED: ${{ steps.auto_approve.outputs.auto_approve_allowed }}
+          OCI_NUKE_VERSION: ${{ inputs.oci_nuke_version }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Compute short hash and regions CSV"
+          short_hash="${HASH:0:12}"
+          regions_csv="$(paste -sd ',' regions.txt || true)"
+          # The apply phase reads this back, so both phases run the same binary
+          # by construction rather than by the caller pinning it twice.
+          if [[ -n "${SOURCE_REF}" ]]; then
+            binary="source_ref=${SOURCE_REF}"
+          else
+            binary="version=${OCI_NUKE_VERSION}"
+          fi
+          echo "::endgroup::"
+
+          # Bounded render: the markers, the table and the footer are never
+          # truncated, because the parse workflow regexes them.
+          GH_ISSUE_BODY_MAX=65536
+          BODY_SAFETY_MARGIN=2048
+          effective_cap=$(( GH_ISSUE_BODY_MAX - BODY_SAFETY_MARGIN ))
+          TRUNCATION_NOTICE_BYTES=512
+
+          echo "::group::Render the static prefix"
+          {
+            echo "<!-- oci-nuke:hash=${HASH} compartment=${COMPARTMENT_ID} -->"
+            if [[ "${AUTO_APPROVE_ALLOWED}" == "true" ]]; then
+              # The apply workflow re-resolves the org list too, so this marker
+              # on its own grants nothing.
+              echo "<!-- oci-nuke:auto-approve=true -->"
+            fi
+            echo ""
+            echo "## oci-nuke plan pending approval"
+            echo ""
+            if [[ "${AUTO_APPROVE_ALLOWED}" == "true" ]]; then
+              echo "> **Auto-approve enabled** for this compartment. The plan bot posts the \`/approve oci-nuke-${RUN_ID}\` comment below; the caller's apply trampoline picks it up via \`issue_comment\`."
+              echo ""
+            fi
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Compartment | \`${COMPARTMENT_ID}\` |"
+            echo "| Regions | \`${regions_csv}\` |"
+            echo "| Resource count | \`${RESOURCE_COUNT}\` |"
+            echo "| Plan run | [${RUN_ID}](${RUN_URL}) |"
+            echo "| Artifact | \`${ARTIFACT}\` (download from the plan run) |"
+            echo "| Binary | \`${binary}\` |"
+            echo ""
+            echo "### Plan hash"
+            echo ""
+            echo "\`\`\`"
+            echo "${HASH}"
+            echo "\`\`\`"
+            echo ""
+            echo "### Resources by type"
+            echo ""
+            echo "**Total: ${RESOURCE_COUNT} resources across ${TYPE_COUNT} types**"
+            echo ""
+          } > issue-body.md
+          prefix_bytes=$(wc -c < issue-body.md | tr -d ' ')
+          echo "prefix_bytes=${prefix_bytes}"
+          echo "::endgroup::"
+
+          echo "::group::Render the static suffix"
+          {
+            if [[ "${AUTO_APPROVE_ALLOWED}" == "true" ]]; then
+              echo "### Auto-approve"
+              echo ""
+              echo "The plan bot posts \`/approve oci-nuke-${RUN_ID}\` on this issue. Apply then runs with every other check intact — regions allowlist, plan-hash verification, the tool's own tenancy gate and compartment blocklist. Only the CODEOWNERS check is skipped, and only because this issue carries the auto-approve marker AND the compartment is on the org allowlist. Both are re-validated at apply time."
+            else
+              echo "### To approve"
+              echo ""
+              echo "Comment **exactly** the following on this issue:"
+              echo ""
+              echo "\`\`\`"
+              echo "/approve oci-nuke-${RUN_ID}"
+              echo "\`\`\`"
+              echo ""
+              echo "- Ambiguous text (\"approved\", \"lgtm\", \"Approved!\") is rejected."
+              echo "- Your handle must appear in this repository's CODEOWNERS on the default branch."
+              echo "- If the resource set changes between plan and approval, apply refuses on the hash."
+              echo "- The \`oci-nuke:pending\` label and this body's markers are load-bearing — do not edit."
+            fi
+          } > suffix.md
+          suffix_bytes=$(wc -c < suffix.md | tr -d ' ')
+          echo "suffix_bytes=${suffix_bytes}"
+          echo "::endgroup::"
+
+          echo "::group::Render the per-type resource bullets within budget"
+          # The blank lines after <summary> and before </details> are load-bearing:
+          # without them GitHub renders the bullets as literal text.
+          available_for_details=$(( effective_cap - prefix_bytes - suffix_bytes - TRUNCATION_NOTICE_BYTES ))
+          if (( available_for_details < 0 )); then available_for_details=0; fi
+          echo "available_for_details=${available_for_details}"
+
+          sort resource-set.tsv \
+            | awk -F'\t' -v counts_file=type-counts.tsv -v budget="${available_for_details}" -v rendered_file=rendered-count.txt '
+                BEGIN {
+                  while ((getline line < counts_file) > 0) {
+                    n = split(line, parts, "\t")
+                    if (n >= 2) counts[parts[1]] = parts[2]
+                  }
+                  close(counts_file)
+                  prev = ""; used = 0; emitted = 0; truncated = 0; in_block = 0
+                }
+                function emit(line,    len) {
+                  len = length(line) + 1
+                  if (used + len > budget) { truncated = 1; return 0 }
+                  print line
+                  used += len
+                  return 1
+                }
+                # `next`, not `exit`: aborting would SIGPIPE the upstream sort
+                # and trip pipefail. Read on, just stop emitting.
+                {
+                  if (truncated) next
+                  if ($1 != prev) {
+                    if (prev != "") {
+                      if (!emit("")) { next }
+                      if (!emit("</details>")) { next }
+                      in_block = 0
+                      if (!emit("")) { next }
+                    }
+                    if (!emit("<details>")) { next }
+                    in_block = 1
+                    if (!emit("<summary><strong>" $1 "</strong> (" counts[$1] ")</summary>")) { next }
+                    if (!emit("")) { next }
+                    prev = $1
+                  }
+                  if (!emit("- `" $2 "` `" $3 "`")) { next }
+                  emitted++
+                }
+                END {
+                  if (in_block) {
+                    # Not budget-tracked on purpose: the truncation reservation covers it.
+                    print ""
+                    print "</details>"
+                  }
+                  print emitted > rendered_file
+                  print (truncated ? 1 : 0) >> rendered_file
+                }
+              ' > details.md
+          echo "::endgroup::"
+
+          echo "::group::Assemble the issue body"
+          emitted_bullets="$(sed -n '1p' rendered-count.txt)"
+          truncated_flag="$(sed -n '2p' rendered-count.txt)"
+          emitted_bullets="${emitted_bullets:-0}"
+          truncated_flag="${truncated_flag:-0}"
+
+          cat details.md >> issue-body.md
+          if [[ "${truncated_flag}" == "1" ]]; then
+            {
+              echo ""
+              echo "> **Note:** Resource list truncated to fit GitHub's 65,536-character issue-body limit."
+              echo "> Showing ${emitted_bullets} of ${RESOURCE_COUNT} resources. The full plan is in the"
+              echo "> artifact \`${ARTIFACT}\` attached to the [plan run](${RUN_URL})."
+              echo ""
+            } >> issue-body.md
+            echo "render_truncated=true" >> "$GITHUB_OUTPUT"
+            echo "rendered_bullets=${emitted_bullets}" >> "$GITHUB_OUTPUT"
+          else
+            echo "render_truncated=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "" >> issue-body.md
+          cat suffix.md >> issue-body.md
+          echo "::endgroup::"
+
+          echo "::group::Assert the body fits GitHub's limit"
+          final_bytes=$(wc -c < issue-body.md | tr -d ' ')
+          echo "final_bytes=${final_bytes} (max=${GH_ISSUE_BODY_MAX})"
+          if (( final_bytes > GH_ISSUE_BODY_MAX )); then
+            echo "::error::Rendered issue body is ${final_bytes} bytes, over GitHub's ${GH_ISSUE_BODY_MAX}-character limit." >&2
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Build the issue title"
+          short_compartment="$(printf '%s' "${COMPARTMENT_ID}" | tail -c 12)"
+          echo "title=oci-nuke pending: compartment=…${short_compartment} regions=${regions_csv} hash=${short_hash}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure oci-nuke labels exist
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Ensure the three oci-nuke labels exist"
+          # `gh issue create --label` fails on a missing label, so create all
+          # three idempotently — a first-time caller sets up nothing by hand.
+          ensure_label() {
+            local name="$1" color="$2" desc="$3"
+            if gh label create "${name}" --repo "${{ github.repository }}" --color "${color}" --description "${desc}" 2>/dev/null; then
+              echo "Created label: ${name}"
+              return 0
+            fi
+            if gh label list --repo "${{ github.repository }}" --search "${name}" --json name \
+                --jq ".[] | select(.name == \"${name}\") | .name" | grep -qx "${name}"; then
+              echo "Label already present: ${name}"
+            else
+              echo "::error::Failed to ensure label '${name}' exists." >&2
+              return 1
+            fi
+          }
+          ensure_label "oci-nuke:pending"  "FBCA04" "oci-nuke: plan awaiting approval"
+          ensure_label "oci-nuke:applying" "0E8A16" "oci-nuke: apply in progress"
+          ensure_label "oci-nuke:failed"   "B60205" "oci-nuke: apply failed"
+
+      - name: Create audit issue
+        id: create_issue
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSIGNEES_CSV: ${{ steps.assignees.outputs.assignees_csv }}
+          ISSUE_TITLE: ${{ steps.render.outputs.title }}
+          RENDER_TRUNCATED: ${{ steps.render.outputs.render_truncated }}
+          RENDERED_BULLETS: ${{ steps.render.outputs.rendered_bullets }}
+          HASH: ${{ steps.extract.outputs.plan_hash }}
+          RESOURCE_COUNT: ${{ steps.extract.outputs.resource_count }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Open the audit issue"
+          extra=()
+          if [[ -n "${ASSIGNEES_CSV}" ]]; then extra+=(--assignee "${ASSIGNEES_CSV}"); fi
+          url="$(gh issue create \
+            --repo "${{ github.repository }}" \
+            --label oci-nuke:pending \
+            --title "${ISSUE_TITLE}" \
+            --body-file issue-body.md \
+            "${extra[@]}")"
+          echo "issue_number=${url##*/}" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+          echo "::group::Write the step summary"
+          {
+            echo "## oci-nuke plan"
+            echo ""
+            echo "- Audit issue: ${url}"
+            echo "- Plan hash: \`${HASH}\`"
+            echo "- Artifact: \`oci-nuke-plan-${{ github.run_id }}\`"
+            if [[ "${RENDER_TRUNCATED}" == "true" ]]; then
+              echo "- Resource list truncated in the audit issue (showing ${RENDERED_BULLETS} of ${RESOURCE_COUNT}) — full set in the artifact."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The bot comment takes the same path a human approval does, so nothing is
+      # chained from here. → see docs/oci-nuke.md § Auto-approve
+      - name: Generate a GitHub App token for auto-approve
+        id: app_token
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' && steps.auto_approve.outputs.auto_approve_allowed == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.github_app_id }}
+          private-key: ${{ secrets.github_app_key }}
+
+      - name: Post the auto-approve comment
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' && steps.auto_approve.outputs.auto_approve_allowed == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          ISSUE: ${{ steps.create_issue.outputs.issue_number }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Bot posts the approval comment that fires the apply trampoline"
+          # The App token is mandatory: a comment posted with GITHUB_TOKEN is
+          # silently ignored by downstream issue_comment triggers.
+          gh issue comment "${ISSUE}" \
+            --repo "${{ github.repository }}" \
+            --body "/approve oci-nuke-${RUN_ID}"

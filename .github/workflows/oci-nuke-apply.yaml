@@ -1,0 +1,604 @@
+---
+name: OCI Nuke / Apply
+# Apply phase. Destructive. Re-validates every claim the trampoline passed in
+# before it touches anything. → see docs/oci-nuke.md
+on:
+  workflow_call:
+    inputs:
+      compartment_id:
+        description: Compartment OCID to delete, as recorded on the audit issue. Must match what the plan scanned.
+        type: string
+        required: true
+      oidc_region:
+        description: OCI region for --auth github-oidc. Required, and not auto-detected for this auth method.
+        type: string
+        required: true
+      apply_environment:
+        description: >-
+          GitHub Environment this job runs under. It selects the delete-capable
+          OCI identity: the token's subject carries it, and the trust matches on that.
+        type: string
+        required: true
+      regions_allowlist:
+        description: The same allowlist the plan phase validated against.
+        type: string
+        required: true
+      issue_number:
+        description: Audit issue number.
+        type: number
+        required: true
+      plan_run_id:
+        description: Run id of the plan run, taken from the approval comment.
+        type: string
+        required: true
+      plan_artifact_name:
+        description: Name of the plan artifact to download from that run.
+        type: string
+        required: true
+      approval_comment_body:
+        description: Raw approval comment. Re-validated here against the strict pattern.
+        type: string
+        required: true
+      approval_actor:
+        description: GitHub login of the commenter. Verified against CODEOWNERS at apply time.
+        type: string
+        required: true
+      config_path:
+        description: Path to the oci-nuke config file, relative to the caller repository's checkout root. Ignored when the config_inline secret is set.
+        type: string
+        required: false
+        default: config.yaml
+      oidc_audience:
+        description: Audience requested from GitHub's OIDC endpoint. Defaults to the identity domain's own URL.
+        type: string
+        required: false
+        default: ""
+      delete_compartments:
+        description: Also delete the target compartment once empty. Off by default; the caller opts in deliberately.
+        type: boolean
+        required: false
+        default: false
+      max_plan_age:
+        description: Refuse a plan artifact older than this. Checked before any OCI API call.
+        type: string
+        required: false
+        default: 24h
+      paused:
+        description: Pause switch. vars.NUKE_FREEZE pauses every nuke workflow in the org.
+        type: boolean
+        required: false
+        default: false
+      oci_nuke_version:
+        description: Released oci-nuke tag. Must be the one the plan run used.
+        type: string
+        required: false
+        default: ""
+      source_ref:
+        description: Full 40-character commit SHA. Must be the one the plan run used.
+        type: string
+        required: false
+        default: ""
+      artifact_retention_days:
+        description: Retention for the apply log.
+        type: number
+        required: false
+        default: 90
+      go_version:
+        description: Go toolchain used to build or install oci-nuke.
+        type: string
+        required: false
+        default: "1.26.x"
+      runner:
+        description: Runner label, or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
+    secrets:
+      oidc_domain_url:
+        description: The OCI Identity Domain's URL. Also the default --oidc-audience.
+        required: true
+      oidc_client_id:
+        description: The Confidential Application's OAuth client ID.
+        required: true
+      oidc_client_secret:
+        description: The Confidential Application's OAuth client secret. → see docs/oci-nuke.md
+        required: true
+      config_inline:
+        description: The whole oci-nuke config as a string. Must resolve to the same config the plan run used.
+        required: false
+
+permissions: {}
+
+jobs:
+  apply:
+    name: oci-nuke apply (destructive)
+    environment: ${{ inputs.apply_environment }}
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+      actions: read
+    timeout-minutes: 180
+    steps:
+      - name: Honor pause switch
+        id: pause
+        env:
+          PAUSED_INPUT: ${{ inputs.paused }}
+          NUKE_FREEZE: ${{ vars.NUKE_FREEZE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Evaluate pause switch and freeze flag"
+          if [[ "${PAUSED_INPUT}" == "true" || "${NUKE_FREEZE,,}" == "true" ]]; then
+            echo "::notice::oci-nuke apply paused (paused=${PAUSED_INPUT}, NUKE_FREEZE=${NUKE_FREEZE}). Exiting." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ensure oci-nuke labels exist
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Ensure the labels this job edits exist"
+          ensure_label() {
+            local name="$1" color="$2" desc="$3"
+            if gh label create "${name}" --repo "${{ github.repository }}" --color "${color}" --description "${desc}" 2>/dev/null; then
+              echo "Created label: ${name}"
+              return 0
+            fi
+            if gh label list --repo "${{ github.repository }}" --search "${name}" --json name \
+                --jq ".[] | select(.name == \"${name}\") | .name" | grep -qx "${name}"; then
+              echo "Label already present: ${name}"
+            else
+              echo "::error::Failed to ensure label '${name}' exists." >&2
+              return 1
+            fi
+          }
+          ensure_label "oci-nuke:pending"  "FBCA04" "oci-nuke: plan awaiting approval"
+          ensure_label "oci-nuke:applying" "0E8A16" "oci-nuke: apply in progress"
+          ensure_label "oci-nuke:failed"   "B60205" "oci-nuke: apply failed"
+
+      - name: Production-compartment guard
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+          COMPARTMENT_ID: ${{ inputs.compartment_id }}
+          PROD_COMPARTMENTS: ${{ vars.RUNESTRA_PROD_COMPARTMENTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check target compartment against the production list"
+          if [[ -z "${PROD_COMPARTMENTS:-}" ]]; then
+            echo "::warning::RUNESTRA_PROD_COMPARTMENTS org variable is unset. Production-compartment guard cannot enforce."
+            exit 0
+          fi
+          IFS=',' read -r -a prod <<< "${PROD_COMPARTMENTS}"
+          for c in "${prod[@]}"; do
+            trimmed="$(printf '%s' "$c" | tr -d '[:space:]')"
+            if [[ -n "$trimmed" && "$trimmed" == "${COMPARTMENT_ID}" ]]; then
+              gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+                --body "Apply refused: compartment \`${COMPARTMENT_ID}\` is listed in \`RUNESTRA_PROD_COMPARTMENTS\`."
+              gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed || true
+              echo "::error::Refusing to apply against production compartment ${COMPARTMENT_ID}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Re-resolve auto-approve eligibility
+        id: auto_approve
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+          COMPARTMENT_ID: ${{ inputs.compartment_id }}
+          AUTO_APPROVE_COMPARTMENTS: ${{ vars.NUKE_AUTO_APPROVE_COMPARTMENTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Detect the auto-approve marker and re-resolve the org allowlist"
+          # Re-checking the org list here is what stops a hand-edited issue body
+          # from bypassing the human gate.
+          bypass="false"
+          body="$(gh issue view "${ISSUE}" --repo "${{ github.repository }}" --json body --jq .body)"
+          if ! grep -qF '<!-- oci-nuke:auto-approve=true -->' <<< "${body}"; then
+            echo "No auto-approve marker on issue ${ISSUE}; the human gate applies."
+          elif [[ -z "${AUTO_APPROVE_COMPARTMENTS:-}" ]]; then
+            gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+              --body "Apply refused: the issue carries the auto-approve marker but \`NUKE_AUTO_APPROVE_COMPARTMENTS\` is unset at the org level."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed || true
+            echo "::error::auto-approve marker present but the org allowlist is unset; refusing to bypass the human gate." >&2
+            exit 1
+          else
+            IFS=',' read -r -a allow <<< "${AUTO_APPROVE_COMPARTMENTS}"
+            match=0
+            for c in "${allow[@]}"; do
+              trimmed="$(printf '%s' "$c" | tr -d '[:space:]')"
+              if [[ -n "$trimmed" && "$trimmed" == "${COMPARTMENT_ID}" ]]; then
+                match=1
+                break
+              fi
+            done
+            if (( match == 0 )); then
+              gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+                --body "Apply refused: the issue carries the auto-approve marker but compartment \`${COMPARTMENT_ID}\` is not on \`NUKE_AUTO_APPROVE_COMPARTMENTS\`. The marker alone is never sufficient."
+              gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed || true
+              echo "::error::auto-approve marker present but compartment ${COMPARTMENT_ID} is not on the allowlist." >&2
+              exit 1
+            fi
+            bypass="true"
+            echo "Auto-approve confirmed for ${COMPARTMENT_ID}; only the CODEOWNERS check is skipped."
+          fi
+          echo "bypass_human_gate=${bypass}" >> "$GITHUB_OUTPUT"
+
+      - name: Record the auto-approve decision
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.auto_approve.outputs.bypass_human_gate == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+          COMPARTMENT_ID: ${{ inputs.compartment_id }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+          ACTOR: ${{ inputs.approval_actor }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Comment the auto-approve decision on the audit issue"
+          gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+            --body "Apply auto-approved: compartment \`${COMPARTMENT_ID}\` is on \`NUKE_AUTO_APPROVE_COMPARTMENTS\` and the issue carries the marker. Approval comment posted by \`@${ACTOR}\`; CODEOWNERS check skipped. Plan run: ${PLAN_RUN_ID}."
+
+      - name: Re-validate the approval comment
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+          COMMENT: ${{ inputs.approval_comment_body }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Re-validate the approval comment against the strict pattern"
+          # -x anchors the whole line, so trailing text like "… please" is rejected.
+          pattern='^/approve[[:space:]]+oci-nuke-'"${PLAN_RUN_ID}"'$'
+          if ! printf '%s' "${COMMENT}" | grep -qE -x "${pattern}"; then
+            gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+              --body "Apply refused: the approval comment did not match \`/approve oci-nuke-${PLAN_RUN_ID}\`."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed || true
+            echo "::error::Approval comment rejected by the pattern." >&2
+            exit 1
+          fi
+
+      - name: Re-fetch CODEOWNERS and verify the approver
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.auto_approve.outputs.bypass_human_gate != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ inputs.approval_actor }}
+          ISSUE: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Resolve the default branch"
+          default_branch="$(gh api "repos/${{ github.repository }}" --jq .default_branch)"
+          if [[ -z "${default_branch}" ]]; then
+            echo "::error::Could not resolve the default branch." >&2
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Fetch CODEOWNERS from the default branch"
+          codeowners=""
+          for path in .github/CODEOWNERS CODEOWNERS docs/CODEOWNERS; do
+            response="$(gh api "repos/${{ github.repository }}/contents/${path}?ref=${default_branch}" 2>/dev/null || true)"
+            [[ -z "${response}" ]] && continue
+            content="$(printf '%s' "${response}" | jq -r '.content // empty' 2>/dev/null || true)"
+            [[ -z "${content}" ]] && continue
+            encoding="$(printf '%s' "${response}" | jq -r '.encoding // empty' 2>/dev/null || true)"
+            if [[ "${encoding}" != "base64" ]]; then
+              echo "::notice::Skipping ${path}@${default_branch}: unexpected encoding '${encoding}'."
+              continue
+            fi
+            # GitHub wraps content at 60 chars; strip every whitespace byte or
+            # strict base64 -d rejects the payload.
+            cleaned="$(printf '%s' "${content}" | tr -d '[:space:]')"
+            if ! decoded="$(printf '%s' "${cleaned}" | base64 -d 2>/dev/null)"; then
+              # Hard fail, never fall through: a corrupt CODEOWNERS would
+              # otherwise mask the intended approvers.
+              gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+                --body "Apply refused: CODEOWNERS at \`${path}\` on \`${default_branch}\` failed base64 decode."
+              gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed || true
+              echo "::error::Failed to decode CODEOWNERS from ${path}@${default_branch}." >&2
+              exit 1
+            fi
+            codeowners="${decoded}"
+            echo "Loaded CODEOWNERS from ${path}@${default_branch}"
+            break
+          done
+
+          if [[ -z "${codeowners}" ]]; then
+            gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+              --body "Apply refused: no CODEOWNERS file on default branch \`${default_branch}\`."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed || true
+            echo "::error::No CODEOWNERS file on the default branch." >&2
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Extract owner handles"
+          owners="$(printf '%s\n' "${codeowners}" | sed 's/#.*$//' | grep -oE '@[A-Za-z0-9_./-]+' | sed 's#^@##' | sort -u || true)"
+          if [[ -z "${owners}" ]]; then
+            gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+              --body "Apply refused: CODEOWNERS on \`${default_branch}\` lists no approvers."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed || true
+            echo "::error::CODEOWNERS lists no approvers." >&2
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Verify the approver against handles and team memberships"
+          actor_lc="$(printf '%s' "${ACTOR}" | tr '[:upper:]' '[:lower:]')"
+          match=0
+          while IFS= read -r owner; do
+            owner_lc="$(printf '%s' "${owner}" | tr '[:upper:]' '[:lower:]')"
+            if [[ "${owner_lc}" == "${actor_lc}" ]]; then match=1; break; fi
+            if [[ "${owner_lc}" == */* ]]; then
+              org="${owner_lc%/*}"
+              team="${owner_lc#*/}"
+              if gh api "orgs/${org}/teams/${team}/memberships/${ACTOR}" --jq '.state' 2>/dev/null | grep -qx active; then
+                match=1; break
+              fi
+            fi
+          done <<< "${owners}"
+
+          if (( match == 0 )); then
+            gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+              --body "Apply refused: \`@${ACTOR}\` is not listed in CODEOWNERS on \`${default_branch}\`."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed || true
+            echo "::error::Approver ${ACTOR} is not in CODEOWNERS." >&2
+            exit 1
+          fi
+
+      - name: In-progress marker
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Mark the audit issue as apply-in-progress"
+          labels="$(gh issue view "${ISSUE}" --repo "${{ github.repository }}" --json labels --jq '[.labels[].name]')"
+          if grep -qE '"oci-nuke:applying"' <<< "${labels}"; then
+            echo "::error::Issue ${ISSUE} already carries oci-nuke:applying — refusing a concurrent apply." >&2
+            exit 1
+          fi
+          gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:applying
+
+      - name: Checkout consumer repository
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install oci-nuke
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: naviteq/github-actions/.github/actions/oci-nuke-install@7311ca39b33442c0103cee62cda8d48a266e8fda
+        with:
+          version: ${{ inputs.oci_nuke_version }}
+          source_ref: ${{ inputs.source_ref }}
+          go_version: ${{ inputs.go_version }}
+
+      - name: Resolve config
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+          CONFIG_INLINE: ${{ secrets.config_inline }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Resolve oci-nuke config"
+          if [[ -n "${CONFIG_INLINE}" ]]; then
+            printf '%s\n' "${CONFIG_INLINE}" > "${RUNNER_TEMP}/oci-nuke-config.yaml"
+            echo "RESOLVED_CONFIG=${RUNNER_TEMP}/oci-nuke-config.yaml" >> "$GITHUB_ENV"
+            echo "config supplied inline"
+          else
+            if [[ ! -f "${CONFIG_PATH}" ]]; then
+              echo "::error::config_path '${CONFIG_PATH}' not found in the caller repository." >&2
+              exit 1
+            fi
+            echo "RESOLVED_CONFIG=${CONFIG_PATH}" >> "$GITHUB_ENV"
+            echo "config read from ${CONFIG_PATH}"
+          fi
+
+      - name: Validate config regions against allowlist
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          REGIONS_ALLOWLIST: ${{ inputs.regions_allowlist }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Verify every config region is on the allowlist"
+          mapfile -t allow < <(printf '%s\n' "${REGIONS_ALLOWLIST}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | sort -u)
+          if (( ${#allow[@]} == 0 )); then
+            echo "::error::regions_allowlist is empty. Explicit regions are required." >&2
+            exit 1
+          fi
+          mapfile -t config_regions < <(awk '
+            /^regions:[[:space:]]*$/ { in_block=1; next }
+            in_block && /^[a-zA-Z]/ { in_block=0 }
+            in_block && /^[[:space:]]*-/ { sub(/^[[:space:]]*-[[:space:]]*/, ""); gsub(/["'\'']/, ""); sub(/[[:space:]]*#.*$/, ""); print }
+          ' "${RESOLVED_CONFIG}" | grep -v '^$' | sort -u)
+          if (( ${#config_regions[@]} == 0 )); then
+            echo "::error::config has no regions: block; explicit regions are required." >&2
+            exit 1
+          fi
+          for r in "${config_regions[@]}"; do
+            ok=0
+            for a in "${allow[@]}"; do
+              if [[ "${r}" == "${a}" ]]; then ok=1; break; fi
+            done
+            if (( ok == 0 )); then
+              echo "::error::Config region '${r}' is not in regions_allowlist." >&2
+              exit 1
+            fi
+          done
+
+      - name: Download the plan artifact
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.plan_artifact_name }}
+          run-id: ${{ inputs.plan_run_id }}
+          github-token: ${{ github.token }}
+          path: plan
+
+      - name: Verify the plan hash against the audit issue
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Verify the artifact carries a plan"
+          if [[ ! -f plan/oci-nuke-plan.json ]]; then
+            gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+              --body "Apply refused: the plan artifact does not contain \`oci-nuke-plan.json\`."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed --remove-label oci-nuke:applying || true
+            echo "::error::plan artifact is missing oci-nuke-plan.json." >&2
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Compare the artifact's hash with the issue marker"
+          artifact_hash="$(jq -r '.hash // empty' plan/oci-nuke-plan.json)"
+          embedded="$(gh issue view "${ISSUE}" --repo "${{ github.repository }}" --json body --jq .body \
+            | grep -oE 'oci-nuke:hash=[0-9a-f]{64}' | head -n1 | sed 's/^oci-nuke:hash=//')"
+
+          if [[ -z "${artifact_hash}" || -z "${embedded}" ]]; then
+            gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+              --body "Apply refused: could not read a plan hash from the artifact or the issue body."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed --remove-label oci-nuke:applying || true
+            echo "::error::Missing hash (artifact='${artifact_hash}' issue='${embedded}')." >&2
+            exit 1
+          fi
+          if [[ "${artifact_hash}" != "${embedded}" ]]; then
+            gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+              --body "Apply refused: artifact hash \`${artifact_hash}\` does not match the issue-recorded \`${embedded}\`. Re-plan before approving."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed --remove-label oci-nuke:applying || true
+            echo "::error::Hash mismatch: artifact=${artifact_hash} issue=${embedded}" >&2
+            exit 1
+          fi
+          echo "Hash verified: ${artifact_hash}"
+
+      - name: Run oci-nuke (destructive)
+        id: nuke
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        # continue-on-error, the trailing `exit "${rc}"` and the failure path's
+        # own `exit 1` are one mechanism. → see docs/oci-nuke.md
+        continue-on-error: true
+        env:
+          COMPARTMENT_ID: ${{ inputs.compartment_id }}
+          OIDC_REGION: ${{ inputs.oidc_region }}
+          OIDC_AUDIENCE: ${{ inputs.oidc_audience }}
+          DELETE_COMPARTMENTS: ${{ inputs.delete_compartments }}
+          MAX_PLAN_AGE: ${{ inputs.max_plan_age }}
+          OCI_OIDC_DOMAIN_URL: ${{ secrets.oidc_domain_url }}
+          OCI_OIDC_CLIENT_ID: ${{ secrets.oidc_client_id }}
+          OCI_OIDC_CLIENT_SECRET: ${{ secrets.oidc_client_secret }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::oci-nuke destructive run"
+
+          args=(run
+            --auth github-oidc
+            --config "${RESOLVED_CONFIG}"
+            --compartment-id "${COMPARTMENT_ID}"
+            --oidc-region "${OIDC_REGION}"
+            --no-dry-run
+            --force
+            --approved-plan plan/oci-nuke-plan.json
+            --max-plan-age "${MAX_PLAN_AGE}"
+            --delete-compartments="${DELETE_COMPARTMENTS}")
+          # Unset, GitHub mints the token for the owner URL, which no trust asks for.
+          audience="${OIDC_AUDIENCE:-${OCI_OIDC_DOMAIN_URL}}"
+          if [[ -n "${audience}" ]]; then
+            args+=(--oidc-audience "${audience}")
+          fi
+          stdbuf -oL -eL oci-nuke "${args[@]}" 2>&1 | tee oci-nuke-apply.log
+          rc=${PIPESTATUS[0]}
+          echo "::endgroup::"
+
+          echo "::group::Record the exit code"
+          echo "nuke_exit_code=${rc}" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+          exit "${rc}"
+
+      - name: Upload the apply log
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oci-nuke-apply-${{ github.run_id }}
+          path: oci-nuke-apply.log
+          retention-days: ${{ inputs.artifact_retention_days }}
+          if-no-files-found: warn
+
+      - name: Success path — close the audit issue
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.nuke.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          AUTO_APPROVED: ${{ steps.auto_approve.outputs.bypass_human_gate == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Comment success and close the audit issue"
+          provenance=""
+          if [[ "${AUTO_APPROVED}" == "true" ]]; then provenance=" (auto-approved)"; fi
+          gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+            --body "Apply succeeded${provenance}. Log artifact: \`oci-nuke-apply-${{ github.run_id }}\` (run: ${RUN_URL})."
+          gh issue edit "${ISSUE}" --repo "${{ github.repository }}" \
+            --remove-label oci-nuke:pending \
+            --remove-label oci-nuke:applying || true
+          gh issue close "${ISSUE}" --repo "${{ github.repository }}"
+
+      - name: Failure path — leave the issue open
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.nuke.outcome == 'failure' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ inputs.issue_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EXIT_CODE: ${{ steps.nuke.outputs.nuke_exit_code }}
+          AUTO_APPROVED: ${{ steps.auto_approve.outputs.bypass_human_gate == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Comment failure and relabel the audit issue"
+          provenance=""
+          if [[ "${AUTO_APPROVED}" == "true" ]]; then provenance=" (auto-approved)"; fi
+          gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+            --body "Apply failed${provenance} (exit ${EXIT_CODE}). Log artifact: \`oci-nuke-apply-${{ github.run_id }}\` (run: ${RUN_URL}). The issue stays open."
+          gh issue edit "${ISSUE}" --repo "${{ github.repository }}" \
+            --add-label oci-nuke:failed \
+            --remove-label oci-nuke:applying || true
+          echo "::endgroup::"
+          exit 1

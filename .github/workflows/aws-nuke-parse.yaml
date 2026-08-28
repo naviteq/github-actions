@@ -1,18 +1,7 @@
 ---
 name: AWS Nuke / Parse approval comment
-# Reusable comment-parsing logic for the consumer-side `issue_comment`
-# trampoline that fires aws-nuke-apply.yaml.
-#
-# The caller's workflow must be triggered by `on: issue_comment` (which is
-# NOT a valid trigger for reusable workflows themselves). `workflow_call`
-# propagates the caller's `github` event context unchanged, so the parse
-# step reads `github.event.comment.body` and `github.event.issue.body`
-# directly — do NOT refactor these into inputs.
-#
-# This workflow is convenience plumbing only. `aws-nuke-apply.yaml`
-# re-validates every claim emitted here (regex, account via STS, hash
-# against the issue body, regions allowlist, CODEOWNERS). The security
-# boundary is unchanged.
+# Convenience plumbing for the consumer `issue_comment` trampoline; the apply
+# workflow re-validates every claim emitted here. See docs/aws-nuke.md.
 on:
   workflow_call:
     inputs:
@@ -58,14 +47,8 @@ jobs:
       resource_set_hash: ${{ steps.match.outputs.resource_set_hash }}
     steps:
       - id: match
-        # The regexes below pin to the exact issue-body shape emitted by
-        # aws-nuke-plan.yaml:
-        #   - `<!-- nuke:hash=<hash> account=<id> -->`  (plan step ~line 597)
-        #   - `| Account | \`<id>\` |`                  (plan step ~line 616)
-        #   - `| Regions | \`<csv>\` |`                 (plan step ~line 617)
-        # If the plan-side rendering changes, this step must change with it.
-        # The test case `case_parse_extracts_fields_from_issue_body` in
-        # z-test-aws-nuke.yaml acts as a drift detector.
+        # These regexes pin to the issue-body shape aws-nuke-plan.yaml emits;
+        # change both together. See docs/aws-nuke.md.
         shell: bash
         env:
           BODY: ${{ github.event.comment.body }}
