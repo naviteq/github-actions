@@ -9,7 +9,7 @@ on:
         type: string
         default: ubuntu-24.04
       scan_type:
-        description: Trivy scan type
+        description: Trivy scan type. One of image, fs, config.
         required: false
         type: string
         default: image
@@ -19,10 +19,35 @@ on:
         type: string
         default: ""
       scan_ref:
-        description: Path to scan when scan_type=fs
+        description: Path to scan when scan_type=fs or scan_type=config
         required: false
         type: string
         default: "."
+      scanners:
+        description: Trivy scanners to enable (vuln, misconfig, secret). Ignored when scan_type=config.
+        required: false
+        type: string
+        default: vuln
+      trivy_config:
+        description: Path to a Trivy configuration file (trivy.yaml)
+        required: false
+        type: string
+        default: ""
+      ignorefile:
+        description: Path to a Trivy ignore file. A single .trivyignore.yaml carries rationale and expiry.
+        required: false
+        type: string
+        default: ""
+      skip_dirs:
+        description: Comma-separated directories to exclude from the scan
+        required: false
+        type: string
+        default: ""
+      soft_fail:
+        description: Report findings without failing the job
+        required: false
+        type: boolean
+        default: false
       registry:
         description: Container registry hostname for image scans
         required: false
@@ -38,6 +63,31 @@ on:
         required: false
         type: boolean
         default: true
+      download_artifact:
+        description: Artifact to download into the workspace before scanning. Used to scan another job's output.
+        required: false
+        type: string
+        default: ""
+      download_path:
+        description: Directory the artifact is extracted into. Must match the path the producer uploaded from.
+        required: false
+        type: string
+        default: ""
+      upload_report_artifact:
+        description: Retain the JSON, SARIF and text reports as a CI artifact
+        required: false
+        type: boolean
+        default: true
+      report_artifact_name:
+        description: Name of the retained report artifact
+        required: false
+        type: string
+        default: trivy-report
+      report_retention_days:
+        description: Retention period for the report artifact, in days
+        required: false
+        type: number
+        default: 90
     secrets:
       registry_password:
         required: false
@@ -46,7 +96,7 @@ permissions: {}
 
 jobs:
   trivy:
-    name: Container Scan
+    name: Trivy Scan (${{ inputs.scan_type }})
     runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || inputs.runner || 'ubuntu-24.04' }}
     permissions:
       actions: read
@@ -54,10 +104,19 @@ jobs:
       security-events: write
     env:
       REGISTRY_PASSWORD: ${{ secrets.registry_password }}
+      # Not TRIVY_SCANNERS: that name is Trivy's own env var and would leak into the scan.
+      RESOLVED_SCANNERS: ${{ inputs.scan_type == 'config' && '' || inputs.scanners }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download scan input artifact
+        if: ${{ inputs.download_artifact != '' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.download_artifact }}
+          path: ${{ inputs.download_path }}
 
       - name: Log in to container registry
         if: ${{ inputs.scan_type == 'image' && inputs.registry != '' && inputs.registry_username != '' && env.REGISTRY_PASSWORD != '' }}
@@ -67,113 +126,95 @@ jobs:
           username: ${{ inputs.registry_username }}
           password: ${{ env.REGISTRY_PASSWORD }}
 
-      - name: Run Trivy image scan (JSON)
-        if: ${{ inputs.scan_type == 'image' }}
+      - name: Run Trivy scan (JSON)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          scan-type: image
-          image-ref: ${{ inputs.image_ref }}
-          format: json
-          output: trivy-report.json
-          severity: HIGH,CRITICAL
-          exit-code: "0"
-          ignore-unfixed: false
-          vuln-type: os,library
-          scanners: vuln
-          hide-progress: true
-
-      - name: Run Trivy filesystem scan (JSON)
-        if: ${{ inputs.scan_type == 'fs' }}
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
+          scan-type: ${{ inputs.scan_type }}
+          image-ref: ${{ inputs.scan_type == 'image' && inputs.image_ref || '' }}
           scan-ref: ${{ inputs.scan_ref }}
           format: json
           output: trivy-report.json
           severity: HIGH,CRITICAL
           exit-code: "0"
           ignore-unfixed: false
-          scanners: vuln
+          vuln-type: ${{ inputs.scan_type == 'image' && 'os,library' || '' }}
+          scanners: ${{ env.RESOLVED_SCANNERS }}
+          trivy-config: ${{ inputs.trivy_config }}
+          trivyignores: ${{ inputs.ignorefile }}
+          skip-dirs: ${{ inputs.skip_dirs }}
           hide-progress: true
 
-      - name: Run Trivy image scan (SARIF)
-        if: ${{ inputs.scan_type == 'image' }}
+      - name: Run Trivy scan (SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          scan-type: image
-          image-ref: ${{ inputs.image_ref }}
+          scan-type: ${{ inputs.scan_type }}
+          image-ref: ${{ inputs.scan_type == 'image' && inputs.image_ref || '' }}
+          scan-ref: ${{ inputs.scan_ref }}
           format: sarif
           output: trivy-report.sarif
           severity: HIGH,CRITICAL
           exit-code: "0"
           ignore-unfixed: false
-          vuln-type: os,library
-          scanners: vuln
+          vuln-type: ${{ inputs.scan_type == 'image' && 'os,library' || '' }}
+          scanners: ${{ env.RESOLVED_SCANNERS }}
+          trivy-config: ${{ inputs.trivy_config }}
+          trivyignores: ${{ inputs.ignorefile }}
+          skip-dirs: ${{ inputs.skip_dirs }}
+          # Without this the SARIF upload carries every severity, not the gated set.
+          limit-severities-for-sarif: true
           hide-progress: true
 
-      - name: Run Trivy filesystem scan (SARIF)
-        if: ${{ inputs.scan_type  == 'fs' }}
+      - name: Run Trivy scan (text summary)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          scan-type: fs
-          scan-ref: ${{ inputs.scan_ref || true }}
-          format: sarif
-          output: trivy-report.sarif
-          severity: HIGH,CRITICAL
-          exit-code: "0"
-          ignore-unfixed: false
-          scanners: vuln
-          hide-progress: true
-
-      - name: Run Trivy image scan (text summary)
-        if: ${{ inputs.scan_type == 'image' }}
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: image
-          image-ref: ${{ inputs.image_ref }}
-          output: trivy.txt
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: false
-          vuln-type: os,library
-          scanners: vuln
-          hide-progress: true
-
-      - name: Run Trivy filesystem scan (text summary)
-        if: ${{ (inputs.scan_type || 'fs') == 'fs' }}
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
+          scan-type: ${{ inputs.scan_type }}
+          image-ref: ${{ inputs.scan_type == 'image' && inputs.image_ref || '' }}
           scan-ref: ${{ inputs.scan_ref }}
           output: trivy.txt
           severity: HIGH,CRITICAL
-          exit-code: "1"
+          exit-code: ${{ inputs.soft_fail && '0' || '1' }}
           ignore-unfixed: false
-          scanners: vuln
+          vuln-type: ${{ inputs.scan_type == 'image' && 'os,library' || '' }}
+          scanners: ${{ env.RESOLVED_SCANNERS }}
+          trivy-config: ${{ inputs.trivy_config }}
+          trivyignores: ${{ inputs.ignorefile }}
+          skip-dirs: ${{ inputs.skip_dirs }}
           hide-progress: true
 
       - name: Upload SARIF to GitHub Security
         if: ${{ always() && hashFiles('trivy-report.sarif') != '' && inputs.upload_sarif }}
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           sarif_file: trivy-report.sarif
+
+      - name: Upload Trivy reports
+        if: ${{ always() && inputs.upload_report_artifact && hashFiles('trivy-report.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ inputs.report_artifact_name }}
+          path: |
+            trivy-report.json
+            trivy-report.sarif
+            trivy.txt
+          retention-days: ${{ inputs.report_retention_days }}
+          if-no-files-found: warn
 
       - name: Publish Trivy Output to Summary
         if: always()
         shell: bash
+        env:
+          SCAN_TYPE: ${{ inputs.scan_type }}
+          SCAN_TARGET: ${{ inputs.scan_type == 'image' && inputs.image_ref || inputs.scan_ref }}
+          SOFT_FAIL: ${{ inputs.soft_fail }}
         run: |
           set -uo pipefail
           echo "::group::Write Trivy scan summary to step summary"
           {
             echo "## 🔎 Trivy Scan Results"
 
-            if [ "${{ inputs.scan_type }}" = "image" ]; then
-              echo "- **Scan type:** image"
-              echo "- **Target:** \`${{ inputs.image_ref }}\`"
-            else
-              echo "- **Scan type:** fs"
-              echo "- **Target:** \`${{ inputs.scan_ref }}\`"
-            fi
+            echo "- **Scan type:** ${SCAN_TYPE}"
+            echo "- **Target:** \`${SCAN_TARGET}\`"
+            echo "- **Soft fail:** \`${SOFT_FAIL}\`"
 
             if [ ! -f trivy-report.json ]; then
               echo ""
@@ -184,8 +225,8 @@ jobs:
             CRITICAL_COUNT=$(jq '[.. | objects | select(has("Severity")) | select(.Severity == "CRITICAL")] | length' trivy-report.json)
             HIGH_COUNT=$(jq '[.. | objects | select(has("Severity")) | select(.Severity == "HIGH")] | length' trivy-report.json)
 
-            echo "- **Critical vulnerabilities:** ${CRITICAL_COUNT}"
-            echo "- **High vulnerabilities:** ${HIGH_COUNT}"
+            echo "- **Critical findings:** ${CRITICAL_COUNT}"
+            echo "- **High findings:** ${HIGH_COUNT}"
             echo ""
 
             if [[ -s trivy.txt ]]; then

@@ -95,7 +95,7 @@ runs:
     - name: Setup Helm
       uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
       with:
-        version: v4.2.3
+        version: v4.2.4
 
     - name: Validate chart
       shell: bash
@@ -150,10 +150,8 @@ runs:
           # Explicit app_version input takes highest priority
           APP_VERSION="$APP_VERSION_OVERRIDE"
         elif [[ -n "$CHART_VERSION_OVERRIDE" ]]; then
-          # When chart_version is overridden (monorepo pattern), preserve the
-          # chart's own appVersion from Chart.yaml to prevent cross-chart tag
-          # contamination (e.g. argo-cd-9.4.7 tag polluting github-arc-scale-sets).
-          # See: https://github.com/naviteq-ltd/helm-charts/issues/181
+          # An overridden chart_version must not carry another chart's appVersion.
+          # See https://github.com/naviteq-ltd/helm-charts/issues/181
           APP_VERSION="$EXISTING_APP_VERSION"
         elif [[ "$GITHUB_REF_TYPE" == "branch" ]]; then
           if git show-ref --tags --quiet; then
