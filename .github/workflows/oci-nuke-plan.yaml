@@ -263,7 +263,7 @@ jobs:
 
       - name: Install oci-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/oci-nuke-install@af2e5d0ac90ff3796f67ddb574a9921666a68472
+        uses: naviteq/github-actions/.github/actions/oci-nuke-install@2685f661f085369ef74b97128bd69c18e72fec1a
         with:
           version: ${{ inputs.oci_nuke_version }}
           source_ref: ${{ inputs.source_ref }}
