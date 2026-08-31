@@ -60,25 +60,17 @@ on:
         required: false
         default: false
       oci_nuke_version:
-        description: Released oci-nuke tag to install, e.g. "v0.4.0". Mutually exclusive with source_ref; exactly one is required.
+        description: >-
+          Released oci-nuke tag to install, e.g. "v1.1.0". Required, with no
+          default: "latest" would let a release published between plan and apply
+          change the binary that performs the verification rescan.
         type: string
-        required: false
-        default: ""
-      source_ref:
-        description: Full 40-character commit SHA of naviteq-ltd/oci-nuke to build in place. Mutually exclusive with oci_nuke_version.
-        type: string
-        required: false
-        default: ""
+        required: true
       artifact_retention_days:
         description: Retention for the plan artifact. Must outlive the approval gap between plan and apply.
         type: number
         required: false
         default: 90
-      go_version:
-        description: Go toolchain used to build or install oci-nuke.
-        type: string
-        required: false
-        default: "1.26.x"
       runner:
         description: Runner label, or a JSON array of labels.
         type: string
@@ -101,11 +93,12 @@ on:
         required: false
       github_app_id:
         description: >-
-          Required when auto_approve is on. A comment posted by GITHUB_TOKEN
-          fires no downstream issue_comment workflow, so an App identity is not optional.
+          Always required. It mints the token that downloads the private
+          oci-nuke release, and — when auto_approve is on — the one that posts
+          the approval comment. → see docs/oci-nuke.md
         required: false
       github_app_key:
-        description: Private key for the App identified by github_app_id. Required when auto_approve is on.
+        description: Private key for the App identified by github_app_id. Always required, for the same two reasons.
         required: false
     outputs:
       issue_number:
@@ -261,13 +254,44 @@ jobs:
         if: ${{ steps.pause.outputs.skip != 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Require the App credentials that read the oci-nuke release
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          APP_ID_SET: ${{ secrets.github_app_id != '' }}
+          APP_KEY_SET: ${{ secrets.github_app_key != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check the App credentials used to download the oci-nuke release"
+          # Named here because the releases API answers 404 without a readable
+          # token, which reads as a missing release. → see docs/oci-nuke.md
+          if [[ "${APP_ID_SET}" != "true" || "${APP_KEY_SET}" != "true" ]]; then
+            echo "::error::github_app_id and github_app_key are required: naviteq-ltd/oci-nuke is private, its release assets are not anonymously readable, and this repository's GITHUB_TOKEN cannot read another repository." >&2
+            exit 1
+          fi
+
+      - name: Generate a GitHub App token for the oci-nuke release
+        id: install_token
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.github_app_id }}
+          private-key: ${{ secrets.github_app_key }}
+          owner: naviteq-ltd
+          repositories: oci-nuke
+
       - name: Install oci-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/oci-nuke-install@af2e5d0ac90ff3796f67ddb574a9921666a68472
+        # Resolves only while naviteq-ltd/oci-nuke keeps Actions access set to
+        # "Accessible from repositories in the organization"; a 404 means that.
+        uses: naviteq-ltd/oci-nuke@56754c56453e30dee5b30319b12d07c9a0b30574 # v1.1.2
         with:
+          # The SHA pins the action's code; `version` picks the release it
+          # installs. Two versions, and bumping one does not move the other.
           version: ${{ inputs.oci_nuke_version }}
-          source_ref: ${{ inputs.source_ref }}
-          go_version: ${{ inputs.go_version }}
+          token: ${{ steps.install_token.outputs.token }}
+          repository: naviteq-ltd/oci-nuke
 
       - name: Resolve config
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -537,7 +561,6 @@ jobs:
           TYPE_COUNT: ${{ steps.extract.outputs.type_count }}
           AUTO_APPROVE_ALLOWED: ${{ steps.auto_approve.outputs.auto_approve_allowed }}
           OCI_NUKE_VERSION: ${{ inputs.oci_nuke_version }}
-          SOURCE_REF: ${{ inputs.source_ref }}
         shell: bash
         run: |
           set -euo pipefail
@@ -548,11 +571,7 @@ jobs:
           regions_csv="$(paste -sd ',' regions.txt || true)"
           # The apply phase reads this back, so both phases run the same binary
           # by construction rather than by the caller pinning it twice.
-          if [[ -n "${SOURCE_REF}" ]]; then
-            binary="source_ref=${SOURCE_REF}"
-          else
-            binary="version=${OCI_NUKE_VERSION}"
-          fi
+          binary="version=${OCI_NUKE_VERSION}"
           echo "::endgroup::"
 
           # Bounded render: the markers, the table and the footer are never

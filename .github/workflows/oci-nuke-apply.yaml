@@ -69,25 +69,16 @@ on:
         required: false
         default: false
       oci_nuke_version:
-        description: Released oci-nuke tag. Must be the one the plan run used.
+        description: >-
+          Released oci-nuke tag. Must be the one the plan run used — take it
+          from oci-nuke-parse.yaml, which reads it off the audit issue.
         type: string
-        required: false
-        default: ""
-      source_ref:
-        description: Full 40-character commit SHA. Must be the one the plan run used.
-        type: string
-        required: false
-        default: ""
+        required: true
       artifact_retention_days:
         description: Retention for the apply log.
         type: number
         required: false
         default: 90
-      go_version:
-        description: Go toolchain used to build or install oci-nuke.
-        type: string
-        required: false
-        default: "1.26.x"
       runner:
         description: Runner label, or a JSON array of labels.
         type: string
@@ -105,6 +96,14 @@ on:
         required: true
       config_inline:
         description: The whole oci-nuke config as a string. Must resolve to the same config the plan run used.
+        required: false
+      github_app_id:
+        description: >-
+          Required. It mints the token that downloads the private oci-nuke
+          release; a caller's GITHUB_TOKEN cannot read another repository.
+        required: false
+      github_app_key:
+        description: Private key for the App identified by github_app_id. Required for the same reason.
         required: false
 
 permissions: {}
@@ -390,13 +389,44 @@ jobs:
         if: ${{ steps.pause.outputs.skip != 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Require the App credentials that read the oci-nuke release
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          APP_ID_SET: ${{ secrets.github_app_id != '' }}
+          APP_KEY_SET: ${{ secrets.github_app_key != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check the App credentials used to download the oci-nuke release"
+          # Named here because the releases API answers 404 without a readable
+          # token, which reads as a missing release. → see docs/oci-nuke.md
+          if [[ "${APP_ID_SET}" != "true" || "${APP_KEY_SET}" != "true" ]]; then
+            echo "::error::github_app_id and github_app_key are required: naviteq-ltd/oci-nuke is private, its release assets are not anonymously readable, and this repository's GITHUB_TOKEN cannot read another repository." >&2
+            exit 1
+          fi
+
+      - name: Generate a GitHub App token for the oci-nuke release
+        id: install_token
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.github_app_id }}
+          private-key: ${{ secrets.github_app_key }}
+          owner: naviteq-ltd
+          repositories: oci-nuke
+
       - name: Install oci-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/oci-nuke-install@af2e5d0ac90ff3796f67ddb574a9921666a68472
+        # Resolves only while naviteq-ltd/oci-nuke keeps Actions access set to
+        # "Accessible from repositories in the organization"; a 404 means that.
+        uses: naviteq-ltd/oci-nuke@56754c56453e30dee5b30319b12d07c9a0b30574 # v1.1.2
         with:
+          # The SHA pins the action's code; `version` picks the release it
+          # installs. Two versions, and bumping one does not move the other.
           version: ${{ inputs.oci_nuke_version }}
-          source_ref: ${{ inputs.source_ref }}
-          go_version: ${{ inputs.go_version }}
+          token: ${{ steps.install_token.outputs.token }}
+          repository: naviteq-ltd/oci-nuke
 
       - name: Resolve config
         if: ${{ steps.pause.outputs.skip != 'true' }}
