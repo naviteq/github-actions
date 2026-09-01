@@ -160,8 +160,18 @@ jobs:
           set -euo pipefail
           trap 'echo "::endgroup::"' EXIT
           echo "::group::Check declared account against production-account allowlist"
-          if [[ -z "${PROD_ACCOUNTS:-}" ]]; then
-            echo "::warning::RUNESTRA_PROD_ACCOUNTS org variable is unset. Production-account guard cannot enforce."
+          # Apply is the destructive half, so an advisory guard here is not a guard. "none" is
+          # how an org with no production accounts declares that on purpose.
+          declared="$(printf '%s' "${PROD_ACCOUNTS:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+          if [[ -z "${declared}" ]]; then
+            gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+              --body "Apply refused: \`RUNESTRA_PROD_ACCOUNTS\` is unset, so the production-account guard cannot enforce. Set it to the production account IDs, or to the literal \`none\` if there are deliberately none, then re-approve."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label nuke:failed || true
+            echo "::error::Refusing to apply: RUNESTRA_PROD_ACCOUNTS is unset and the production-account guard cannot enforce. Set it to the production account IDs, or to the literal 'none' if there are deliberately none." >&2
+            exit 1
+          fi
+          if [[ "${declared}" == "none" ]]; then
+            echo "::notice::RUNESTRA_PROD_ACCOUNTS is 'none': no production accounts are declared, so the guard has nothing to match."
             exit 0
           fi
           IFS=',' read -r -a accounts <<< "${PROD_ACCOUNTS}"
@@ -405,11 +415,11 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@af2e5d0ac90ff3796f67ddb574a9921666a68472
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@e7630149683fc543b988a362b18bed7b2d12585e
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: ${{ secrets.aws_iam_role }}
           role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}-nuke-apply
@@ -527,7 +537,7 @@ jobs:
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@af2e5d0ac90ff3796f67ddb574a9921666a68472
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@e7630149683fc543b988a362b18bed7b2d12585e
         with:
           version: ${{ inputs.aws_nuke_version }}
 

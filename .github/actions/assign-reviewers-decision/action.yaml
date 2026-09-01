@@ -1,0 +1,85 @@
+---
+name: Assign reviewers decision
+description: Decide whether a pull request should have reviewers requested on it
+
+inputs:
+  author:
+    description: Login of the pull request author.
+    required: true
+  author_is_bot:
+    description: Whether the author is a GitHub App or bot account.
+    required: true
+  changed_files:
+    description: Number of files the pull request changes.
+    required: true
+  is_draft:
+    description: Whether the pull request is a draft.
+    required: true
+  has_existing_reviewers:
+    description: Whether the pull request already carries requested reviewers or teams.
+    required: true
+  always_assign_authors:
+    description: Newline-separated logins that are assigned regardless of the bot threshold.
+    required: false
+    default: ""
+  bot_changed_files_threshold:
+    description: Changed-file count from which a bot-authored pull request is assigned anyway.
+    required: false
+    default: "10"
+  include_drafts:
+    description: Whether draft pull requests are assigned.
+    required: false
+    default: "false"
+
+outputs:
+  assign:
+    description: Whether reviewers should be requested, `true` or `false`.
+    value: ${{ steps.decide.outputs.assign }}
+  reason:
+    description: Human-readable reason for the decision.
+    value: ${{ steps.decide.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Decide
+      id: decide
+      shell: bash
+      env:
+        AUTHOR: ${{ inputs.author }}
+        AUTHOR_IS_BOT: ${{ inputs.author_is_bot }}
+        CHANGED_FILES: ${{ inputs.changed_files }}
+        IS_DRAFT: ${{ inputs.is_draft }}
+        HAS_EXISTING_REVIEWERS: ${{ inputs.has_existing_reviewers }}
+        ALWAYS_ASSIGN_AUTHORS: ${{ inputs.always_assign_authors }}
+        THRESHOLD: ${{ inputs.bot_changed_files_threshold }}
+        INCLUDE_DRAFTS: ${{ inputs.include_drafts }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+
+        echo "::group::Evaluate the assignment rule"
+        decide() {
+          echo "assign=$1" >> "${GITHUB_OUTPUT}"
+          echo "reason=$2" >> "${GITHUB_OUTPUT}"
+          echo "assign=$1 ($2)"
+          exit 0
+        }
+
+        if [ "${HAS_EXISTING_REVIEWERS}" = "true" ]; then
+          decide false "the pull request already has reviewers requested"
+        fi
+        if [ "${IS_DRAFT}" = "true" ] && [ "${INCLUDE_DRAFTS}" != "true" ]; then
+          decide false "draft pull request and include_drafts is false"
+        fi
+        if printf '%s\n' "${ALWAYS_ASSIGN_AUTHORS}" | grep -qxF "${AUTHOR}"; then
+          decide true "${AUTHOR} is listed in always_assign_authors"
+        fi
+        if [ "${AUTHOR_IS_BOT}" != "true" ]; then
+          decide true "${AUTHOR} is not a bot"
+        fi
+        # A bot batch large enough to need eyes is defined by size, not by author.
+        if [ "${CHANGED_FILES}" -ge "${THRESHOLD}" ]; then
+          decide true "bot pull request changes ${CHANGED_FILES} files (threshold ${THRESHOLD})"
+        fi
+        decide false "bot pull request changes ${CHANGED_FILES} files, below the threshold of ${THRESHOLD}"

@@ -1,0 +1,184 @@
+---
+name: Assign Reviewers
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      reviewers:
+        description: >
+          Newline- or comma-separated user logins to request a review from.
+          Empty falls back to the `DEFAULT_ORG_REVIEWERS` organization variable.
+        required: false
+        type: string
+        default: ""
+      team_reviewers:
+        description: >
+          Newline- or comma-separated team slugs to request a review from.
+          Empty falls back to the `DEFAULT_ORG_TEAM_REVIEWERS` organization
+          variable, and to the `owners` team when that is unset too.
+        required: false
+        type: string
+        default: ""
+      always_assign_authors:
+        description: >
+          Newline- or comma-separated bot logins that are assigned like humans,
+          whatever the changed-file count.
+        required: false
+        type: string
+        default: ai-developer-naviteq-io[bot]
+      bot_changed_files_threshold:
+        description: >
+          Changed-file count from which a bot-authored pull request is assigned
+          anyway. Keeps routine Renovate and release bumps out of the review
+          queue while still routing a large machine batch to a human.
+        required: false
+        type: number
+        default: 10
+      include_drafts:
+        description: Whether draft pull requests are assigned.
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: Evaluate and log the decision without requesting anyone.
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      app_id:
+        description: >
+          GitHub App ID. Required to request a review from a team — the default
+          `GITHUB_TOKEN` cannot resolve one. → see docs/assign-reviewers.md
+        required: false
+      app_private_key:
+        description: Private key of the same GitHub App.
+        required: false
+    outputs:
+      assigned:
+        description: Whether a review was requested, `true` or `false`.
+        value: ${{ jobs.assign-reviewers.outputs.assigned }}
+      reason:
+        description: Why the workflow did or did not request a review.
+        value: ${{ jobs.assign-reviewers.outputs.reason }}
+
+permissions: {}
+
+jobs:
+  assign-reviewers:
+    name: Assign reviewers
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      has_app_credentials: ${{ secrets.app_id != '' && secrets.app_private_key != '' }}
+    outputs:
+      assigned: ${{ steps.request.outputs.assigned || 'false' }}
+      reason: ${{ steps.decision.outputs.reason }}
+    steps:
+      - name: Require a pull request context
+        if: ${{ github.event.pull_request == null }}
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          echo "::error title=assign-reviewers needs a pull request event::The caller triggered this on '${EVENT_NAME}'. Call it from a workflow triggered by 'pull_request' with types [opened, reopened, ready_for_review]."
+          exit 1
+
+      - name: Decide whether to assign
+        id: decision
+        uses: naviteq/github-actions/.github/actions/assign-reviewers-decision@e7630149683fc543b988a362b18bed7b2d12585e
+        with:
+          author: ${{ github.event.pull_request.user.login }}
+          author_is_bot: ${{ github.event.pull_request.user.type == 'Bot' }}
+          changed_files: ${{ github.event.pull_request.changed_files }}
+          is_draft: ${{ github.event.pull_request.draft }}
+          has_existing_reviewers: ${{ github.event.pull_request.requested_reviewers[0] != null || github.event.pull_request.requested_teams[0] != null }}
+          always_assign_authors: ${{ inputs.always_assign_authors }}
+          bot_changed_files_threshold: ${{ inputs.bot_changed_files_threshold }}
+          include_drafts: ${{ inputs.include_drafts }}
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: ${{ steps.decision.outputs.assign == 'true' && env.has_app_credentials == 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.app_private_key }}
+
+      - name: Request reviewers
+        id: request
+        if: ${{ steps.decision.outputs.assign == 'true' }}
+        env:
+          API_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          HAS_APP_TOKEN: ${{ steps.app-token.outputs.token != '' }}
+          API_URL: ${{ github.api_url }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          REVIEWERS: ${{ inputs.reviewers != '' && inputs.reviewers || vars.DEFAULT_ORG_REVIEWERS }}
+          TEAM_REVIEWERS: ${{ inputs.team_reviewers != '' && inputs.team_reviewers || vars.DEFAULT_ORG_TEAM_REVIEWERS }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Resolve the reviewer lists"
+          normalize() {
+            printf '%s\n' "$1" | tr ',' '\n' | sed 's#^[[:space:]]*@*##; s#[[:space:]]*$##' | grep -v '^$' | sort -u || true
+          }
+          json_array() {
+            [ -n "$1" ] || { printf '[]'; return; }
+            printf '%s\n' "$1" | sed 's#.*#"&"#' | paste -sd, - | tr -d '\n' | sed 's#^#[#; s#$#]#'
+          }
+          users="$(normalize "${REVIEWERS}")"
+          # Team slugs are accepted as `org/team` and sent as `team`.
+          teams="$(normalize "${TEAM_REVIEWERS}" | sed 's#.*/##')"
+          if [ -z "${users}" ] && [ -z "${teams}" ]; then
+            teams="owners"
+            echo "No reviewer configured; falling back to the 'owners' team"
+          fi
+          users="$(printf '%s\n' "${users}" | grep -vixF "${PR_AUTHOR}" || true)"
+          echo "users: $(printf '%s' "${users}" | tr '\n' ' ')"
+          echo "teams: $(printf '%s' "${teams}" | tr '\n' ' ')"
+          if [ -z "${users}" ] && [ -z "${teams}" ]; then
+            echo "::error title=No reviewer left to request::Every configured reviewer resolved away — the only one listed is the pull request author. Set 'reviewers' or 'team_reviewers', or the DEFAULT_ORG_REVIEWERS / DEFAULT_ORG_TEAM_REVIEWERS organization variables."
+            exit 1
+          fi
+          if [ -n "${teams}" ] && [ "${HAS_APP_TOKEN}" != "true" ]; then
+            message="GITHUB_TOKEN cannot resolve a team, so the request would fail. Pass the app_id and app_private_key secrets, or configure user reviewers only."
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "::warning title=Team review requests need a GitHub App token::${message}"
+            else
+              echo "::error title=Team review requests need a GitHub App token::${message}"
+              exit 1
+            fi
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Request the review"
+          payload="{\"reviewers\":$(json_array "${users}"),\"team_reviewers\":$(json_array "${teams}")}"
+          echo "${payload}"
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "dry_run is on; no review requested"
+            echo "assigned=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          status="$(curl -sS -o /tmp/response.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${API_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d "${payload}" \
+            "${API_URL}/repos/${REPO}/pulls/${PR_NUMBER}/requested_reviewers")"
+          if [ "${status}" != "201" ]; then
+            cat /tmp/response.json
+            echo "::error title=Review request rejected by the API::POST /pulls/${PR_NUMBER}/requested_reviewers returned ${status}. A team must have access to the repository, and a reviewer must be a collaborator on it."
+            exit 1
+          fi
+          echo "assigned=true" >> "${GITHUB_OUTPUT}"
+          echo "Review requested on ${REPO}#${PR_NUMBER}"
