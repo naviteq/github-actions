@@ -92,7 +92,7 @@ jobs:
 
       - name: Decide whether to assign
         id: decision
-        uses: naviteq/github-actions/.github/actions/assign-reviewers-decision@e7630149683fc543b988a362b18bed7b2d12585e
+        uses: naviteq/github-actions/.github/actions/assign-reviewers-decision@e95d8a4c251d561d158ab7bd2572ad6cded5b838
         with:
           author: ${{ github.event.pull_request.user.login }}
           author_is_bot: ${{ github.event.pull_request.user.type == 'Bot' }}
