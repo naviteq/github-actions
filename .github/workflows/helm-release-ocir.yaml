@@ -1,5 +1,5 @@
 ---
-name: Helm Release / ECR
+name: Helm Release / OCIR
 on:
   workflow_call:
     inputs:
@@ -7,16 +7,16 @@ on:
         description: Path to Helm chart directory (must contain Chart.yaml)
         type: string
         required: true
-      ecr_registry:
-        description: ECR registry host
+      ocir_registry:
+        description: OCIR registry host, e.g. eu-frankfurt-1.ocir.io
         type: string
         required: true
-      ecr_repo:
-        description: ECR repository path
+      ocir_repo:
+        description: OCIR repository path, e.g. <tenancy-namespace>/charts
         type: string
         required: true
       push_chart:
-        description: Push packaged chart to ECR
+        description: Push packaged chart to OCIR
         type: boolean
         required: false
         default: true
@@ -63,11 +63,13 @@ on:
         required: false
       github_app_key:
         required: false
-      aws_region:
-        description: AWS region (required when push_chart is true)
+      ocir_username:
+        description: >-
+          OCIR username in <tenancy-namespace>/<user> form (required when push_chart is true).
+          IDCS-federated: <tenancy-namespace>/oracleidentitycloudservice/<user>.
         required: false
-      aws_role_to_assume:
-        description: AWS IAM role ARN for OIDC (required when push_chart is true)
+      ocir_auth_token:
+        description: OCIR auth token (required when push_chart is true)
         required: false
     outputs:
       chart_name:
@@ -93,11 +95,10 @@ permissions: {}
 
 jobs:
   release:
-    name: Helm Release to ECR
+    name: Helm Release to OCIR
     runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
     permissions:
       contents: write
-      id-token: write
     outputs:
       chart_name: ${{ steps.core.outputs.chart_name }}
       chart_version: ${{ steps.core.outputs.chart_version }}
@@ -120,36 +121,32 @@ jobs:
           token: ${{ steps.app-token.outputs.token != '' && steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
 
-      - name: Validate ECR auth inputs
+      - name: Validate OCIR auth inputs
         if: ${{ inputs.push_chart }}
         env:
-          aws_region: ${{ secrets.aws_region }}
-          aws_role_to_assume: ${{ secrets.aws_role_to_assume }}
+          ocir_username: ${{ secrets.ocir_username }}
+          ocir_auth_token: ${{ secrets.ocir_auth_token }}
         run: |
-          if [[ -z "$aws_region" || -z "$aws_role_to_assume" ]]; then
-            echo "aws_region and aws_role_to_assume are required when push_chart=true"
+          if [[ -z "$ocir_username" || -z "$ocir_auth_token" ]]; then
+            echo "ocir_username and ocir_auth_token are required when push_chart=true"
             exit 1
           fi
 
-      - name: Configure AWS credentials (OIDC)
+      - name: Login to OCIR
         if: ${{ inputs.push_chart }}
-        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          role-to-assume: ${{ secrets.aws_role_to_assume }}
-          aws-region: ${{ secrets.aws_region }}
-
-      - name: Login to Amazon ECR
-        if: ${{ inputs.push_chart }}
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+          registry: ${{ inputs.ocir_registry }}
+          username: ${{ secrets.ocir_username }}
+          password: ${{ secrets.ocir_auth_token }}
 
       - name: Run OCI core
         id: core
         uses: naviteq/github-actions/.github/actions/helm-release-oci@092ef4101c490acebd5b0fa3034e0b0a6ce0b5f8
         with:
           chart_path: ${{ inputs.chart_path }}
-          oci_registry: ${{ inputs.ecr_registry }}
-          oci_repo: ${{ inputs.ecr_repo }}
+          oci_registry: ${{ inputs.ocir_registry }}
+          oci_repo: ${{ inputs.ocir_repo }}
           push_chart: ${{ inputs.push_chart }}
           bump_version_in_git: ${{ inputs.bump_version_in_git }}
           bump_version_git_branch: ${{ inputs.bump_version_git_branch }}
