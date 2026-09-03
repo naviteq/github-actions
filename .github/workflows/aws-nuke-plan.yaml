@@ -143,6 +143,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Production-account guard
+        id: prod_guard
         if: ${{ steps.pause.outputs.skip != 'true' }}
         env:
           AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
@@ -152,8 +153,17 @@ jobs:
           set -euo pipefail
           trap 'echo "::endgroup::"' EXIT
           echo "::group::Check declared account against production-account allowlist"
-          if [[ -z "${PROD_ACCOUNTS:-}" ]]; then
-            echo "::warning::RUNESTRA_PROD_ACCOUNTS org variable is unset. Production-account guard cannot enforce."
+          # An empty org variable is indistinguishable from an unset one, so "none" is how an
+          # org with no production accounts declares that on purpose.
+          declared="$(printf '%s' "${PROD_ACCOUNTS:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+          if [[ -z "${declared}" ]]; then
+            echo "enforced=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::RUNESTRA_PROD_ACCOUNTS is unset, so the production-account guard cannot enforce. Plan continues because it deletes nothing, but auto-approve is refused below and apply refuses outright. Set it to the production account IDs, or to the literal 'none' if there are deliberately none."
+            exit 0
+          fi
+          echo "enforced=true" >> "$GITHUB_OUTPUT"
+          if [[ "${declared}" == "none" ]]; then
+            echo "::notice::RUNESTRA_PROD_ACCOUNTS is 'none': no production accounts are declared, so the guard has nothing to match."
             exit 0
           fi
           IFS=',' read -r -a accounts <<< "${PROD_ACCOUNTS}"
@@ -173,6 +183,7 @@ jobs:
           AWS_ACCOUNT_ID: ${{ inputs.aws_account_id }}
           AUTO_APPROVE_ACCOUNTS: ${{ vars.NUKE_AUTO_APPROVE_ACCOUNTS }}
           PROD_ACCOUNTS: ${{ vars.RUNESTRA_PROD_ACCOUNTS }}
+          PROD_GUARD_ENFORCED: ${{ steps.prod_guard.outputs.enforced }}
           APP_ID_SET: ${{ secrets.github_app_id != '' }}
           APP_KEY_SET: ${{ secrets.github_app_key != '' }}
         shell: bash
@@ -185,6 +196,8 @@ jobs:
           allowed="false"
           if [[ "${AUTO_APPROVE_INPUT}" != "true" ]]; then
             echo "auto-approve not requested by caller; skipping."
+          elif [[ "${PROD_GUARD_ENFORCED}" != "true" ]]; then
+            echo "::notice::auto_approve=true but the production-account guard is not enforcing (RUNESTRA_PROD_ACCOUNTS is unset); falling back to human approval."
           elif [[ -z "${AUTO_APPROVE_ACCOUNTS:-}" ]]; then
             echo "::notice::auto_approve=true but NUKE_AUTO_APPROVE_ACCOUNTS org variable is unset; falling back to human approval."
           else
@@ -246,11 +259,11 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@af2e5d0ac90ff3796f67ddb574a9921666a68472
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@e1fa736fb07b7fb1f9c5350d8df3d1cdd94d3354
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6.2.4
         with:
           role-to-assume: ${{ secrets.aws_iam_role }}
           role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}-nuke-plan
@@ -330,7 +343,7 @@ jobs:
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@af2e5d0ac90ff3796f67ddb574a9921666a68472
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@e1fa736fb07b7fb1f9c5350d8df3d1cdd94d3354
         with:
           version: ${{ inputs.aws_nuke_version }}
 

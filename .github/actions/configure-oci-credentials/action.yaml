@@ -1,0 +1,303 @@
+---
+name: Configure OCI credentials
+description: >-
+  Exchange a GitHub OIDC token for a short-lived OCI session token (or select
+  instance-principal auth on OCI-hosted self-hosted runners), then verify the
+  resulting caller identity against a declared tenancy — the OCI analogue of
+  `aws sts get-caller-identity`. → see docs/configure-oci-credentials.md
+
+inputs:
+  region:
+    description: OCI region to address.
+    required: true
+  auth_method:
+    description: >-
+      "github-oidc" (default) exchanges a GitHub OIDC token for an OCI User
+      Principal Session Token via the identity domain's token-exchange
+      endpoint. "instance-principal" selects the runner's own OCI instance
+      principal and skips the exchange — only valid on a self-hosted runner
+      that is itself an OCI compute instance. → see docs/configure-oci-credentials.md
+    required: false
+    default: github-oidc
+  oidc_domain_url:
+    description: >-
+      The OCI Identity Domain's URL. Also the default token-exchange
+      audience. Required when auth_method is github-oidc. GitHub does not
+      expose secrets.* inside a composite action, so the caller passes its
+      secret through this input.
+    required: false
+    default: ""
+  oidc_client_id:
+    description: >-
+      The Confidential Application's OAuth client ID. Required when
+      auth_method is github-oidc. Reaches no OCI API on its own — see docs/configure-oci-credentials.md.
+    required: false
+    default: ""
+  oidc_client_secret:
+    description: >-
+      The Confidential Application's OAuth client secret. Required when
+      auth_method is github-oidc.
+    required: false
+    default: ""
+  oidc_audience:
+    description: Audience requested from GitHub's OIDC endpoint. Defaults to oidc_domain_url, which is what the trust expects.
+    required: false
+    default: ""
+  expected_tenancy_ocid:
+    description: >-
+      OCID of the tenancy the resulting caller identity must belong to.
+      Verified with `oci iam tenancy get` before this action succeeds —
+      refuses closed on a mismatch or an unauthorized call.
+    required: true
+  expected_user_ocid:
+    description: >-
+      OCID of the user the resulting caller identity must resolve to.
+      Optional second check, on top of expected_tenancy_ocid.
+    required: false
+    default: ""
+
+outputs:
+  auth_method:
+    description: The auth_method this run actually used.
+    value: ${{ inputs.auth_method }}
+  tenancy_ocid:
+    description: Tenancy OCID the identity assertion verified.
+    value: ${{ steps.assert_identity.outputs.tenancy_ocid }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      env:
+        AUTH_METHOD: ${{ inputs.auth_method }}
+        REGION: ${{ inputs.region }}
+        EXPECTED_TENANCY_OCID: ${{ inputs.expected_tenancy_ocid }}
+        OIDC_DOMAIN_URL_SET: ${{ inputs.oidc_domain_url != '' }}
+        OIDC_CLIENT_ID_SET: ${{ inputs.oidc_client_id != '' }}
+        OIDC_CLIENT_SECRET_SET: ${{ inputs.oidc_client_secret != '' }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Check the inputs the chosen auth method needs"
+        missing=()
+        [[ -n "${REGION}" ]] || missing+=("region")
+        [[ -n "${EXPECTED_TENANCY_OCID}" ]] || missing+=("expected_tenancy_ocid")
+        case "${AUTH_METHOD}" in
+          github-oidc)
+            [[ "${OIDC_DOMAIN_URL_SET}" == "true" ]]     || missing+=("oidc_domain_url")
+            [[ "${OIDC_CLIENT_ID_SET}" == "true" ]]      || missing+=("oidc_client_id")
+            [[ "${OIDC_CLIENT_SECRET_SET}" == "true" ]]  || missing+=("oidc_client_secret")
+            ;;
+          instance-principal)
+            ;;
+          *)
+            # An unrecognized value must never fall back to a default and
+            # quietly pick a principal.
+            echo "::error::auth_method '${AUTH_METHOD}' is not recognized. Use 'github-oidc' or 'instance-principal'." >&2
+            exit 1
+            ;;
+        esac
+        if (( ${#missing[@]} > 0 )); then
+          printf '::error::auth_method=%s is missing: %s\n' "${AUTH_METHOD}" "$(IFS=', '; echo "${missing[*]}")" >&2
+          exit 1
+        fi
+        echo "auth_method=${AUTH_METHOD}: every required value is present."
+
+    - name: Request a GitHub OIDC token
+      if: ${{ inputs.auth_method == 'github-oidc' }}
+      shell: bash
+      env:
+        AUDIENCE: ${{ inputs.oidc_audience }}
+        OIDC_DOMAIN_URL: ${{ inputs.oidc_domain_url }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Request a GitHub OIDC token"
+        if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+          echo "::error::No OIDC token request URL available. The calling job needs 'permissions: id-token: write'." >&2
+          exit 1
+        fi
+        # Unset, the trust expects the domain's own URL — the same fallback oci-nuke uses.
+        audience="${AUDIENCE:-${OIDC_DOMAIN_URL}}"
+        # Not -f: under set -e it exits on curl's bare 22 before the check below can name what
+        # failed. → docs/configure-oci-credentials.md
+        token_response="$(mktemp)"
+        status="$(curl -sS -o "${token_response}" -w '%{http_code}' \
+          -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${audience}" || true)"
+        id_token="$(jq -r '.value // empty' < "${token_response}" 2>/dev/null || true)"
+        rm -f "${token_response}"
+        if [[ -z "${id_token}" ]]; then
+          echo "::error::GitHub returned HTTP ${status} and no OIDC token for audience '${audience}'." >&2
+          exit 1
+        fi
+        echo "::add-mask::${id_token}"
+        echo "GITHUB_OIDC_TOKEN=${id_token}" >> "$GITHUB_ENV"
+
+    - name: Exchange the GitHub OIDC token for an OCI session token
+      if: ${{ inputs.auth_method == 'github-oidc' }}
+      shell: bash
+      env:
+        REGION: ${{ inputs.region }}
+        OIDC_DOMAIN_URL: ${{ inputs.oidc_domain_url }}
+        OIDC_CLIENT_ID: ${{ inputs.oidc_client_id }}
+        OIDC_CLIENT_SECRET: ${{ inputs.oidc_client_secret }}
+        EXPECTED_TENANCY_OCID: ${{ inputs.expected_tenancy_ocid }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Generate an ephemeral session keypair"
+        # Never written outside this run's own temp dir; deleted with the runner.
+        session_dir="$(mktemp -d)"
+        chmod 700 "${session_dir}"
+        openssl genrsa -out "${session_dir}/session_key.pem" 2048 >/dev/null 2>&1
+        openssl rsa -pubout -in "${session_dir}/session_key.pem" -out "${session_dir}/session_key_public.pem" >/dev/null 2>&1
+        chmod 600 "${session_dir}/session_key.pem"
+        echo "::endgroup::"
+
+        echo "::group::Exchange the GitHub OIDC token for an OCI UPST"
+        # → see docs/configure-oci-credentials.md § Token exchange
+        domain_url="${OIDC_DOMAIN_URL%/}"
+        if [[ "${domain_url}" != http*://* ]]; then
+          domain_url="https://${domain_url}"
+        fi
+        # The base64 body alone. OCI rejects a PEM carrying its header lines, exactly as the
+        # SDK's sanitizeCertificateString strips them. → docs/configure-oci-credentials.md
+        public_key="$(grep -v -- '-----' "${session_dir}/session_key_public.pem" | tr -d '\n')"
+        exchange_response="${session_dir}/exchange_response.json"
+        # Not -f: OCI's error_description is the only thing that names the rejection, and -f
+        # discards it. → docs/configure-oci-credentials.md
+        status="$(curl -sS -o "${exchange_response}" -w '%{http_code}' -X POST "${domain_url}/oauth2/v1/token" \
+          -u "${OIDC_CLIENT_ID}:${OIDC_CLIENT_SECRET}" \
+          --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+          --data-urlencode "requested_token_type=urn:oci:token-type:oci-upst" \
+          --data-urlencode "subject_token=${GITHUB_OIDC_TOKEN}" \
+          --data-urlencode "subject_token_type=jwt" \
+          --data-urlencode "public_key=${public_key}" || true)"
+        upst="$(jq -r '.token // empty' < "${exchange_response}" 2>/dev/null || true)"
+        if [[ -z "${upst}" ]]; then
+          echo "::error::OCI token exchange returned HTTP ${status} and no token." >&2
+          # A trust rule matches on these three and nothing else; sub carries the environment
+          # name. → docs/configure-oci-credentials.md
+          payload="$(printf '%s' "${GITHUB_OIDC_TOKEN}" | cut -d. -f2 | tr '_-' '/+')"
+          while (( ${#payload} % 4 )); do payload="${payload}="; done
+          claims="$(printf '%s' "${payload}" | base64 -d 2>/dev/null || true)"
+          for claim in iss aud sub; do
+            printf '  %s = %s\n' "${claim}" \
+              "$(jq -r --arg c "${claim}" '.[$c] // "<absent>"' <<<"${claims}" 2>/dev/null || echo '<undecodable>')" >&2
+          done
+          # Only on a non-200: a 200 body carries the UPST itself.
+          if [[ "${status}" != "200" ]]; then
+            echo "  response body: $(tr -d '\n' < "${exchange_response}")" >&2
+          fi
+          exit 1
+        fi
+        rm -f "${exchange_response}"
+        echo "::add-mask::${upst}"
+        printf '%s' "${upst}" > "${session_dir}/session_token"
+        chmod 600 "${session_dir}/session_token"
+        echo "::endgroup::"
+
+        echo "::group::Write an ephemeral OCI config profile"
+        # MD5 of the session public key's DER SubjectPublicKeyInfo, colon-hex: OCI's definition.
+        # → see docs/configure-oci-credentials.md
+        fingerprint="$( { openssl rsa -pubin -in "${session_dir}/session_key_public.pem" -outform DER 2>/dev/null \
+          | openssl md5 -c | sed 's/^.*= //'; } || true )"
+        if [[ -z "${fingerprint}" ]]; then
+          echo "::error::Could not fingerprint the ephemeral session key. Without it the profile signs nothing for any OCI SDK consumer." >&2
+          exit 1
+        fi
+
+        mkdir -p "${HOME}/.oci"
+        # tenancy/fingerprint are here for the SDK, not as api-key fields: KeyID() returns on
+        # either being absent. No `user`. → see docs/configure-oci-credentials.md
+        cat > "${HOME}/.oci/config" <<CFG
+        [DEFAULT]
+        tenancy=${EXPECTED_TENANCY_OCID}
+        region=${REGION}
+        fingerprint=${fingerprint}
+        security_token_file=${session_dir}/session_token
+        key_file=${session_dir}/session_key.pem
+        CFG
+        chmod 600 "${HOME}/.oci/config"
+        {
+          echo "OCI_CLI_AUTH=security_token"
+          # The oracle/oci provider reads <home>/.oci/config, and <home> is TF_HOME_OVERRIDE
+          # or the passwd entry -- not $HOME. → see docs/configure-oci-credentials.md
+          echo "TF_HOME_OVERRIDE=${HOME}"
+          # Without this the provider defaults to ApiKey and asks for a key nobody has.
+          # → see docs/configure-oci-credentials.md
+          echo "OCI_AUTH=SecurityToken"
+        } >> "$GITHUB_ENV"
+        echo "::endgroup::"
+
+        echo "::group::Session lifetime"
+        # Never fatal. A step outliving its UPST fails with a 401 that reads like a missing
+        # grant, so the expiry belongs in the log first. → see docs/configure-oci-credentials.md
+        exp=""
+        payload="$(printf '%s' "${upst}" | cut -d. -f2 || true)"
+        if [[ -n "${payload}" ]]; then
+          pad=$(( (4 - ${#payload} % 4) % 4 ))
+          if (( pad > 0 )); then
+            payload="${payload}$(printf '=%.0s' $(seq 1 "${pad}"))"
+          fi
+          exp="$( { printf '%s' "${payload}" | tr '_-' '/+' | base64 -d 2>/dev/null | jq -r '.exp // empty'; } 2>/dev/null || true )"
+        fi
+        if [[ -n "${exp}" ]]; then
+          remaining=$(( exp - $(date -u +%s) ))
+          echo "session_expires_at=$(date -u -d "@${exp}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+          echo "session_expires_in=$(( remaining / 60 ))m$(( remaining % 60 ))s"
+          echo "::notice::The OCI session expires in $(( remaining / 60 )) minutes. A step that runs longer than that fails with 401 NotAuthenticated -- an expired session, not a missing grant."
+        else
+          echo "session_expires_at=unreadable -- the token's exp claim could not be decoded. Not an error; the session itself is fine."
+        fi
+
+    - name: Select instance-principal auth
+      if: ${{ inputs.auth_method == 'instance-principal' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Select instance-principal auth"
+        # Both names, for the same reason as the github-oidc branch: OCI_CLI_AUTH is the CLI's,
+        # OCI_AUTH is the oracle/oci provider's. → see docs/configure-oci-credentials.md
+        {
+          echo "OCI_CLI_AUTH=instance_principal"
+          echo "OCI_AUTH=InstancePrincipal"
+        } >> "$GITHUB_ENV"
+
+    - name: Verify caller identity matches the declared tenancy
+      id: assert_identity
+      shell: bash
+      env:
+        EXPECTED_TENANCY_OCID: ${{ inputs.expected_tenancy_ocid }}
+        EXPECTED_USER_OCID: ${{ inputs.expected_user_ocid }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Verify OCI caller identity matches the declared tenancy"
+        # The OCI analogue of `aws sts get-caller-identity`: oci-nuke's own
+        # tenancy gate calls GetTenancy for the same reason. → see docs/oci-nuke.md
+        if ! actual_tenancy="$(oci iam tenancy get --tenancy-id "${EXPECTED_TENANCY_OCID}" --query 'data.id' --raw-output 2>&1)"; then
+          echo "::error::Could not resolve tenancy ${EXPECTED_TENANCY_OCID} with the configured credentials: ${actual_tenancy}" >&2
+          exit 1
+        fi
+        if [[ "${actual_tenancy}" != "${EXPECTED_TENANCY_OCID}" ]]; then
+          echo "::error::Tenancy mismatch. Declared=${EXPECTED_TENANCY_OCID} actual=${actual_tenancy}. Refusing to continue." >&2
+          exit 1
+        fi
+        echo "Tenancy verified: ${actual_tenancy}"
+        echo "tenancy_ocid=${actual_tenancy}" >> "$GITHUB_OUTPUT"
+
+        if [[ -n "${EXPECTED_USER_OCID}" ]]; then
+          if ! actual_user="$(oci iam user get --user-id "${EXPECTED_USER_OCID}" --query 'data.id' --raw-output 2>&1)"; then
+            echo "::error::Could not resolve user ${EXPECTED_USER_OCID} with the configured credentials: ${actual_user}" >&2
+            exit 1
+          fi
+          if [[ "${actual_user}" != "${EXPECTED_USER_OCID}" ]]; then
+            echo "::error::User mismatch. Declared=${EXPECTED_USER_OCID} actual=${actual_user}. Refusing to continue." >&2
+            exit 1
+          fi
+          echo "User verified: ${actual_user}"
+        fi
