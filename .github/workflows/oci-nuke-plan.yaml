@@ -9,10 +9,25 @@ on:
         description: OCID of the compartment subtree to scan. Never the tenancy root — oci-nuke refuses that outright.
         type: string
         required: true
-      oidc_region:
-        description: OCI region for --auth github-oidc. Required, and not auto-detected for this auth method.
+      auth_method:
+        description: >-
+          Which oci-nuke auth method to use: "github-oidc" (default) or
+          "api-key". github-oidc needs a Confidential Application and an
+          Identity Propagation Trust in the tenancy's identity domain; api-key
+          needs an ordinary API signing key and nothing domain-side.
+          → see docs/oci-nuke.md
         type: string
-        required: true
+        required: false
+        default: github-oidc
+      oidc_region:
+        description: >-
+          OCI region for --auth github-oidc, which does not auto-detect one.
+          Required when auth_method is github-oidc; ignored otherwise, where the
+          region comes from the api_key_region secret alongside the credential
+          it belongs to.
+        type: string
+        required: false
+        default: ""
       plan_environment:
         description: >-
           GitHub Environment this job runs under. It selects the OCI identity:
@@ -30,6 +45,15 @@ on:
         type: string
         required: false
         default: config.yaml
+      quiet:
+        description: >-
+          Pass --quiet to oci-nuke, dropping the per-resource line for everything
+          a filter excluded — on a real compartment, most of the scan. Affects
+          the log only: the plan artifact still records every filtered resource
+          and why. Turn it off to debug a filter. → see docs/oci-nuke.md
+        type: boolean
+        required: false
+        default: true
       oidc_audience:
         description: Audience requested from GitHub's OIDC endpoint. Defaults to the identity domain's own URL, which is what its trust expects.
         type: string
@@ -60,25 +84,17 @@ on:
         required: false
         default: false
       oci_nuke_version:
-        description: Released oci-nuke tag to install, e.g. "v0.4.0". Mutually exclusive with source_ref; exactly one is required.
+        description: >-
+          Released oci-nuke tag to install, e.g. "v1.1.0". Required, with no
+          default: "latest" would let a release published between plan and apply
+          change the binary that performs the verification rescan.
         type: string
-        required: false
-        default: ""
-      source_ref:
-        description: Full 40-character commit SHA of naviteq-ltd/oci-nuke to build in place. Mutually exclusive with oci_nuke_version.
-        type: string
-        required: false
-        default: ""
+        required: true
       artifact_retention_days:
         description: Retention for the plan artifact. Must outlive the approval gap between plan and apply.
         type: number
         required: false
         default: 90
-      go_version:
-        description: Go toolchain used to build or install oci-nuke.
-        type: string
-        required: false
-        default: "1.26.x"
       runner:
         description: Runner label, or a JSON array of labels.
         type: string
@@ -86,26 +102,54 @@ on:
         default: ubuntu-24.04
     secrets:
       oidc_domain_url:
-        description: The OCI Identity Domain's URL. Also the default --oidc-audience.
-        required: true
+        description: >-
+          The OCI Identity Domain's URL. Also the default --oidc-audience.
+          Required when auth_method is github-oidc — declared optional here only
+          because the api-key path does not use it, and the auth-inputs guard
+          below fails the job if it is missing.
+        required: false
       oidc_client_id:
-        description: The Confidential Application's OAuth client ID.
-        required: true
+        description: The Confidential Application's OAuth client ID. Required when auth_method is github-oidc.
+        required: false
       oidc_client_secret:
         description: >-
-          The Confidential Application's OAuth client secret. Reaches no OCI API
-          on its own — read the secret model in docs/oci-nuke.md before assuming.
-        required: true
+          The Confidential Application's OAuth client secret. Required when
+          auth_method is github-oidc. Reaches no OCI API on its own — read the
+          secret model in docs/oci-nuke.md before assuming.
+        required: false
+      api_key_tenancy:
+        description: OCID of the tenancy the API signing key belongs to. Required when auth_method is api-key.
+        required: false
+      api_key_user:
+        description: OCID of the user the API signing key is registered against. Required when auth_method is api-key.
+        required: false
+      api_key_fingerprint:
+        description: Fingerprint of the API signing key's uploaded public half. Required when auth_method is api-key.
+        required: false
+      api_key_region:
+        description: OCI region to address. Required when auth_method is api-key — the credential carries its own region rather than taking oidc_region.
+        required: false
+      api_key_private_key:
+        description: >-
+          The API signing key's own PEM bytes, BEGIN/END lines and real newlines
+          included — not a path. Required when auth_method is api-key. This is a
+          long-lived credential; read docs/oci-nuke.md § Choosing an auth method
+          before reaching for it.
+        required: false
+      api_key_passphrase:
+        description: Passphrase for api_key_private_key, only if the key is encrypted.
+        required: false
       config_inline:
         description: The whole oci-nuke config as a string, taking precedence over config_path. Keeps tenancy and compartment OCIDs out of the caller's tree.
         required: false
       github_app_id:
         description: >-
-          Required when auto_approve is on. A comment posted by GITHUB_TOKEN
-          fires no downstream issue_comment workflow, so an App identity is not optional.
+          Always required. It mints the token that downloads the private
+          oci-nuke release, and — when auto_approve is on — the one that posts
+          the approval comment. → see docs/oci-nuke.md
         required: false
       github_app_key:
-        description: Private key for the App identified by github_app_id. Required when auto_approve is on.
+        description: Private key for the App identified by github_app_id. Always required, for the same two reasons.
         required: false
     outputs:
       issue_number:
@@ -160,7 +204,58 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Validate auth-method inputs
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          AUTH_METHOD: ${{ inputs.auth_method }}
+          OIDC_REGION: ${{ inputs.oidc_region }}
+          OIDC_DOMAIN_URL_SET: ${{ secrets.oidc_domain_url != '' }}
+          OIDC_CLIENT_ID_SET: ${{ secrets.oidc_client_id != '' }}
+          OIDC_CLIENT_SECRET_SET: ${{ secrets.oidc_client_secret != '' }}
+          API_KEY_TENANCY_SET: ${{ secrets.api_key_tenancy != '' }}
+          API_KEY_USER_SET: ${{ secrets.api_key_user != '' }}
+          API_KEY_FINGERPRINT_SET: ${{ secrets.api_key_fingerprint != '' }}
+          API_KEY_REGION_SET: ${{ secrets.api_key_region != '' }}
+          API_KEY_PRIVATE_KEY_SET: ${{ secrets.api_key_private_key != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check the inputs the chosen auth method needs"
+
+          # The optional oidc_* secrets moved GitHub's own "you forgot one" error
+          # here. Fails closed, before any auth. → see docs/oci-nuke.md
+          missing=()
+          case "${AUTH_METHOD}" in
+            github-oidc)
+              [[ -n "${OIDC_REGION}" ]]                    || missing+=("oidc_region (input)")
+              [[ "${OIDC_DOMAIN_URL_SET}" == "true" ]]     || missing+=("oidc_domain_url (secret)")
+              [[ "${OIDC_CLIENT_ID_SET}" == "true" ]]      || missing+=("oidc_client_id (secret)")
+              [[ "${OIDC_CLIENT_SECRET_SET}" == "true" ]]  || missing+=("oidc_client_secret (secret)")
+              ;;
+            api-key)
+              [[ "${API_KEY_TENANCY_SET}" == "true" ]]     || missing+=("api_key_tenancy (secret)")
+              [[ "${API_KEY_USER_SET}" == "true" ]]        || missing+=("api_key_user (secret)")
+              [[ "${API_KEY_FINGERPRINT_SET}" == "true" ]] || missing+=("api_key_fingerprint (secret)")
+              [[ "${API_KEY_REGION_SET}" == "true" ]]      || missing+=("api_key_region (secret)")
+              [[ "${API_KEY_PRIVATE_KEY_SET}" == "true" ]] || missing+=("api_key_private_key (secret)")
+              ;;
+            *)
+              # An unrecognized value must never fall back to a default and
+              # quietly pick a principal.
+              echo "::error::auth_method '${AUTH_METHOD}' is not recognized. Use 'github-oidc' or 'api-key'." >&2
+              exit 1
+              ;;
+          esac
+
+          if (( ${#missing[@]} > 0 )); then
+            printf '::error::auth_method=%s is missing: %s\n' "${AUTH_METHOD}" "$(IFS=', '; echo "${missing[*]}")" >&2
+            exit 1
+          fi
+          echo "auth_method=${AUTH_METHOD}: every required value is present."
+
       - name: Production-compartment guard
+        id: prod_guard
         if: ${{ steps.pause.outputs.skip != 'true' }}
         env:
           COMPARTMENT_ID: ${{ inputs.compartment_id }}
@@ -170,8 +265,17 @@ jobs:
           set -euo pipefail
           trap 'echo "::endgroup::"' EXIT
           echo "::group::Check target compartment against the production list"
-          if [[ -z "${PROD_COMPARTMENTS:-}" ]]; then
-            echo "::warning::RUNESTRA_PROD_COMPARTMENTS org variable is unset. Production-compartment guard cannot enforce."
+          # An empty org variable is indistinguishable from an unset one, so "none" is how a
+          # tenancy with no production compartments declares that on purpose.
+          declared="$(printf '%s' "${PROD_COMPARTMENTS:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+          if [[ -z "${declared}" ]]; then
+            echo "enforced=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::RUNESTRA_PROD_COMPARTMENTS is unset, so the production-compartment guard cannot enforce. Plan continues because it deletes nothing, but auto-approve is refused below and apply refuses outright. Set it to the production compartment OCIDs, or to the literal 'none' if this tenancy deliberately has none."
+            exit 0
+          fi
+          echo "enforced=true" >> "$GITHUB_OUTPUT"
+          if [[ "${declared}" == "none" ]]; then
+            echo "::notice::RUNESTRA_PROD_COMPARTMENTS is 'none': no production compartments are declared, so the guard has nothing to match."
             exit 0
           fi
           IFS=',' read -r -a prod <<< "${PROD_COMPARTMENTS}"
@@ -191,6 +295,7 @@ jobs:
           COMPARTMENT_ID: ${{ inputs.compartment_id }}
           AUTO_APPROVE_COMPARTMENTS: ${{ vars.NUKE_AUTO_APPROVE_COMPARTMENTS }}
           PROD_COMPARTMENTS: ${{ vars.RUNESTRA_PROD_COMPARTMENTS }}
+          PROD_GUARD_ENFORCED: ${{ steps.prod_guard.outputs.enforced }}
           APP_ID_SET: ${{ secrets.github_app_id != '' }}
           APP_KEY_SET: ${{ secrets.github_app_key != '' }}
         shell: bash
@@ -203,6 +308,8 @@ jobs:
           allowed="false"
           if [[ "${AUTO_APPROVE_INPUT}" != "true" ]]; then
             echo "auto-approve not requested by caller; skipping."
+          elif [[ "${PROD_GUARD_ENFORCED}" != "true" ]]; then
+            echo "::notice::auto_approve=true but the production-compartment guard is not enforcing (RUNESTRA_PROD_COMPARTMENTS is unset); falling back to human approval."
           elif [[ -z "${AUTO_APPROVE_COMPARTMENTS:-}" ]]; then
             echo "::notice::auto_approve=true but NUKE_AUTO_APPROVE_COMPARTMENTS is unset; falling back to human approval."
           else
@@ -261,13 +368,44 @@ jobs:
         if: ${{ steps.pause.outputs.skip != 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Require the App credentials that read the oci-nuke release
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          APP_ID_SET: ${{ secrets.github_app_id != '' }}
+          APP_KEY_SET: ${{ secrets.github_app_key != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check the App credentials used to download the oci-nuke release"
+          # Named here because the releases API answers 404 without a readable
+          # token, which reads as a missing release. → see docs/oci-nuke.md
+          if [[ "${APP_ID_SET}" != "true" || "${APP_KEY_SET}" != "true" ]]; then
+            echo "::error::github_app_id and github_app_key are required: naviteq-ltd/oci-nuke is private, its release assets are not anonymously readable, and this repository's GITHUB_TOKEN cannot read another repository." >&2
+            exit 1
+          fi
+
+      - name: Generate a GitHub App token for the oci-nuke release
+        id: install_token
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.github_app_id }}
+          private-key: ${{ secrets.github_app_key }}
+          owner: naviteq-ltd
+          repositories: oci-nuke
+
       - name: Install oci-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/oci-nuke-install@af2e5d0ac90ff3796f67ddb574a9921666a68472
+        # Resolves only while naviteq-ltd/oci-nuke keeps Actions access set to
+        # "Accessible from repositories in the organization"; a 404 means that.
+        uses: naviteq-ltd/oci-nuke@f02e7d4dc62a5b409695a8ea3d0fb9f8e2e59b77 # v1.4.0
         with:
+          # The SHA pins the action's code; `version` picks the release it
+          # installs. Two versions, and bumping one does not move the other.
           version: ${{ inputs.oci_nuke_version }}
-          source_ref: ${{ inputs.source_ref }}
-          go_version: ${{ inputs.go_version }}
+          token: ${{ steps.install_token.outputs.token }}
+          repository: naviteq-ltd/oci-nuke
 
       - name: Resolve config
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -344,6 +482,14 @@ jobs:
           OCI_OIDC_DOMAIN_URL: ${{ secrets.oidc_domain_url }}
           OCI_OIDC_CLIENT_ID: ${{ secrets.oidc_client_id }}
           OCI_OIDC_CLIENT_SECRET: ${{ secrets.oidc_client_secret }}
+          AUTH_METHOD: ${{ inputs.auth_method }}
+          OCI_CLI_TENANCY: ${{ secrets.api_key_tenancy }}
+          OCI_CLI_USER: ${{ secrets.api_key_user }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.api_key_fingerprint }}
+          OCI_CLI_REGION: ${{ secrets.api_key_region }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.api_key_private_key }}
+          QUIET: ${{ inputs.quiet }}
+          OCI_CLI_KEY_PASSPHRASE: ${{ secrets.api_key_passphrase }}
         shell: bash
         run: |
           set -uo pipefail
@@ -351,15 +497,25 @@ jobs:
           echo "::group::oci-nuke dry run"
 
           args=(run
-            --auth github-oidc
             --config "${RESOLVED_CONFIG}"
             --compartment-id "${COMPARTMENT_ID}"
-            --oidc-region "${OIDC_REGION}"
             --plan-out oci-nuke-plan.json)
-          # Unset, GitHub mints the token for the owner URL, which no trust asks for.
-          audience="${OIDC_AUDIENCE:-${OCI_OIDC_DOMAIN_URL}}"
-          if [[ -n "${audience}" ]]; then
-            args+=(--oidc-audience "${audience}")
+          # Log-only: the plan artifact still records every filtered resource and its
+          # reason, so nothing is lost. → see docs/oci-nuke.md
+          if [[ "${QUIET}" == "true" ]]; then
+            args+=(--quiet)
+          fi
+          # api-key reads all six values from OCI_CLI_* in this step's env, never a
+          # flag: a flag logs a private key. → see docs/oci-nuke.md
+          if [[ "${AUTH_METHOD}" == "api-key" ]]; then
+            args+=(--auth api-key)
+          else
+            args+=(--auth github-oidc --oidc-region "${OIDC_REGION}")
+            # Unset, GitHub mints the token for the owner URL, which no trust asks for.
+            audience="${OIDC_AUDIENCE:-${OCI_OIDC_DOMAIN_URL}}"
+            if [[ -n "${audience}" ]]; then
+              args+=(--oidc-audience "${audience}")
+            fi
           fi
           stdbuf -oL -eL oci-nuke "${args[@]}" 2>&1 | tee oci-nuke-plan.log
           rc=${PIPESTATUS[0]}
@@ -493,6 +649,7 @@ jobs:
 
           echo "::group::Collect tag values from the plan log"
           # oci-nuke logs every scanned resource's tags as prop:tag:<ns>:<key>=<value>.
+          # Under --quiet only removal candidates print, so only their owners are found.
           mapfile -t owners < <(grep -oE 'prop:tag:[^= ]+=[^ ]+' oci-nuke-plan.log 2>/dev/null | sed 's/^.*=//' | sort -u | grep -v '^$' || true)
           echo "::endgroup::"
 
@@ -537,7 +694,6 @@ jobs:
           TYPE_COUNT: ${{ steps.extract.outputs.type_count }}
           AUTO_APPROVE_ALLOWED: ${{ steps.auto_approve.outputs.auto_approve_allowed }}
           OCI_NUKE_VERSION: ${{ inputs.oci_nuke_version }}
-          SOURCE_REF: ${{ inputs.source_ref }}
         shell: bash
         run: |
           set -euo pipefail
@@ -548,11 +704,7 @@ jobs:
           regions_csv="$(paste -sd ',' regions.txt || true)"
           # The apply phase reads this back, so both phases run the same binary
           # by construction rather than by the caller pinning it twice.
-          if [[ -n "${SOURCE_REF}" ]]; then
-            binary="source_ref=${SOURCE_REF}"
-          else
-            binary="version=${OCI_NUKE_VERSION}"
-          fi
+          binary="version=${OCI_NUKE_VERSION}"
           echo "::endgroup::"
 
           # Bounded render: the markers, the table and the footer are never
