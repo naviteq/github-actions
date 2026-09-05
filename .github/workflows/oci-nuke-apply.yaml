@@ -9,10 +9,23 @@ on:
         description: Compartment OCID to delete, as recorded on the audit issue. Must match what the plan scanned.
         type: string
         required: true
-      oidc_region:
-        description: OCI region for --auth github-oidc. Required, and not auto-detected for this auth method.
+      auth_method:
+        description: >-
+          Which oci-nuke auth method to use: "github-oidc" (default) or
+          "api-key". Must match the value the plan run used — the apply run
+          re-authenticates independently. → see docs/oci-nuke.md
         type: string
-        required: true
+        required: false
+        default: github-oidc
+      oidc_region:
+        description: >-
+          OCI region for --auth github-oidc, which does not auto-detect one.
+          Required when auth_method is github-oidc; ignored otherwise, where the
+          region comes from the api_key_region secret alongside the credential
+          it belongs to.
+        type: string
+        required: false
+        default: ""
       apply_environment:
         description: >-
           GitHub Environment this job runs under. It selects the delete-capable
@@ -48,6 +61,15 @@ on:
         type: string
         required: false
         default: config.yaml
+      quiet:
+        description: >-
+          Pass --quiet to oci-nuke, dropping the per-resource line for everything
+          a filter excluded — on a real compartment, most of the scan. Affects
+          the log only: the plan artifact still records every filtered resource
+          and why. Turn it off to debug a filter. → see docs/oci-nuke.md
+        type: boolean
+        required: false
+        default: true
       oidc_audience:
         description: Audience requested from GitHub's OIDC endpoint. Defaults to the identity domain's own URL.
         type: string
@@ -69,25 +91,16 @@ on:
         required: false
         default: false
       oci_nuke_version:
-        description: Released oci-nuke tag. Must be the one the plan run used.
+        description: >-
+          Released oci-nuke tag. Must be the one the plan run used — take it
+          from oci-nuke-parse.yaml, which reads it off the audit issue.
         type: string
-        required: false
-        default: ""
-      source_ref:
-        description: Full 40-character commit SHA. Must be the one the plan run used.
-        type: string
-        required: false
-        default: ""
+        required: true
       artifact_retention_days:
         description: Retention for the apply log.
         type: number
         required: false
         default: 90
-      go_version:
-        description: Go toolchain used to build or install oci-nuke.
-        type: string
-        required: false
-        default: "1.26.x"
       runner:
         description: Runner label, or a JSON array of labels.
         type: string
@@ -95,16 +108,50 @@ on:
         default: ubuntu-24.04
     secrets:
       oidc_domain_url:
-        description: The OCI Identity Domain's URL. Also the default --oidc-audience.
-        required: true
+        description: >-
+          The OCI Identity Domain's URL. Also the default --oidc-audience.
+          Required when auth_method is github-oidc — declared optional here only
+          because the api-key path does not use it, and the auth-inputs guard
+          below fails the job if it is missing.
+        required: false
       oidc_client_id:
-        description: The Confidential Application's OAuth client ID.
-        required: true
+        description: The Confidential Application's OAuth client ID. Required when auth_method is github-oidc.
+        required: false
       oidc_client_secret:
-        description: The Confidential Application's OAuth client secret. → see docs/oci-nuke.md
-        required: true
+        description: The Confidential Application's OAuth client secret. Required when auth_method is github-oidc. → see docs/oci-nuke.md
+        required: false
+      api_key_tenancy:
+        description: OCID of the tenancy the API signing key belongs to. Required when auth_method is api-key.
+        required: false
+      api_key_user:
+        description: OCID of the user the API signing key is registered against. Required when auth_method is api-key.
+        required: false
+      api_key_fingerprint:
+        description: Fingerprint of the API signing key's uploaded public half. Required when auth_method is api-key.
+        required: false
+      api_key_region:
+        description: OCI region to address. Required when auth_method is api-key — the credential carries its own region rather than taking oidc_region.
+        required: false
+      api_key_private_key:
+        description: >-
+          The API signing key's own PEM bytes, BEGIN/END lines and real newlines
+          included — not a path. Required when auth_method is api-key. This is a
+          long-lived credential; read docs/oci-nuke.md § Choosing an auth method
+          before reaching for it.
+        required: false
+      api_key_passphrase:
+        description: Passphrase for api_key_private_key, only if the key is encrypted.
+        required: false
       config_inline:
         description: The whole oci-nuke config as a string. Must resolve to the same config the plan run used.
+        required: false
+      github_app_id:
+        description: >-
+          Required. It mints the token that downloads the private oci-nuke
+          release; a caller's GITHUB_TOKEN cannot read another repository.
+        required: false
+      github_app_key:
+        description: Private key for the App identified by github_app_id. Required for the same reason.
         required: false
 
 permissions: {}
@@ -137,6 +184,56 @@ jobs:
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Validate auth-method inputs
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          AUTH_METHOD: ${{ inputs.auth_method }}
+          OIDC_REGION: ${{ inputs.oidc_region }}
+          OIDC_DOMAIN_URL_SET: ${{ secrets.oidc_domain_url != '' }}
+          OIDC_CLIENT_ID_SET: ${{ secrets.oidc_client_id != '' }}
+          OIDC_CLIENT_SECRET_SET: ${{ secrets.oidc_client_secret != '' }}
+          API_KEY_TENANCY_SET: ${{ secrets.api_key_tenancy != '' }}
+          API_KEY_USER_SET: ${{ secrets.api_key_user != '' }}
+          API_KEY_FINGERPRINT_SET: ${{ secrets.api_key_fingerprint != '' }}
+          API_KEY_REGION_SET: ${{ secrets.api_key_region != '' }}
+          API_KEY_PRIVATE_KEY_SET: ${{ secrets.api_key_private_key != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check the inputs the chosen auth method needs"
+
+          # The optional oidc_* secrets moved GitHub's own "you forgot one" error
+          # here. Fails closed, before any auth. → see docs/oci-nuke.md
+          missing=()
+          case "${AUTH_METHOD}" in
+            github-oidc)
+              [[ -n "${OIDC_REGION}" ]]                    || missing+=("oidc_region (input)")
+              [[ "${OIDC_DOMAIN_URL_SET}" == "true" ]]     || missing+=("oidc_domain_url (secret)")
+              [[ "${OIDC_CLIENT_ID_SET}" == "true" ]]      || missing+=("oidc_client_id (secret)")
+              [[ "${OIDC_CLIENT_SECRET_SET}" == "true" ]]  || missing+=("oidc_client_secret (secret)")
+              ;;
+            api-key)
+              [[ "${API_KEY_TENANCY_SET}" == "true" ]]     || missing+=("api_key_tenancy (secret)")
+              [[ "${API_KEY_USER_SET}" == "true" ]]        || missing+=("api_key_user (secret)")
+              [[ "${API_KEY_FINGERPRINT_SET}" == "true" ]] || missing+=("api_key_fingerprint (secret)")
+              [[ "${API_KEY_REGION_SET}" == "true" ]]      || missing+=("api_key_region (secret)")
+              [[ "${API_KEY_PRIVATE_KEY_SET}" == "true" ]] || missing+=("api_key_private_key (secret)")
+              ;;
+            *)
+              # An unrecognized value must never fall back to a default and
+              # quietly pick a principal.
+              echo "::error::auth_method '${AUTH_METHOD}' is not recognized. Use 'github-oidc' or 'api-key'." >&2
+              exit 1
+              ;;
+          esac
+
+          if (( ${#missing[@]} > 0 )); then
+            printf '::error::auth_method=%s is missing: %s\n' "${AUTH_METHOD}" "$(IFS=', '; echo "${missing[*]}")" >&2
+            exit 1
+          fi
+          echo "auth_method=${AUTH_METHOD}: every required value is present."
 
       - name: Ensure oci-nuke labels exist
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -177,8 +274,18 @@ jobs:
           set -euo pipefail
           trap 'echo "::endgroup::"' EXIT
           echo "::group::Check target compartment against the production list"
-          if [[ -z "${PROD_COMPARTMENTS:-}" ]]; then
-            echo "::warning::RUNESTRA_PROD_COMPARTMENTS org variable is unset. Production-compartment guard cannot enforce."
+          # Apply is the destructive half, so an advisory guard here is not a guard. "none" is
+          # how a tenancy with no production compartments declares that on purpose.
+          declared="$(printf '%s' "${PROD_COMPARTMENTS:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+          if [[ -z "${declared}" ]]; then
+            gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
+              --body "Apply refused: \`RUNESTRA_PROD_COMPARTMENTS\` is unset, so the production-compartment guard cannot enforce. Set it to the production compartment OCIDs, or to the literal \`none\` if this tenancy deliberately has none, then re-approve."
+            gh issue edit "${ISSUE}" --repo "${{ github.repository }}" --add-label oci-nuke:failed || true
+            echo "::error::Refusing to apply: RUNESTRA_PROD_COMPARTMENTS is unset and the production-compartment guard cannot enforce. Set it to the production compartment OCIDs, or to the literal 'none' if this tenancy deliberately has none." >&2
+            exit 1
+          fi
+          if [[ "${declared}" == "none" ]]; then
+            echo "::notice::RUNESTRA_PROD_COMPARTMENTS is 'none': no production compartments are declared, so the guard has nothing to match."
             exit 0
           fi
           IFS=',' read -r -a prod <<< "${PROD_COMPARTMENTS}"
@@ -390,13 +497,44 @@ jobs:
         if: ${{ steps.pause.outputs.skip != 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Require the App credentials that read the oci-nuke release
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          APP_ID_SET: ${{ secrets.github_app_id != '' }}
+          APP_KEY_SET: ${{ secrets.github_app_key != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check the App credentials used to download the oci-nuke release"
+          # Named here because the releases API answers 404 without a readable
+          # token, which reads as a missing release. → see docs/oci-nuke.md
+          if [[ "${APP_ID_SET}" != "true" || "${APP_KEY_SET}" != "true" ]]; then
+            echo "::error::github_app_id and github_app_key are required: naviteq-ltd/oci-nuke is private, its release assets are not anonymously readable, and this repository's GITHUB_TOKEN cannot read another repository." >&2
+            exit 1
+          fi
+
+      - name: Generate a GitHub App token for the oci-nuke release
+        id: install_token
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.github_app_id }}
+          private-key: ${{ secrets.github_app_key }}
+          owner: naviteq-ltd
+          repositories: oci-nuke
+
       - name: Install oci-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/oci-nuke-install@af2e5d0ac90ff3796f67ddb574a9921666a68472
+        # Resolves only while naviteq-ltd/oci-nuke keeps Actions access set to
+        # "Accessible from repositories in the organization"; a 404 means that.
+        uses: naviteq-ltd/oci-nuke@222a779a3cd1f11359b5ff0a2e2ed3e29bf6d873 # v1.5.1
         with:
+          # The SHA pins the action's code; `version` picks the release it
+          # installs. Two versions, and bumping one does not move the other.
           version: ${{ inputs.oci_nuke_version }}
-          source_ref: ${{ inputs.source_ref }}
-          go_version: ${{ inputs.go_version }}
+          token: ${{ steps.install_token.outputs.token }}
+          repository: naviteq-ltd/oci-nuke
 
       - name: Resolve config
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -520,33 +658,61 @@ jobs:
           OCI_OIDC_DOMAIN_URL: ${{ secrets.oidc_domain_url }}
           OCI_OIDC_CLIENT_ID: ${{ secrets.oidc_client_id }}
           OCI_OIDC_CLIENT_SECRET: ${{ secrets.oidc_client_secret }}
+          AUTH_METHOD: ${{ inputs.auth_method }}
+          OCI_CLI_TENANCY: ${{ secrets.api_key_tenancy }}
+          OCI_CLI_USER: ${{ secrets.api_key_user }}
+          OCI_CLI_FINGERPRINT: ${{ secrets.api_key_fingerprint }}
+          OCI_CLI_REGION: ${{ secrets.api_key_region }}
+          OCI_CLI_KEY_CONTENT: ${{ secrets.api_key_private_key }}
+          QUIET: ${{ inputs.quiet }}
+          OCI_CLI_KEY_PASSPHRASE: ${{ secrets.api_key_passphrase }}
         shell: bash
         run: |
           set -uo pipefail
+          # `shell: bash` already runs with -e, which `set -uo pipefail` does not
+          # clear; without this rc is never read. → see docs/oci-nuke.md
+          set +e
           trap 'echo "::endgroup::"' EXIT
           echo "::group::oci-nuke destructive run"
 
           args=(run
-            --auth github-oidc
             --config "${RESOLVED_CONFIG}"
             --compartment-id "${COMPARTMENT_ID}"
-            --oidc-region "${OIDC_REGION}"
             --no-dry-run
             --force
             --approved-plan plan/oci-nuke-plan.json
             --max-plan-age "${MAX_PLAN_AGE}"
             --delete-compartments="${DELETE_COMPARTMENTS}")
-          # Unset, GitHub mints the token for the owner URL, which no trust asks for.
-          audience="${OIDC_AUDIENCE:-${OCI_OIDC_DOMAIN_URL}}"
-          if [[ -n "${audience}" ]]; then
-            args+=(--oidc-audience "${audience}")
+          # Log-only: the plan artifact still records every filtered resource and its
+          # reason, so nothing is lost. → see docs/oci-nuke.md
+          if [[ "${QUIET}" == "true" ]]; then
+            args+=(--quiet)
+          fi
+          # api-key reads all six values from OCI_CLI_* in this step's env, never a
+          # flag: a flag logs a private key. → see docs/oci-nuke.md
+          if [[ "${AUTH_METHOD}" == "api-key" ]]; then
+            args+=(--auth api-key)
+          else
+            args+=(--auth github-oidc --oidc-region "${OIDC_REGION}")
+            # Unset, GitHub mints the token for the owner URL, which no trust asks for.
+            audience="${OIDC_AUDIENCE:-${OCI_OIDC_DOMAIN_URL}}"
+            if [[ -n "${audience}" ]]; then
+              args+=(--oidc-audience "${audience}")
+            fi
           fi
           stdbuf -oL -eL oci-nuke "${args[@]}" 2>&1 | tee oci-nuke-apply.log
           rc=${PIPESTATUS[0]}
           echo "::endgroup::"
 
-          echo "::group::Record the exit code"
+          echo "::group::Record the exit code and the failure reason"
           echo "nuke_exit_code=${rc}" >> "$GITHUB_OUTPUT"
+          # oci-nuke prints its refusal last; logrus lines and plan-diff lines are
+          # everything else it emits. → see docs/oci-nuke.md
+          reason=""
+          if [[ "${rc}" -ne 0 ]]; then
+            reason="$(grep -vE '^(time=|[-+~] |[[:space:]]*$)' oci-nuke-apply.log | tail -n1 | tr -d '\r' | cut -c1-900)"
+          fi
+          echo "nuke_failure_reason=${reason}" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
           exit "${rc}"
 
@@ -587,6 +753,7 @@ jobs:
           ISSUE: ${{ inputs.issue_number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EXIT_CODE: ${{ steps.nuke.outputs.nuke_exit_code }}
+          REASON: ${{ steps.nuke.outputs.nuke_failure_reason }}
           AUTO_APPROVED: ${{ steps.auto_approve.outputs.bypass_human_gate == 'true' }}
         shell: bash
         run: |
@@ -595,8 +762,21 @@ jobs:
           echo "::group::Comment failure and relabel the audit issue"
           provenance=""
           if [[ "${AUTO_APPROVED}" == "true" ]]; then provenance=" (auto-approved)"; fi
-          gh issue comment "${ISSUE}" --repo "${{ github.repository }}" \
-            --body "Apply failed${provenance} (exit ${EXIT_CODE}). Log artifact: \`oci-nuke-apply-${{ github.run_id }}\` (run: ${RUN_URL}). The issue stays open."
+          # oci-nuke's documented exit codes; a drifted plan is 2.
+          # → see docs/oci-nuke.md
+          case "${EXIT_CODE}" in
+            1) meaning="internal error" ;;
+            2) meaning="refused by a safety gate, nothing was deleted" ;;
+            3) meaning="finished with leftovers" ;;
+            "") meaning="the step ended before it could record one" ;;
+            *) meaning="unrecognised code" ;;
+          esac
+          body="Apply failed${provenance} (exit ${EXIT_CODE:-unknown}: ${meaning})."
+          if [[ -n "${REASON}" ]]; then
+            body+=$'\n\n> '"${REASON}"
+          fi
+          body+=$'\n\n'"Log artifact: \`oci-nuke-apply-${{ github.run_id }}\` (run: ${RUN_URL}). The issue stays open."
+          gh issue comment "${ISSUE}" --repo "${{ github.repository }}" --body "${body}"
           gh issue edit "${ISSUE}" --repo "${{ github.repository }}" \
             --add-label oci-nuke:failed \
             --remove-label oci-nuke:applying || true
