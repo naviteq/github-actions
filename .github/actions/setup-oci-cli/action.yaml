@@ -1,0 +1,73 @@
+---
+name: Setup OCI CLI
+description: Install the OCI CLI on the runner (latest or specific version)
+
+inputs:
+  version:
+    description: >-
+      oci-cli version to install (e.g. 3.51.0). Use "latest" to always install
+      the most recent release.
+    required: false
+    default: latest
+
+outputs:
+  version:
+    description: Installed oci-cli version string (e.g. 3.51.0)
+    value: ${{ steps.verify.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    # Not the runner's system Python, so its pip is never PEP-668-blocked —
+    # no venv needed, which also sidesteps self-hosted runners lacking ensurepip.
+    - name: Set up Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.x"
+
+    # PyPI over Oracle's install.sh: a pinned `pip install` is checksum-verified by pip itself.
+    - name: Install oci-cli via pip
+      shell: bash
+      env:
+        OCI_CLI_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Install oci-cli ${OCI_CLI_VERSION}"
+        if [[ "${OCI_CLI_VERSION}" == "latest" ]]; then
+          pip install --upgrade oci-cli
+        else
+          pip install "oci-cli==${OCI_CLI_VERSION}"
+        fi
+
+    - name: Verify oci-cli installation
+      id: verify
+      shell: bash
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+        echo "::group::Verify oci-cli installation"
+        oci --version
+        INSTALLED_VERSION="$(oci --version)"
+        echo "version=${INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
+
+    - name: Write step summary
+      if: ${{ always() }}
+      shell: bash
+      env:
+        OCI_CLI_VERSION: ${{ inputs.version }}
+      run: |
+        set -uo pipefail
+        echo "::group::Write oci-cli install summary"
+        INSTALLED_VERSION="$(oci --version 2>&1)" || INSTALLED_VERSION="unknown"
+        {
+          echo "## Setup OCI CLI"
+          echo ""
+          echo "| Field | Value |"
+          echo "| ----- | ----- |"
+          echo "| Requested version | \`${OCI_CLI_VERSION}\` |"
+          echo "| Installed version | \`${INSTALLED_VERSION}\` |"
+          echo "| OS | \`${RUNNER_OS}\` |"
+          echo "| Architecture | \`${RUNNER_ARCH}\` |"
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "::endgroup::"

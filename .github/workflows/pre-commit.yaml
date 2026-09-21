@@ -33,6 +33,17 @@ on:
         required: false
         type: boolean
         default: false
+      github_token_for_hooks:
+        description: >
+          Export the job's own GITHUB_TOKEN to the hooks as GH_TOKEN/GITHUB_TOKEN,
+          so a hook that fetches from github.com is attributable instead of
+          anonymous and rate-limited per runner IP. Opt-in, and off by default:
+          on a runner whose image already configures a git credential helper,
+          overriding these variables can break pre-commit's own hook-repo
+          fetches. See docs/pre-commit.md.
+        required: false
+        type: boolean
+        default: false
     outputs:
       outcome:
         description: Outcome from the pre-commit job
@@ -71,6 +82,10 @@ jobs:
         id: run
         env:
           SKIP: ${{ inputs.skip_hooks }}
+          # Opt-in only: an anonymous hook is rate-limited per runner, and
+          # setting these unasked broke a fetch. → docs/pre-commit.md
+          GH_TOKEN: ${{ inputs.github_token_for_hooks && github.token || '' }}
+          GITHUB_TOKEN: ${{ inputs.github_token_for_hooks && github.token || '' }}
         run: |
           set -e
           eval "${{ inputs.extra_pre_command }}"

@@ -1,0 +1,86 @@
+---
+name: Setup Terragrunt
+description: >
+  Install Terragrunt and the OpenTofu it drives, at the versions the checked-out
+  repository pins in .terragrunt-version and .opentofu-version.
+
+inputs:
+  terragrunt_version:
+    description: Terragrunt version; read from .terragrunt-version when empty
+    required: false
+    default: ""
+  opentofu_version:
+    description: OpenTofu version; read from .opentofu-version when empty
+    required: false
+    default: ""
+  working_directory:
+    description: Where to look for the version files
+    required: false
+    default: "."
+
+outputs:
+  terragrunt_version:
+    description: The Terragrunt version that was installed
+    value: ${{ steps.resolve.outputs.terragrunt }}
+  opentofu_version:
+    description: The OpenTofu version that was installed
+    value: ${{ steps.resolve.outputs.opentofu }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the versions
+      id: resolve
+      shell: bash
+      env:
+        TERRAGRUNT_INPUT: ${{ inputs.terragrunt_version }}
+        OPENTOFU_INPUT: ${{ inputs.opentofu_version }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+      run: |
+        set -euo pipefail
+
+        resolve() {
+          if [ -n "$2" ]; then echo "$2"; return; fi
+          if [ -f "${WORKING_DIRECTORY}/$1" ]; then tr -d '[:space:]' < "${WORKING_DIRECTORY}/$1"; return; fi
+          echo "::error title=No version pinned::Pass $3, or commit a $1 the way the catalog does."
+          exit 1
+        }
+
+        terragrunt="$(resolve .terragrunt-version "${TERRAGRUNT_INPUT}" terragrunt_version)"
+        opentofu="$(resolve .opentofu-version "${OPENTOFU_INPUT}" opentofu_version)"
+        echo "Terragrunt ${terragrunt} driving OpenTofu ${opentofu}"
+        {
+          echo "terragrunt=${terragrunt}"
+          echo "opentofu=${opentofu}"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Install OpenTofu
+      uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+      with:
+        tofu_version: ${{ steps.resolve.outputs.opentofu }}
+        tofu_wrapper: false
+
+    # A pinned release binary, not an action: every Terragrunt action on the
+    # marketplace wraps this same download behind a third party. → AGENTS.md
+    - name: Install Terragrunt
+      shell: bash
+      env:
+        TERRAGRUNT_VERSION: ${{ steps.resolve.outputs.terragrunt }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_ARCH" in
+          X64 | X86) arch="amd64" ;;
+          ARM64) arch="arm64" ;;
+          *) echo "::error title=Unsupported architecture::${RUNNER_ARCH}"; exit 1 ;;
+        esac
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        sudo curl -fsSL -o /usr/local/bin/terragrunt \
+          "https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION#v}/terragrunt_${os}_${arch}"
+        sudo chmod +x /usr/local/bin/terragrunt
+
+    - name: Verify both are callable
+      shell: bash
+      run: |
+        set -euo pipefail
+        terragrunt --version
+        tofu version

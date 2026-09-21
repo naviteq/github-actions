@@ -92,7 +92,7 @@ jobs:
           # release-please renders the scope into the changelog, which ships to
           # clients. → see docs/ai-context/comment-policy.md
           scope="$(printf '%s' "${PR_TITLE}" | sed -nE 's/^[a-z]+\(([^)]+)\)!?:.*/\1/p')"
-          if printf '%s' "${scope}" | grep -qE '^[A-Za-z]{2,}-[0-9]+$'; then
+          if grep -qE '^[A-Za-z]{2,}-[0-9]+$' <<<"${scope}"; then
             key="$(printf '%s' "${scope}" | tr '[:lower:]' '[:upper:]')"
             echo "::error title=PR title scope must name a component::The scope '${scope}' is a ticket key. release-please renders it into the published CHANGELOG, where a client cannot open it. Name what changed instead — a chart, module, unit or workflow — and put 'Refs: ${key}' in the PR body."
             echo "::endgroup::"
@@ -114,7 +114,9 @@ jobs:
             echo "::endgroup::"
             exit 0
           fi
-          if printf '%s' "${PR_BODY}" | grep -qE "^[[:space:]]*Refs:.*\b${ticket}\b"; then
+          # Here-strings, not pipes: `grep -q` exits on the first match and
+          # `pipefail` would promote the writer's SIGPIPE into a false negative.
+          if grep -qE "^[[:space:]]*Refs:.*\b${ticket}\b" <<<"${PR_BODY}"; then
             echo "PR body carries 'Refs: ${ticket}'"
             echo "::endgroup::"
             exit 0
@@ -137,7 +139,7 @@ jobs:
           # Squash-merge puts the PR title in the merge-commit subject, where
           # these markers silently disable every workflow on the merge SHA.
           pattern='\[(skip[- ]?ci|ci[- ]?skip|no[- ]?ci|skip[- ]?actions)\]|\*\*\*NO_CI\*\*\*'
-          if printf '%s' "${PR_TITLE}" | grep -qiE "${pattern}"; then
+          if grep -qiE "${pattern}" <<<"${PR_TITLE}"; then
             echo "::error title=PR title must not contain CI-skip markers::The repo squash-merges, so this title becomes the merge-commit subject and would disable every workflow on the merge SHA — including release-please. Rename the PR."
             echo "::endgroup::"
             exit 1
