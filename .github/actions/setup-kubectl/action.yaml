@@ -1,0 +1,52 @@
+---
+name: Setup kubectl
+description: >
+  Install kubectl at the version a cluster pins, or the current stable release
+  when none is given. A major.minor version resolves to its latest patch.
+
+inputs:
+  version:
+    description: Kubernetes version, e.g. v1.36.1; the stable release when empty
+    required: false
+    default: ""
+
+outputs:
+  version:
+    description: The version that was installed
+    value: ${{ steps.install.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install kubectl
+      id: install
+      shell: bash
+      env:
+        REQUESTED: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        case "$RUNNER_ARCH" in
+          X64 | X86) arch="amd64" ;;
+          ARM64) arch="arm64" ;;
+          *) echo "::error title=Unsupported architecture::${RUNNER_ARCH}"; exit 1 ;;
+        esac
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+
+        version="${REQUESTED}"
+        [ -n "${version}" ] || version="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+        case "${version}" in v*) ;; *) version="v${version}" ;; esac
+        # EKS reports its version as major.minor, which is not a release URL.
+        case "${version}" in
+          v[0-9]*.[0-9]*.[0-9]*) ;;
+          *) version="$(curl -fsSL "https://dl.k8s.io/release/stable-${version#v}.txt")" ;;
+        esac
+
+        # A pinned release binary from the project itself, not a third party
+        # action that fetches the same file. → AGENTS.md
+        sudo curl -fsSL -o /usr/local/bin/kubectl \
+          "https://dl.k8s.io/release/${version}/bin/${os}/${arch}/kubectl"
+        sudo chmod +x /usr/local/bin/kubectl
+
+        kubectl version --client
+        echo "version=${version}" >> "$GITHUB_OUTPUT"

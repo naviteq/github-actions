@@ -1,0 +1,50 @@
+---
+name: Setup boilerplate
+description: Install gruntwork-io/boilerplate template renderer on the runner
+
+inputs:
+  version:
+    description: boilerplate version to install (e.g. v0.16.0)
+    required: false
+    default: v0.16.0
+
+outputs:
+  version:
+    description: Installed boilerplate version string
+    value: ${{ steps.verify.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install boilerplate
+      shell: bash
+      env:
+        BOILERPLATE_VERSION: ${{ inputs.version }}
+      run: |
+        set -e -x
+        trap 'echo "::endgroup::"' EXIT
+
+        echo "::group::Resolve boilerplate asset for runner architecture"
+        case "$RUNNER_ARCH" in
+          X64 | X86) ASSET_ARCH="amd64" ;;
+          ARM64) ASSET_ARCH="arm64" ;;
+          *)
+            echo "Unsupported architecture: $RUNNER_ARCH"
+            exit 1
+            ;;
+        esac
+        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        echo "::endgroup::"
+
+        echo "::group::Download boilerplate binary and install to /usr/local/bin"
+        sudo curl -fsSL -o /usr/local/bin/boilerplate \
+          "https://github.com/gruntwork-io/boilerplate/releases/download/${BOILERPLATE_VERSION}/boilerplate_${OS}_${ASSET_ARCH}"
+        sudo chmod +x /usr/local/bin/boilerplate
+        echo "::endgroup::"
+
+    - name: Verify boilerplate installation
+      id: verify
+      shell: bash
+      run: |
+        boilerplate --version
+        echo "version=$(boilerplate --version)" >> "$GITHUB_OUTPUT"
