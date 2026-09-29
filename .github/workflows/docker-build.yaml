@@ -96,6 +96,13 @@ on:
         type: string
         required: false
         default: ""
+      immutable_tags:
+        description: >-
+          Emit only tags that are pushed once — sha-<short> on branch pushes, the full
+          semver on tag pushes — for registries with tag immutability enabled.
+        type: boolean
+        required: false
+        default: false
       security_scan_enabled:
         description: Enable container vulnerability scan
         type: boolean
@@ -149,6 +156,11 @@ on:
         type: string
         required: false
         default: "main"
+      report_retention_days:
+        description: Retention period for the Trivy report and SBOM artifacts, in days
+        type: number
+        required: false
+        default: 14
     secrets:
       token:
         description: Registry Token
@@ -246,6 +258,10 @@ jobs:
           echo "::group::Sanitize branch names into OCI-safe tags"
           image="${{ inputs.image != '' && inputs.image || github.repository }}"
           BACKEND="${{ inputs.cache_backend }}"
+          if [[ "$BACKEND" == "registry" && "${{ inputs.immutable_tags }}" == "true" ]]; then
+            echo "::error::cache_backend=registry rewrites buildcache-* tags on every run; use gha with immutable_tags" >&2
+            exit 1
+          fi
           default_branch="${{ inputs.default_branch }}"
 
           sanitize_oci_tag() {
@@ -314,28 +330,28 @@ jobs:
             suffix=${{ inputs.tag_flavor_suffix }}
           tags: |
             # Default branch push: add branch name (e.g. main)
-            type=ref,event=branch,enable={{is_default_branch}}
-            # Primary tag: always add sha-<shortsha> for a stable image reference
-            type=sha,prefix=${{ inputs.tag_flavor_prefix }}sha-,format=short
+            type=ref,event=branch,enable=${{ !inputs.immutable_tags && github.ref_name == github.event.repository.default_branch }}
+            # Primary tag: sha-<shortsha>; immutable_tags skips it on tag pushes (already pushed from the branch)
+            type=sha,prefix=${{ inputs.tag_flavor_prefix }}sha-,format=short,enable=${{ !inputs.immutable_tags || github.ref_type != 'tag' }}
             # Feature branches: feature/<name> -> <name>
-            type=match,pattern=^feature/(.+)$,group=1,value=${{ github.ref_name }},enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/') }}
+            type=match,pattern=^feature/(.+)$,group=1,value=${{ github.ref_name }},enable=${{ !inputs.immutable_tags && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/') }}
             # Pull requests: PR #123 -> pr-123
-            type=ref,event=pr,enable=${{ github.event_name == 'pull_request' }}
+            type=ref,event=pr,enable=${{ !inputs.immutable_tags && github.event_name == 'pull_request' }}
             # Version tag X.Y.Z -> X.Y.Z and vX.Y.Z
             type=semver,pattern={{version}}
             type=semver,pattern=v{{version}},enable=${{ inputs.version_tag_v_prefix }}
             # Version tag X.Y.Z -> X.Y and vX.Y
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern=v{{major}}.{{minor}},enable=${{ inputs.version_tag_v_prefix }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !inputs.immutable_tags }}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ !inputs.immutable_tags && inputs.version_tag_v_prefix }}
             # Version tag X.Y.Z -> X and vX
-            type=semver,pattern={{major}}
-            type=semver,pattern=v{{major}},enable=${{ inputs.version_tag_v_prefix }}
+            type=semver,pattern={{major}},enable=${{ !inputs.immutable_tags }}
+            type=semver,pattern=v{{major}},enable=${{ !inputs.immutable_tags && inputs.version_tag_v_prefix }}
             # Version tag push (v*): add latest
-            type=raw,value=latest,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ !inputs.immutable_tags && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
             # Scheduled workflow: nightly tag
-            type=schedule,pattern=nightly
+            type=schedule,pattern=nightly,enable=${{ !inputs.immutable_tags }}
             # Scheduled workflow: UTC date tag YYYYMMDD
-            type=schedule,pattern={{date 'YYYYMMDD'}}
+            type=schedule,pattern={{date 'YYYYMMDD'}},enable=${{ !inputs.immutable_tags }}
             # User-provided custom tags
             ${{ inputs.custom_tags }}
       - name: Derive tag list outputs
@@ -387,6 +403,8 @@ jobs:
           IMAGE_TAG_PREFIX: ${{ inputs.tag_flavor_prefix }}sha-
           IMAGE_TAG_SUFFIX: ${{ inputs.tag_flavor_suffix }}
           META_TAGS: ${{ steps.meta.outputs.tags }}
+          IMMUTABLE_TAGS: ${{ inputs.immutable_tags }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
           trap 'echo "::endgroup::"' EXIT
@@ -398,6 +416,12 @@ jobs:
               exit 0
             fi
           done <<< "$META_TAGS"
+
+          # Immutable mode drops sha-* on tag pushes: the commit was already pushed under it from its branch.
+          if [[ "$IMMUTABLE_TAGS" == "true" && "$REF_TYPE" == "tag" ]]; then
+            echo "image-ref=$(head -n1 <<< "$META_TAGS")" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           echo "failed to resolve sha-based image ref from metadata tags" >&2
           exit 1
@@ -465,12 +489,14 @@ jobs:
         with:
           name: docker-build-trivy-scan-report
           path: scan-report.txt
+          retention-days: ${{ inputs.report_retention_days }}
       - name: Upload SBOM artifact
         if: ${{ always() && inputs.sbom_enabled && inputs.docker_push && hashFiles('sbom.json') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: docker-build-cyclonedx-sbom
           path: sbom.json
+          retention-days: ${{ inputs.report_retention_days }}
       - name: Check Slack webhook
         id: check_slack_webhook
         if: ${{ always() }}
