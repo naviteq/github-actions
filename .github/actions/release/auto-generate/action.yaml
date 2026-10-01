@@ -25,6 +25,7 @@ runs:
           "release-type": "simple",
           "tag-prefix": "v",
           "include-v-in-tag": true,
+          "draft-pull-request": true,
           "changelog-sections": [
             { "type": "feat",     "section": "Features" },
             { "type": "fix",      "section": "Bug Fixes" },
