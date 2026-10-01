@@ -60,6 +60,6 @@ jobs:
 
       - name: Validate local actions
         if: ${{ always() }}
-        uses: naviteq/github-actions/.github/actions/action-lint@d0a08d1d71c06bdbeb2889e04ea32651857cfc60
+        uses: naviteq/github-actions/.github/actions/action-lint@06451b37afc1d5e733ee701229035065074835b8
         with:
           actions: .github/actions/*/action.y*ml
