@@ -183,12 +183,15 @@ jobs:
 
       - name: Upload SARIF to GitHub Security
         if: ${{ always() && hashFiles('trivy-report.sarif') != '' && inputs.upload_sarif }}
-        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4.38.1
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           sarif_file: trivy-report.sarif
 
       - name: Upload Trivy reports
         if: ${{ always() && inputs.upload_report_artifact && hashFiles('trivy-report.json') != '' }}
+        # The report is an audit copy, not the verdict: a full artifact quota
+        # must not fail a scan that passed.
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ inputs.report_artifact_name }}

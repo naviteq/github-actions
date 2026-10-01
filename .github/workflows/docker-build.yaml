@@ -13,13 +13,13 @@ on:
         description: Primary image reference in the form repo/image:<primary_tag>
         value: ${{ jobs.build.outputs.image-ref }}
       digest:
-        description: Built image digest
-        value: ${{ jobs.build.outputs.digest }}
+        description: Built image digest; with platform_runners, the digest of the merged multi-platform index
+        value: ${{ jobs.merge.outputs.digest || jobs.build.outputs.digest }}
       imageid:
-        description: Built image ID
+        description: Built image ID; empty with platform_runners
         value: ${{ jobs.build.outputs.imageid }}
       metadata:
-        description: Build metadata JSON
+        description: Build metadata JSON; empty with platform_runners
         value: ${{ jobs.build.outputs.metadata }}
       scan_artifact_name:
         description: Security scan artifact name
@@ -57,15 +57,24 @@ on:
         type: string
         required: false
       docker_platforms:
-        description: Target Docker platforms (e.g. linux/amd64,linux/arm64 or linux/arm/v7)
+        description: Target Docker platforms (e.g. linux/amd64,linux/arm64 or linux/arm/v7). Ignored when platform_runners is set.
         type: string
         required: false
         default: "linux/amd64,linux/arm64"
       runner:
-        description: GitHub Actions runner to use for the build job. Supports a single label or a JSON array of labels.
+        description: >-
+          GitHub Actions runner to use for the build job. Supports a single label or a JSON array of labels.
+          With platform_runners set, it runs the merge job only.
         type: string
         required: false
         default: "ubuntu-22.04"
+      platform_runners:
+        description: >-
+          JSON array of {"platform", "runner"} objects. Builds each platform natively on its own runner,
+          pushes it by digest and merges the digests into one multi-platform index. Empty keeps the single-job build.
+        type: string
+        required: false
+        default: ""
       dockerfile:
         description: Path to Dockerfile (relative to context). Leave empty to use default {context}/Dockerfile
         type: string
@@ -96,6 +105,13 @@ on:
         type: string
         required: false
         default: ""
+      immutable_tags:
+        description: >-
+          Emit only tags that are pushed once — sha-<short> on branch pushes, the full
+          semver on tag pushes — for registries with tag immutability enabled.
+        type: boolean
+        required: false
+        default: false
       security_scan_enabled:
         description: Enable container vulnerability scan
         type: boolean
@@ -149,6 +165,11 @@ on:
         type: string
         required: false
         default: "main"
+      report_retention_days:
+        description: Retention period for the Trivy report and SBOM artifacts, in days
+        type: number
+        required: false
+        default: 14
     secrets:
       token:
         description: Registry Token
@@ -166,49 +187,64 @@ on:
 permissions: {}
 
 jobs:
+  # One leg per platform_runners entry, or a single leg building every platform.
+  # → see docs/docker-build.md#native-per-platform-builds
   build:
-    name: Docker build and push to registry
-    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    name: ${{ matrix.platform != '' && format('Docker build {0}', matrix.platform) || 'Docker build and push to registry' }}
+    runs-on: ${{ matrix.runner != '' && matrix.runner || (startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04')) }}
+    strategy:
+      matrix:
+        include: ${{ fromJSON(inputs.platform_runners != '' && inputs.platform_runners || '[{"platform":"","runner":""}]') }}
     permissions:
       contents: read
       packages: write
       id-token: write
+    env:
+      # Per-platform legs push by digest only; the merge job publishes tags, scans and reports.
+      DOCKER_BUILD_PUBLISHES: ${{ inputs.platform_runners == '' }}
     outputs:
       tag-names: ${{ steps.tag_outputs.outputs.tag-names }}
       tags: ${{ steps.tag_outputs.outputs.tags }}
       image-ref: ${{ steps.image_ref.outputs.image-ref }}
-      digest: ${{ steps.build_push.outputs.digest }}
-      imageid: ${{ steps.build_push.outputs.imageid }}
-      metadata: ${{ steps.build_push.outputs.metadata }}
+      digest: ${{ inputs.platform_runners == '' && steps.build_push.outputs.digest || '' }}
+      imageid: ${{ inputs.platform_runners == '' && steps.build_push.outputs.imageid || '' }}
+      metadata: ${{ inputs.platform_runners == '' && steps.build_push.outputs.metadata || '' }}
+      digest-artifact-prefix: ${{ steps.platform_digest.outputs.artifact-prefix }}
       scan_artifact_name: docker-build-trivy-scan-report
       sbom_artifact_name: docker-build-cyclonedx-sbom
     steps:
-      - name: Checkout repository
+      - &checkout
+        name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Set up Docker Buildx
+      - &setup_buildx
+        name: Set up Docker Buildx
         # v4.3.0 is the floor: it closed the ENOENT race on ephemeral runners.
         # → https://github.com/docker/setup-buildx-action/issues/479
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Set up QEMU
+        if: matrix.platform == ''
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
         with:
           image: "public.ecr.aws/eks-distro-build-tooling/binfmt-misc:qemu-v9.2.2"
           platforms: "arm64,arm"
       # Auth
       ## AWS
-      - name: Configure AWS credentials (OIDC)
+      - &aws_credentials
+        name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         if: inputs.aws_region != '' && (inputs.docker_push || inputs.cache_backend == 'registry')
         with:
           role-to-assume: ${{ secrets.aws_iam_role }}
           role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}
           aws-region: ${{ inputs.aws_region }}
-      - name: Login to Amazon ECR
+      - &ecr_login
+        name: Login to Amazon ECR
         if: inputs.aws_region != '' && (inputs.docker_push || inputs.cache_backend == 'registry')
         id: ecr
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
       ## GHCR
-      - name: Login to GitHub Container Registry
+      - &ghcr_login
+        name: Login to GitHub Container Registry
         if: inputs.docker_push && inputs.registry == 'ghcr.io' && inputs.aws_region == ''
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -216,7 +252,8 @@ jobs:
           username: ${{ inputs.username != '' && inputs.username || github.actor }}
           password: ${{ secrets.token }}
       ## OCIR
-      - name: Login to Oracle Container Registry (OCIR)
+      - &ocir_login
+        name: Login to Oracle Container Registry (OCIR)
         # → see docs/docker-build.md
         if: inputs.docker_push && endsWith(inputs.registry, 'ocir.io') && inputs.username != ''
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -225,7 +262,8 @@ jobs:
           username: ${{ inputs.username }}
           password: ${{ secrets.token }}
       ## Other
-      - name: Login to registry (using username and token)
+      - &registry_login
+        name: Login to registry (using username and token)
         if: inputs.docker_push && inputs.registry != '' && inputs.registry != 'ghcr.io' && !endsWith(inputs.registry, 'ocir.io') && inputs.username != ''
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -239,6 +277,7 @@ jobs:
           # `github.ref_name` is `<n>/merge` on a PR, so every pull request
           # would claim a fresh cache tag that no later run can reuse.
           REF_NAME_RAW: ${{ github.head_ref || github.ref_name }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           trap 'echo "::endgroup::"' EXIT
@@ -246,6 +285,10 @@ jobs:
           echo "::group::Sanitize branch names into OCI-safe tags"
           image="${{ inputs.image != '' && inputs.image || github.repository }}"
           BACKEND="${{ inputs.cache_backend }}"
+          if [[ "$BACKEND" == "registry" && "${{ inputs.immutable_tags }}" == "true" ]]; then
+            echo "::error::cache_backend=registry rewrites buildcache-* tags on every run; use gha with immutable_tags" >&2
+            exit 1
+          fi
           default_branch="${{ inputs.default_branch }}"
 
           sanitize_oci_tag() {
@@ -260,8 +303,11 @@ jobs:
           REF_NAME="$(sanitize_oci_tag "$REF_NAME_RAW")"
           DEFAULT_BRANCH_SAFE="$(sanitize_oci_tag "$default_branch")"
 
-          SCOPE="${REF_NAME}-${image}"
-          DEFAULT_SCOPE="${DEFAULT_BRANCH_SAFE}-${image}"
+          # A per-platform leg gets its own cache ref, so concurrent legs never overwrite each other.
+          PLATFORM_SLUG="${PLATFORM:+-$(sanitize_oci_tag "$PLATFORM")}"
+
+          SCOPE="${REF_NAME}-${image}${PLATFORM_SLUG}"
+          DEFAULT_SCOPE="${DEFAULT_BRANCH_SAFE}-${image}${PLATFORM_SLUG}"
           echo "::endgroup::"
 
           echo "::group::Build cache-from / cache-to for selected backend (${BACKEND})"
@@ -272,8 +318,8 @@ jobs:
               REGISTRY_BASE="${{ inputs.registry }}/${image}"
             fi
 
-            CACHE_TAG="buildcache-${REF_NAME}"
-            DEFAULT_CACHE_TAG="buildcache-${DEFAULT_BRANCH_SAFE}"
+            CACHE_TAG="$(sanitize_oci_tag "buildcache${PLATFORM_SLUG}-${REF_NAME}")"
+            DEFAULT_CACHE_TAG="$(sanitize_oci_tag "buildcache${PLATFORM_SLUG}-${DEFAULT_BRANCH_SAFE}")"
 
             CACHE_FROM="type=registry,ref=${REGISTRY_BASE}:${CACHE_TAG}"
             if [[ "$REF_NAME" != "$DEFAULT_BRANCH_SAFE" ]]; then
@@ -303,7 +349,8 @@ jobs:
             echo "CEOF"
           } >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
-      - name: Prepare Docker meta
+      - &docker_meta
+        name: Prepare Docker meta
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
@@ -314,28 +361,28 @@ jobs:
             suffix=${{ inputs.tag_flavor_suffix }}
           tags: |
             # Default branch push: add branch name (e.g. main)
-            type=ref,event=branch,enable={{is_default_branch}}
-            # Primary tag: always add sha-<shortsha> for a stable image reference
-            type=sha,prefix=${{ inputs.tag_flavor_prefix }}sha-,format=short
+            type=ref,event=branch,enable=${{ !inputs.immutable_tags && github.ref_name == github.event.repository.default_branch }}
+            # Primary tag: sha-<shortsha>; immutable_tags skips it on tag pushes (already pushed from the branch)
+            type=sha,prefix=${{ inputs.tag_flavor_prefix }}sha-,format=short,enable=${{ !inputs.immutable_tags || github.ref_type != 'tag' }}
             # Feature branches: feature/<name> -> <name>
-            type=match,pattern=^feature/(.+)$,group=1,value=${{ github.ref_name }},enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/') }}
+            type=match,pattern=^feature/(.+)$,group=1,value=${{ github.ref_name }},enable=${{ !inputs.immutable_tags && github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/') }}
             # Pull requests: PR #123 -> pr-123
-            type=ref,event=pr,enable=${{ github.event_name == 'pull_request' }}
+            type=ref,event=pr,enable=${{ !inputs.immutable_tags && github.event_name == 'pull_request' }}
             # Version tag X.Y.Z -> X.Y.Z and vX.Y.Z
             type=semver,pattern={{version}}
             type=semver,pattern=v{{version}},enable=${{ inputs.version_tag_v_prefix }}
             # Version tag X.Y.Z -> X.Y and vX.Y
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern=v{{major}}.{{minor}},enable=${{ inputs.version_tag_v_prefix }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !inputs.immutable_tags }}
+            type=semver,pattern=v{{major}}.{{minor}},enable=${{ !inputs.immutable_tags && inputs.version_tag_v_prefix }}
             # Version tag X.Y.Z -> X and vX
-            type=semver,pattern={{major}}
-            type=semver,pattern=v{{major}},enable=${{ inputs.version_tag_v_prefix }}
+            type=semver,pattern={{major}},enable=${{ !inputs.immutable_tags }}
+            type=semver,pattern=v{{major}},enable=${{ !inputs.immutable_tags && inputs.version_tag_v_prefix }}
             # Version tag push (v*): add latest
-            type=raw,value=latest,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ !inputs.immutable_tags && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
             # Scheduled workflow: nightly tag
-            type=schedule,pattern=nightly
+            type=schedule,pattern=nightly,enable=${{ !inputs.immutable_tags }}
             # Scheduled workflow: UTC date tag YYYYMMDD
-            type=schedule,pattern={{date 'YYYYMMDD'}}
+            type=schedule,pattern={{date 'YYYYMMDD'}},enable=${{ !inputs.immutable_tags }}
             # User-provided custom tags
             ${{ inputs.custom_tags }}
       - name: Derive tag list outputs
@@ -387,6 +434,8 @@ jobs:
           IMAGE_TAG_PREFIX: ${{ inputs.tag_flavor_prefix }}sha-
           IMAGE_TAG_SUFFIX: ${{ inputs.tag_flavor_suffix }}
           META_TAGS: ${{ steps.meta.outputs.tags }}
+          IMMUTABLE_TAGS: ${{ inputs.immutable_tags }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
           trap 'echo "::endgroup::"' EXIT
@@ -399,28 +448,79 @@ jobs:
             fi
           done <<< "$META_TAGS"
 
+          # Immutable mode drops sha-* on tag pushes: the commit was already pushed under it from its branch.
+          if [[ "$IMMUTABLE_TAGS" == "true" && "$REF_TYPE" == "tag" ]]; then
+            echo "image-ref=$(head -n1 <<< "$META_TAGS")" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           echo "failed to resolve sha-based image ref from metadata tags" >&2
           exit 1
       - name: Build and push
         id: build_push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
-          platforms: ${{ inputs.docker_platforms }}
+          platforms: ${{ matrix.platform != '' && matrix.platform || inputs.docker_platforms }}
           context: ${{ inputs.docker_context }}
           file: ${{ inputs.dockerfile }}
-          push: ${{ inputs.docker_push }}
+          push: ${{ matrix.platform == '' && inputs.docker_push }}
+          # A per-platform leg pushes an untagged manifest; the merge job tags the combined index.
+          outputs: >-
+            ${{ matrix.platform != '' && format('type=image,name={0}/{1},push-by-digest=true,name-canonical=true,push={2}',
+            inputs.aws_region != '' && steps.ecr.outputs.registry || inputs.registry,
+            inputs.image != '' && inputs.image || github.repository, inputs.docker_push) || '' }}
           build-args: ${{ inputs.build_args }}
           secrets: ${{ secrets.build_secrets }}
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ matrix.platform == '' && steps.meta.outputs.tags || '' }}
           labels: ${{ steps.meta.outputs.labels }}
           attests: |
             type=provenance,mode=max
             ${{ inputs.sbom_attestation && 'type=sbom' || '' }}
           cache-from: ${{ steps.cache.outputs.cache-from }}
           cache-to: ${{ steps.cache.outputs.cache-to }}
-      - name: Run Trivy vulnerability scanner
+      - name: Record platform digest
+        id: platform_digest
+        if: matrix.platform != '' && inputs.docker_push
+        shell: bash
+        env:
+          DIGEST: ${{ steps.build_push.outputs.digest }}
+          DIGESTS_DIR: ${{ runner.temp }}/digests
+          IMAGE: ${{ inputs.image != '' && inputs.image || github.repository }}
+          PLATFORM: ${{ matrix.platform }}
+          TAG_AFFIXES: ${{ inputs.tag_flavor_prefix }}${{ inputs.tag_flavor_suffix }}
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Name the digest artifact after the image, so callers' build matrices do not collide"
+          artifact_safe() { printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/-/g'; }
+          prefix="docker-build-digests-$(artifact_safe "${IMAGE}${TAG_AFFIXES}")__"
+          echo "artifact-prefix=${prefix}" >> "$GITHUB_OUTPUT"
+          echo "artifact=${prefix}$(artifact_safe "$PLATFORM")" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+          echo "::group::Record ${PLATFORM} -> ${DIGEST}"
+          if [[ "$DIGEST" != sha256:* ]]; then
+            echo "::error::build-push-action returned no digest for ${PLATFORM}" >&2
+            exit 1
+          fi
+          mkdir -p "$DIGESTS_DIR"
+          touch "${DIGESTS_DIR}/${DIGEST#sha256:}"
+          echo "::endgroup::"
+      - name: Upload platform digest
+        if: matrix.platform != '' && inputs.docker_push
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.platform_digest.outputs.artifact }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+          # A re-run of a failed leg uploads under the name its first attempt already used.
+          overwrite: true
+      - &trivy_scan
+        name: Run Trivy vulnerability scanner
         id: security_scan
-        if: ${{ inputs.security_scan_enabled && inputs.docker_push }}
+        if: ${{ env.DOCKER_BUILD_PUBLISHES == 'true' && inputs.security_scan_enabled && inputs.docker_push }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         env:
           TRIVY_EXIT_ON_EOL: "1"
@@ -433,8 +533,9 @@ jobs:
           vuln-type: "os,library"
           severity: "${{ inputs.security_scan_severity }}"
           trivyignores: "${{ inputs.security_scan_trivyignore }}"
-      - name: Generate SBOM (CycloneDX)
-        if: ${{ always() && inputs.sbom_enabled && inputs.docker_push }}
+      - &sbom
+        name: Generate SBOM (CycloneDX)
+        if: ${{ always() && env.DOCKER_BUILD_PUBLISHES == 'true' && inputs.sbom_enabled && inputs.docker_push }}
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: "${{ fromJSON(steps.meta.outputs.json).tags[0] }}"
@@ -442,8 +543,9 @@ jobs:
           format: "cyclonedx"
           output: "sbom.json"
           exit-code: "0"
-      - name: Publish Trivy Output to Summary
-        if: ${{ always() && inputs.security_scan_enabled && inputs.docker_push && hashFiles('scan-report.txt') != '' }}
+      - &trivy_summary
+        name: Publish Trivy Output to Summary
+        if: ${{ always() && env.DOCKER_BUILD_PUBLISHES == 'true' && inputs.security_scan_enabled && inputs.docker_push && hashFiles('scan-report.txt') != '' }}
         run: |
           set -euo pipefail
           echo "::group::Append Trivy scan report to step summary"
@@ -459,19 +561,24 @@ jobs:
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
           echo "::endgroup::"
-      - name: Upload scan report artifact
-        if: ${{ always() && inputs.security_scan_enabled && inputs.docker_push && hashFiles('scan-report.txt') != '' }}
+      - &upload_scan_report
+        name: Upload scan report artifact
+        if: ${{ always() && env.DOCKER_BUILD_PUBLISHES == 'true' && inputs.security_scan_enabled && inputs.docker_push && hashFiles('scan-report.txt') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: docker-build-trivy-scan-report
           path: scan-report.txt
-      - name: Upload SBOM artifact
-        if: ${{ always() && inputs.sbom_enabled && inputs.docker_push && hashFiles('sbom.json') != '' }}
+          retention-days: ${{ inputs.report_retention_days }}
+      - &upload_sbom
+        name: Upload SBOM artifact
+        if: ${{ always() && env.DOCKER_BUILD_PUBLISHES == 'true' && inputs.sbom_enabled && inputs.docker_push && hashFiles('sbom.json') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: docker-build-cyclonedx-sbom
           path: sbom.json
-      - name: Check Slack webhook
+          retention-days: ${{ inputs.report_retention_days }}
+      - &check_slack_webhook
+        name: Check Slack webhook
         id: check_slack_webhook
         if: ${{ always() }}
         shell: bash
@@ -488,8 +595,11 @@ jobs:
             echo "has_webhook=false" >> "${GITHUB_OUTPUT}"
           fi
           echo "::endgroup::"
-      - name: Send Slack notification
-        if: ${{ always() && steps.check_slack_webhook.outputs.has_webhook == 'true' && (job.status != 'success' || inputs.slack_notify_on_success) }}
+      - &slack_notify
+        name: Send Slack notification
+        if: >-
+          ${{ always() && steps.check_slack_webhook.outputs.has_webhook == 'true'
+          && (job.status != 'success' || (inputs.slack_notify_on_success && env.DOCKER_BUILD_PUBLISHES == 'true')) }}
         continue-on-error: true
         uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4
         with:
@@ -514,3 +624,92 @@ jobs:
                         text: "*Image:*\n${{ inputs.image != '' && inputs.image || github.repository }}"
                       - type: mrkdwn
                         text: "*Run:*\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  merge:
+    name: Merge platform images and push tags
+    needs: build
+    if: inputs.platform_runners != '' && inputs.docker_push
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      DOCKER_BUILD_PUBLISHES: "true"
+    outputs:
+      digest: ${{ steps.index.outputs.digest }}
+    steps:
+      - *checkout
+      - *setup_buildx
+      - *aws_credentials
+      - *ecr_login
+      - *ghcr_login
+      - *ocir_login
+      - *registry_login
+      - *docker_meta
+      - name: Download platform digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: ${{ needs.build.outputs.digest-artifact-prefix }}*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - name: Create the multi-platform index
+        id: index
+        shell: bash
+        env:
+          DIGESTS_DIR: ${{ runner.temp }}/digests
+          IMAGE_BASE: ${{ inputs.aws_region != '' && steps.ecr.outputs.registry || inputs.registry }}/${{ inputs.image != '' && inputs.image || github.repository }}
+          PLATFORM_RUNNERS: ${{ inputs.platform_runners }}
+          TAGS_JSON: ${{ needs.build.outputs.tags }}
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Collect one digest per platform"
+          sources=()
+          for f in "$DIGESTS_DIR"/*; do
+            if [[ -f "$f" ]]; then
+              sources+=("${IMAGE_BASE}@sha256:$(basename "$f")")
+            fi
+          done
+          expected="$(jq 'length' <<<"$PLATFORM_RUNNERS")"
+          printf '%s\n' "${sources[@]}"
+          if (( ${#sources[@]} != expected )); then
+            echo "::error::expected ${expected} platform digests, found ${#sources[@]}" >&2
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Push the index under every generated tag"
+          mapfile -t tags < <(jq -r '.[]' <<<"$TAGS_JSON")
+          if (( ${#tags[@]} == 0 )); then
+            echo "::error::docker/metadata-action generated no tags to publish" >&2
+            exit 1
+          fi
+          tag_args=()
+          for tag in "${tags[@]}"; do
+            tag_args+=(--tag "$tag")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+          echo "::endgroup::"
+
+          echo "::group::Verify ${tags[0]} lists every platform"
+          manifest="$(docker buildx imagetools inspect "${tags[0]}" --format '{{json .Manifest}}')"
+          jq -r '.manifests[] | "\(.platform.os)/\(.platform.architecture)\(if .platform.variant then "/" + .platform.variant else "" end)  \(.digest)"' <<<"$manifest"
+          while IFS= read -r platform; do
+            if ! jq -e --arg p "$platform" \
+              '[.manifests[].platform | "\(.os)/\(.architecture)\(if .variant then "/" + .variant else "" end)"] | index($p)' \
+              <<<"$manifest" >/dev/null; then
+              echo "::error::${tags[0]} is missing ${platform}" >&2
+              exit 1
+            fi
+          done < <(jq -r '.[].platform' <<<"$PLATFORM_RUNNERS")
+          echo "digest=$(jq -r '.digest' <<<"$manifest")" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+      - *trivy_scan
+      - *sbom
+      - *trivy_summary
+      - *upload_scan_report
+      - *upload_sbom
+      - *check_slack_webhook
+      - *slack_notify
