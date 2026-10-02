@@ -128,7 +128,7 @@ runs:
       run: |
         if [[ -n "$VALUES" ]]
         then
-          helm lint -f $VALUES
+          helm lint . -f "$VALUES"
         else
           helm lint .
         fi
@@ -164,8 +164,9 @@ runs:
           APP_VERSION="${GITHUB_REF_NAME##*/}"
         fi
 
+        # A chart version is bare semver; callers often pass github.ref_name.
         if [[ -n "$CHART_VERSION_OVERRIDE" ]]; then
-          CHART_VERSION="$CHART_VERSION_OVERRIDE"
+          CHART_VERSION="${CHART_VERSION_OVERRIDE#v}"
         else
           CHART_VERSION="$(echo "$APP_VERSION" | sed 's/^v//')"
         fi
