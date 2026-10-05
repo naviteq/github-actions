@@ -1,0 +1,295 @@
+---
+# The static PR gate for a Terragrunt repository: formatting, stack generation,
+# input alignment and an optional tflint pass. → docs/terragrunt-validate-lint.md
+name: Terragrunt validate & lint
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      working_directory:
+        description: Directory the checks run in, relative to the repository root
+        required: false
+        type: string
+        default: "."
+      engine:
+        description: Engine Terragrunt drives, tofu or terraform
+        required: false
+        type: string
+        default: tofu
+      terragrunt_version:
+        description: Terragrunt version; read from the repository's .terragrunt-version when empty
+        required: false
+        type: string
+        default: ""
+      opentofu_version:
+        description: OpenTofu version; read from the repository's .opentofu-version when empty
+        required: false
+        type: string
+        default: ""
+      terraform_version:
+        description: Terraform version for engine terraform; read from the repository's .terraform-version when empty
+        required: false
+        type: string
+        default: ""
+      filter:
+        description: Terragrunt --filter expression scoping the input validation, e.g. ./prod/**
+        required: false
+        type: string
+        default: ""
+      filter_affected:
+        description: Validate only the units changed against the pull request's base branch. Exclusive with filter
+        required: false
+        type: boolean
+        default: false
+      tflint:
+        description: Also run tflint over the .tf files under working_directory
+        required: false
+        type: boolean
+        default: false
+      tflint_version:
+        description: tflint version, e.g. v0.64.0; read from the repository's .tflint-version when empty
+        required: false
+        type: string
+        default: ""
+      aws_region:
+        description: Assume the AWS_IAM_ROLE secret in this region, for a root config that calls AWS while it parses
+        required: false
+        type: string
+        default: ""
+      env_vars:
+        description: Non-secret KEY=VALUE lines exported before the checks, e.g. a placeholder OCI_NAMESPACE for get_env()
+        required: false
+        type: string
+        default: ""
+      validate_inputs:
+        description: Generate the stacks and run terragrunt hcl validate --inputs. Off leaves only the checks that need no credentials
+        required: false
+        type: boolean
+        default: true
+      allow_failure:
+        description: Run every check and report each outcome instead of stopping at the first failure
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      naviteq_github_app_id:
+        description: GitHub App id; with the key, mints a read-only token so private git sources resolve
+        required: false
+      naviteq_github_app_key:
+        description: Private key of that GitHub App
+        required: false
+      runestra_client_id:
+        description: Runestra registry client id, exchanged for a registry token
+        required: false
+      runestra_client_secret:
+        description: Runestra registry client secret
+        required: false
+      aws_iam_role:
+        description: AWS role assumed through OIDC when aws_region is set
+        required: false
+      terragrunt_extra_env:
+        description: KEY=VALUE lines exported with masked values, e.g. TF_TOKEN_<host> for another registry
+        required: false
+    outputs:
+      outcome:
+        description: failure when any check failed, success otherwise
+        value: ${{ jobs.validate-lint.outputs.outcome }}
+      engine_fmt:
+        description: Outcome of the engine fmt check
+        value: ${{ jobs.validate-lint.outputs.engine_fmt }}
+      hcl_fmt:
+        description: Outcome of terragrunt hcl fmt --check
+        value: ${{ jobs.validate-lint.outputs.hcl_fmt }}
+      stack_generate:
+        description: Outcome of terragrunt stack generate
+        value: ${{ jobs.validate-lint.outputs.stack_generate }}
+      hcl_validate:
+        description: Outcome of terragrunt hcl validate --inputs
+        value: ${{ jobs.validate-lint.outputs.hcl_validate }}
+      tflint:
+        description: Outcome of tflint; skipped unless the tflint input is set
+        value: ${{ jobs.validate-lint.outputs.tflint }}
+
+permissions: {}
+
+jobs:
+  validate-lint:
+    name: Validate & lint
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
+      HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
+      # CAS resolves git refs over SSH and never sees the insteadOf rewrite. → docs/validate-oke.md
+      TG_NO_CAS: "1"
+    outputs:
+      outcome: ${{ (steps.engine-fmt.outcome == 'failure' || steps.hcl-fmt.outcome == 'failure' || steps.stack-generate.outcome == 'failure' || steps.hcl-validate.outcome == 'failure' || steps.tflint.outcome == 'failure') && 'failure' || 'success' }}
+      engine_fmt: ${{ steps.engine-fmt.outcome }}
+      hcl_fmt: ${{ steps.hcl-fmt.outcome }}
+      stack_generate: ${{ steps.stack-generate.outcome }}
+      hcl_validate: ${{ steps.hcl-validate.outcome }}
+      tflint: ${{ steps.tflint.outcome }}
+    steps:
+      - name: Reject contradictory inputs
+        if: inputs.filter_affected && inputs.filter != ''
+        run: |
+          echo "::error title=Contradictory inputs::filter and filter_affected are both set; Terragrunt would union them. Pick one."
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: ${{ (inputs.filter_affected || inputs.filter != '') && '0' || '1' }}
+
+      - name: Generate a GitHub App token for the private git sources
+        id: app-token
+        if: env.HAS_GITHUB_APP == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.naviteq_github_app_id }}
+          private-key: ${{ secrets.naviteq_github_app_key }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            infrastructure-catalog
+            terraform-modules
+          permission-contents: read
+
+      - name: Rewrite git@github.com to an authenticated https remote
+        if: env.HAS_GITHUB_APP == 'true'
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          for form in "git@github.com:" "ssh://git@github.com/"; do
+            git config --global --add url."https://x-access-token:${TOKEN}@github.com/".insteadOf "${form}"
+          done
+
+      - name: Install Terragrunt and the engine
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@4381e690cd163fd97611888ed0c53346390831a1
+        with:
+          engine: ${{ inputs.engine }}
+          terragrunt_version: ${{ inputs.terragrunt_version }}
+          opentofu_version: ${{ inputs.opentofu_version }}
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Require the AWS role
+        if: inputs.aws_region != ''
+        env:
+          AWS_IAM_ROLE: ${{ secrets.aws_iam_role }}
+        run: |
+          if [ -z "${AWS_IAM_ROLE}" ]; then
+            echo "::error title=Empty secret::aws_region is set but the aws_iam_role secret is empty; pass it, or call with secrets: inherit."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        if: inputs.aws_region != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.aws_iam_role }}
+          role-session-name: gh-terragrunt-validate-${{ github.run_id }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Exchange the registry client credentials for a token
+        if: env.HAS_REGISTRY_CLIENT == 'true'
+        uses: naviteq/github-actions/.github/actions/registry-token@4381e690cd163fd97611888ed0c53346390831a1
+        with:
+          client_id: ${{ secrets.runestra_client_id }}
+          client_secret: ${{ secrets.runestra_client_secret }}
+
+      # KEY=VALUE lines for get_env() and other registries. → docs/terragrunt-validate-lint.md
+      - name: Export env_vars and TERRAGRUNT_EXTRA_ENV
+        env:
+          PLAIN_ENV: ${{ inputs.env_vars }}
+          SECRET_ENV: ${{ secrets.terragrunt_extra_env }}
+        run: |
+          set -euo pipefail
+          export_pairs() {
+            while IFS='=' read -r key value; do
+              case "${key}" in "" | \#*) continue ;; esac
+              if [ "$1" = "mask" ] && [ -n "${value}" ]; then echo "::add-mask::${value}"; fi
+              echo "${key}=${value}" >> "$GITHUB_ENV"
+            done <<< "$2"
+          }
+          export_pairs plain "${PLAIN_ENV}"
+          export_pairs mask "${SECRET_ENV}"
+
+      - name: Check engine formatting
+        id: engine-fmt
+        continue-on-error: ${{ inputs.allow_failure }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          ENGINE: ${{ inputs.engine }}
+        run: '"${ENGINE}" fmt -check -recursive'
+
+      - name: Check Terragrunt formatting
+        id: hcl-fmt
+        continue-on-error: ${{ inputs.allow_failure }}
+        working-directory: ${{ inputs.working_directory }}
+        run: terragrunt hcl fmt --check --non-interactive
+
+      - name: Install tflint
+        if: inputs.tflint
+        uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: ${{ inputs.tflint_version != '' && inputs.tflint_version || 'latest' }}
+          tflint_version_file: ${{ inputs.tflint_version == '' && '.tflint-version' || '' }}
+          cache: true
+          tflint_config_path: ${{ inputs.working_directory }}/**/.tflint.hcl
+
+      # --recursive reads .tflint.hcl from each module directory, not from here,
+      # unless the path is absolute. → docs/terragrunt-validate-lint.md
+      - name: Run tflint
+        id: tflint
+        if: inputs.tflint
+        continue-on-error: ${{ inputs.allow_failure }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          args=(--recursive)
+          [ ! -f .tflint.hcl ] || args+=(--config "${PWD}/.tflint.hcl")
+          echo "::group::tflint --init"
+          tflint --init
+          echo "::endgroup::"
+          tflint "${args[@]}"
+
+      # Last, so the checks above read committed files and not .terragrunt-cache.
+      - name: Generate the stacks
+        id: stack-generate
+        if: inputs.validate_inputs
+        continue-on-error: ${{ inputs.allow_failure }}
+        working-directory: ${{ inputs.working_directory }}
+        run: terragrunt stack generate --non-interactive
+
+      # A git range searches the whole repository, so it is intersected with
+      # working_directory. → docs/terragrunt-validate-lint.md
+      - name: Validate the inputs
+        id: hcl-validate
+        if: inputs.validate_inputs
+        continue-on-error: ${{ inputs.allow_failure }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          FILTER: ${{ inputs.filter }}
+          FILTER_AFFECTED: ${{ inputs.filter_affected }}
+          BASE: ${{ github.base_ref || github.event.repository.default_branch }}
+          SCOPE: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          if [ "${FILTER_AFFECTED}" = "true" ]; then
+            FILTER="[origin/${BASE}...HEAD]"
+            SCOPE="${SCOPE#./}"
+            SCOPE="${SCOPE%/}"
+            [ -z "${SCOPE}" ] || [ "${SCOPE}" = "." ] || FILTER="./${SCOPE}/** | ${FILTER}"
+          fi
+          args=(hcl validate --inputs --all --non-interactive)
+          [ -z "${FILTER}" ] || args+=(--filter "${FILTER}")
+          terragrunt "${args[@]}"
+
