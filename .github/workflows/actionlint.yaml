@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Run actionlint with reviewdog
-        uses: reviewdog/action-actionlint@13465d022aa41c282f730be17574b5ce692d0186 # v1.78.1
+        uses: reviewdog/action-actionlint@1758727be30241166609dad4c97588b6ad411f32 # v1.79.1
         with:
           reporter: github-pr-check
           fail_level: any
@@ -60,6 +60,6 @@ jobs:
 
       - name: Validate local actions
         if: ${{ always() }}
-        uses: naviteq/github-actions/.github/actions/action-lint@0385e682cc08ca84d62bfae20323280d4a6ecdfa
+        uses: naviteq/github-actions/.github/actions/action-lint@093705da23bfe6207f67542256ba1892cd70160d
         with:
           actions: .github/actions/*/action.y*ml
