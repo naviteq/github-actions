@@ -139,7 +139,7 @@ jobs:
       stack_generate: ${{ steps.stack-generate.outcome }}
       hcl_validate: ${{ steps.hcl-validate.outcome }}
       tflint: ${{ steps.tflint.outcome }}
-      units: ${{ steps.units.outputs.list }}
+      units: ${{ steps.units.outputs.units }}
     steps:
       - name: Reject contradictory inputs
         if: inputs.filter_affected && inputs.filter != ''
@@ -175,7 +175,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@dc2c4763d2ab444b0b9b52ea9eff7a06c418ac76
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@1602c960fc5d01e11f3e0a4826d1dd7b9df110f0
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -202,7 +202,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@dc2c4763d2ab444b0b9b52ea9eff7a06c418ac76
+        uses: naviteq/github-actions/.github/actions/registry-token@1602c960fc5d01e11f3e0a4826d1dd7b9df110f0
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -273,73 +273,17 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: terragrunt stack generate --non-interactive
 
-      # A git range searches the whole repository, so it is intersected with
-      # working_directory. → docs/terragrunt-validate-lint.md
-      - name: Resolve the unit filter
-        id: filter
-        if: inputs.validate_inputs
-        env:
-          FILTER: ${{ inputs.filter }}
-          FILTER_AFFECTED: ${{ inputs.filter_affected }}
-          BASE: ${{ github.base_ref || github.event.repository.default_branch }}
-          SCOPE: ${{ inputs.working_directory }}
-        run: |
-          set -euo pipefail
-          if [ "${FILTER_AFFECTED}" = "true" ]; then
-            FILTER="[origin/${BASE}...HEAD]"
-            SCOPE="${SCOPE#./}"
-            SCOPE="${SCOPE%/}"
-            [ -z "${SCOPE}" ] || [ "${SCOPE}" = "." ] || FILTER="./${SCOPE}/** | ${FILTER}"
-          fi
-          echo "value=${FILTER}" >> "$GITHUB_OUTPUT"
-
-      # A git range also returns the units a change deletes, which only exist in the
-      # base revision; they are listed and left out. → docs/terragrunt-validate-lint.md
+      # The git range is scoped to working_directory, and units it found deleted are
+      # left out. → docs/terragrunt-validate-lint.md
       - name: Select the units and show their run order
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        working-directory: ${{ inputs.working_directory }}
-        env:
-          FILTER: ${{ steps.filter.outputs.value }}
-        run: |
-          set -euo pipefail
-          args=(list --long --dependencies --dag --non-interactive)
-          [ -z "${FILTER}" ] || args+=(--filter "${FILTER}")
-          table="$(terragrunt "${args[@]}")"
-          units=""
-          deleted=""
-          while read -r kind path _; do
-            [ "${kind}" = "unit" ] || continue
-            if [ -d "${path}" ]; then units+="${path}"$'\n'; else deleted+="${path}"$'\n'; fi
-          done < <(printf '%s\n' "${table}" | tail -n +2)
-          {
-            echo "### Units to validate, in run order"
-            echo
-            echo "Filter: \`${FILTER:-none}\`"
-            echo
-            if [ -z "${units}" ]; then
-              echo "The filter selects no units."
-            else
-              fence='```'
-              printf '%stext\n%s\n%s\n' "${fence}" "${table}" "${fence}"
-            fi
-            if [ -n "${deleted}" ]; then
-              echo
-              echo "Deleted by this change, so not validated:"
-              while read -r path; do
-                [ -z "${path}" ] || echo "- \`${path}\`"
-              done <<< "${deleted}"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          printf '%s\n' "${table:-The filter selects no units.}"
-          [ -z "${deleted}" ] || echo "Deleted by this change, not validated: $(printf '%s' "${deleted}" | tr '\n' ' ')"
-          {
-            echo "list<<UNITS_EOF"
-            printf '%s' "${units}"
-            echo "UNITS_EOF"
-            echo "selected=true"
-          } >> "$GITHUB_OUTPUT"
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@1602c960fc5d01e11f3e0a4826d1dd7b9df110f0
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          filter: ${{ inputs.filter }}
+          filter_affected: ${{ inputs.filter_affected }}
 
       - name: Validate the inputs
         id: hcl-validate
@@ -347,13 +291,17 @@ jobs:
         continue-on-error: ${{ inputs.allow_failure }}
         working-directory: ${{ inputs.working_directory }}
         env:
-          FILTER: ${{ steps.filter.outputs.value }}
-          SELECTED: ${{ steps.units.outputs.selected }}
-          UNITS: ${{ steps.units.outputs.list }}
+          FILTER: ${{ steps.units.outputs.filter }}
+          SELECTED: ${{ steps.units.outcome == 'success' }}
+          UNITS: ${{ steps.units.outputs.units }}
         run: |
           set -euo pipefail
+          if [ "${SELECTED}" != "true" ]; then
+            echo "::error title=No unit selection::Selecting the units failed; its step above shows why."
+            exit 1
+          fi
           args=(hcl validate --inputs --all --non-interactive)
-          if [ -n "${FILTER}" ] && [ "${SELECTED}" = "true" ]; then
+          if [ -n "${FILTER}" ]; then
             if [ -z "${UNITS}" ]; then
               echo "::notice title=Nothing to validate::The filter selects no unit that exists in this revision."
               exit 0
@@ -361,8 +309,6 @@ jobs:
             while read -r unit; do
               [ -z "${unit}" ] || args+=(--filter "./${unit}")
             done <<< "${UNITS}"
-          elif [ -n "${FILTER}" ]; then
-            args+=(--filter "${FILTER}")
           fi
           terragrunt "${args[@]}"
 

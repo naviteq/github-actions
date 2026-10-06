@@ -1,0 +1,71 @@
+---
+name: Terragrunt select units
+description: >
+  List the Terragrunt units a run covers, in run order with their dependencies, and
+  separate the ones present in this revision from the ones a git range found deleted.
+
+inputs:
+  working_directory:
+    description: Directory to list from, relative to the repository root
+    required: false
+    default: "."
+  filter:
+    description: Terragrunt --filter expression; ignored when filter_affected is true
+    required: false
+    default: ""
+  filter_affected:
+    description: Select the units changed against the base branch
+    required: false
+    default: "false"
+  with_dependents:
+    description: With filter_affected, also select every unit that depends on a changed one
+    required: false
+    default: "false"
+  verb:
+    description: What the run does to the units, for the summary heading, e.g. validate or plan
+    required: false
+    default: validate
+  participle:
+    description: The same verb as a participle, for the deleted-units note, e.g. validated or planned
+    required: false
+    default: validated
+  queue_as:
+    description: Build the list as this command's queue, e.g. plan, so units whose exclude block names it are left out
+    required: false
+    default: ""
+
+outputs:
+  filter:
+    description: The --filter expression the selection used; empty means every unit
+    value: ${{ steps.select.outputs.filter }}
+  units:
+    description: Units present in this revision, in run order, one per line
+    value: ${{ steps.select.outputs.units }}
+  deleted:
+    description: Units a git range found deleted by the change, one per line
+    value: ${{ steps.select.outputs.deleted }}
+
+runs:
+  using: composite
+  steps:
+    - name: Select the units and show their run order
+      id: select
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        FILTER: ${{ inputs.filter }}
+        FILTER_AFFECTED: ${{ inputs.filter_affected }}
+        WITH_DEPENDENTS: ${{ inputs.with_dependents }}
+        BASE: ${{ github.base_ref || github.event.repository.default_branch }}
+        SCOPE: ${{ inputs.working_directory }}
+        VERB: ${{ inputs.verb }}
+        PARTICIPLE: ${{ inputs.participle }}
+        QUEUE_AS: ${{ inputs.queue_as }}
+      run: |
+        set -euo pipefail
+        args=(--working-directory . --scope "${SCOPE}" --filter "${FILTER}" --base "${BASE}"
+          --verb "${VERB}" --participle "${PARTICIPLE}" --queue-as "${QUEUE_AS}")
+        [ "${FILTER_AFFECTED}" != "true" ] || args+=(--filter-affected)
+        [ "${WITH_DEPENDENTS}" != "true" ] || args+=(--with-dependents)
+        python3 "${ACTION_PATH}/select_units.py" "${args[@]}"
