@@ -228,7 +228,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@36b73271b86febffc37f7fee9ba292d1e9fad6ea
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@a9cddbced7d7826ee6c35d207e05e111bbc6f7fe
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -256,7 +256,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@36b73271b86febffc37f7fee9ba292d1e9fad6ea
+        uses: naviteq/github-actions/.github/actions/registry-token@a9cddbced7d7826ee6c35d207e05e111bbc6f7fe
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -303,7 +303,7 @@ jobs:
 
       - name: Select the units and show their run order
         id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@36b73271b86febffc37f7fee9ba292d1e9fad6ea
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@a9cddbced7d7826ee6c35d207e05e111bbc6f7fe
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -315,7 +315,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@36b73271b86febffc37f7fee9ba292d1e9fad6ea
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@a9cddbced7d7826ee6c35d207e05e111bbc6f7fe
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.units.outputs.units }}
@@ -326,7 +326,7 @@ jobs:
       # which need state this job cannot read. → docs/terragrunt-plan.md
       - name: Warm the provider cache
         if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@36b73271b86febffc37f7fee9ba292d1e9fad6ea
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@a9cddbced7d7826ee6c35d207e05e111bbc6f7fe
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -388,7 +388,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@36b73271b86febffc37f7fee9ba292d1e9fad6ea
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@a9cddbced7d7826ee6c35d207e05e111bbc6f7fe
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -415,7 +415,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@36b73271b86febffc37f7fee9ba292d1e9fad6ea
+        uses: naviteq/github-actions/.github/actions/registry-token@a9cddbced7d7826ee6c35d207e05e111bbc6f7fe
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -516,7 +516,7 @@ jobs:
       - name: Count the planned changes
         id: report
         if: ${{ !cancelled() }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@36b73271b86febffc37f7fee9ba292d1e9fad6ea
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@a9cddbced7d7826ee6c35d207e05e111bbc6f7fe
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -639,7 +639,7 @@ jobs:
 
       - name: Merge the counts and hand the plans over
         id: result
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@36b73271b86febffc37f7fee9ba292d1e9fad6ea
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@a9cddbced7d7826ee6c35d207e05e111bbc6f7fe
         with:
           counts_dir: counts
           plans_dir: >-
