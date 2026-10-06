@@ -206,7 +206,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@884762367ff01c6b892499c22fc726264364a1aa
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@9162ed4aa1cc1256505623f7e8c4125e8e83d803
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -234,7 +234,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@884762367ff01c6b892499c22fc726264364a1aa
+        uses: naviteq/github-actions/.github/actions/registry-token@9162ed4aa1cc1256505623f7e8c4125e8e83d803
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -281,7 +281,7 @@ jobs:
 
       - name: Select the units and show their run order
         id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@884762367ff01c6b892499c22fc726264364a1aa
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@9162ed4aa1cc1256505623f7e8c4125e8e83d803
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -293,7 +293,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@884762367ff01c6b892499c22fc726264364a1aa
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@9162ed4aa1cc1256505623f7e8c4125e8e83d803
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.units.outputs.units }}
@@ -362,7 +362,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@884762367ff01c6b892499c22fc726264364a1aa
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@9162ed4aa1cc1256505623f7e8c4125e8e83d803
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -389,7 +389,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@884762367ff01c6b892499c22fc726264364a1aa
+        uses: naviteq/github-actions/.github/actions/registry-token@9162ed4aa1cc1256505623f7e8c4125e8e83d803
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -489,7 +489,7 @@ jobs:
       - name: Count the planned changes
         id: report
         if: ${{ !cancelled() }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@884762367ff01c6b892499c22fc726264364a1aa
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@9162ed4aa1cc1256505623f7e8c4125e8e83d803
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
