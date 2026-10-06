@@ -1,0 +1,56 @@
+---
+name: Terragrunt plan report
+description: >
+  Count what each planned unit would add, change, replace and destroy, and what the
+  destroy plans of deleted units would remove, without printing any planned value.
+
+inputs:
+  working_directory:
+    description: Directory the units are relative to
+    required: false
+    default: "."
+  engine:
+    description: Engine binary that reads the plans, tofu or terraform
+    required: false
+    default: tofu
+  units:
+    description: Planned units, one per line, as terragrunt-select-units reports them
+    required: false
+    default: ""
+  deleted:
+    description: Deleted units whose destroy plans are in destroy_log, one per line
+    required: false
+    default: ""
+  destroy_log:
+    description: Log file of the destroy-plan run for the deleted units
+    required: false
+    default: ""
+
+outputs:
+  changes:
+    description: JSON list of per-unit counts (unit, add, change, replace, destroy, deleted)
+    value: ${{ steps.report.outputs.changes }}
+  has_changes:
+    description: true when any unit would change anything
+    value: ${{ steps.report.outputs.has_changes }}
+  plans:
+    description: One "unit<TAB>plan file" line per planned unit
+    value: ${{ steps.report.outputs.plans }}
+
+runs:
+  using: composite
+  steps:
+    - name: Report the plans
+      id: report
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        ENGINE: ${{ inputs.engine }}
+        UNITS: ${{ inputs.units }}
+        DELETED: ${{ inputs.deleted }}
+        DESTROY_LOG: ${{ inputs.destroy_log }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/report.py" --working-directory "${WORKING_DIRECTORY}" \
+          --engine "${ENGINE}" --units "${UNITS}" --deleted "${DELETED}" --destroy-log "${DESTROY_LOG}"
