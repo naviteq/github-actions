@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 MARKER = "terragrunt-apply"
@@ -44,6 +45,38 @@ def merged_pull(pulls: list[dict], sha: str) -> dict | None:
 def newest_artifact(artifacts: list[dict]) -> dict | None:
     live = [a for a in artifacts if not a.get("expired")]
     return max(live, key=lambda a: a.get("created_at", "")) if live else None
+
+
+def plan_runs(runs: list[dict], workflow: str) -> list[dict]:
+    """The pull request's runs of the plan caller workflow, newest first."""
+    mine = [r for r in runs if (r.get("path") or "").split("@")[0].endswith(f".github/workflows/{workflow}")]
+    return sorted(mine, key=lambda r: r.get("created_at", ""), reverse=True)
+
+
+def plan_state(runs: list[dict]) -> str:
+    """running, failed or missing: why a merged pull request has no plan artifact (yet)."""
+    if any(r.get("status") != "completed" for r in runs):
+        return "running"
+    if runs and runs[0].get("conclusion") not in ("success", None):
+        return "failed"
+    return "missing"
+
+
+def find_artifact(repo: str, name: str, head_sha: str, workflow: str, wait_seconds: int,
+                  sleep=time.sleep) -> tuple[dict | None, str]:
+    """The live artifact, waiting while the plan that would upload it is still running."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        listing = gh(f"repos/{repo}/actions/artifacts?name={name}&per_page=100") or {}
+        artifact = newest_artifact(listing.get("artifacts", []))  # type: ignore[union-attr]
+        if artifact:
+            return artifact, "found"
+        runs = gh(f"repos/{repo}/actions/runs?head_sha={head_sha}&event=pull_request&per_page=100") or {}
+        state = plan_state(plan_runs(runs.get("workflow_runs", []), workflow))  # type: ignore[union-attr]
+        if state != "running" or time.monotonic() >= deadline:
+            return None, state
+        print(f"the plan for {head_sha[:7]} is still running; waiting for its artifact")
+        sleep(30)
 
 
 def approvers_of(value: str) -> list[str]:
@@ -111,13 +144,12 @@ def cmd_find(args: argparse.Namespace) -> int:
         write_outputs(pr="", head_sha="", pr_url="", artifact_id="", run_id="")
         return 0
     name = f"{args.prefix}-pr{pull['number']}-{pull['head']['sha']}"
-    listing = gh(f"repos/{args.repo}/actions/artifacts?name={name}&per_page=100") or {}
-    artifact = newest_artifact(listing.get("artifacts", []))
+    artifact, state = find_artifact(args.repo, name, pull["head"]["sha"], args.plan_workflow, args.wait_seconds)
     print(f"PR #{pull['number']} at {pull['head']['sha'][:7]}: "
-          + (f"artifact {artifact['id']}" if artifact else f"no live artifact named {name}"))
+          + (f"artifact {artifact['id']}" if artifact else f"no live artifact named {name} (plan {state})"))
     write_outputs(pr=pull["number"], head_sha=pull["head"]["sha"], pr_url=pull["html_url"],
                   artifact_id=artifact["id"] if artifact else "",
-                  run_id=artifact["workflow_run"]["id"] if artifact else "")
+                  run_id=artifact["workflow_run"]["id"] if artifact else "", plan_state=state)
     return 0
 
 
@@ -159,8 +191,12 @@ def cmd_decide(args: argparse.Namespace) -> int:
             print(f"PR #{pr} changed nothing under {args.working_directory}")
             write_outputs(state="nothing", issue="")
             return 0
+        why = {
+            "failed": "its plan failed",
+            "running": "its plan was still running when the wait ran out",
+        }.get(args.plan_state, "it was never planned, or the artifact expired")
         reason = (f"PR #{pr} changed `{args.working_directory}`, but no live plan artifact was found for its "
-                  "last commit: it was never planned, its plan failed, or the artifact expired")
+                  f"last commit: {why}")
         number = open_issue(args, f"No Terragrunt apply for PR #{pr}: no plan", blocked_body(reason, pr, args.pr_url, args.sha),
                             "blocked")
         write_outputs(state="blocked", issue=number)
@@ -197,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
     find.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     find.add_argument("--sha", required=True)
     find.add_argument("--prefix", default="terragrunt-plan")
+    find.add_argument("--plan-workflow", default="terragrunt-plan.yaml")
+    find.add_argument("--wait-seconds", type=int, default=1800)
     decide = sub.add_parser("decide")
     decide.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     decide.add_argument("--server-url", default=os.environ.get("GITHUB_SERVER_URL", "https://github.com"))
@@ -211,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     decide.add_argument("--working-directory", default=".")
     decide.add_argument("--approvers", default="")
     decide.add_argument("--label", default=MARKER)
+    decide.add_argument("--plan-state", default="")
     args = parser.parse_args(argv)
     return cmd_find(args) if args.command == "find" else cmd_decide(args)
 

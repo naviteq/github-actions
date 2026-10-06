@@ -31,6 +31,16 @@ on:
         required: false
         type: string
         default: terragrunt-plan
+      plan_workflow:
+        description: File name of this repository's workflow that calls the plan on pull requests
+        required: false
+        type: string
+        default: terragrunt-plan.yaml
+      wait_minutes:
+        description: How long to wait for the merged pull request's plan when it is still running
+        required: false
+        type: number
+        default: 30
       engine:
         description: Engine that fetches providers into the cache, tofu or terraform
         required: false
@@ -108,11 +118,14 @@ jobs:
 
       - name: Find the merged pull request and its plans
         id: find
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@a9384eee15894048026721294ad6d216406b70fc
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@e1bf7adb863260864bbf9e990c2cdd9cb18dbd1f
         with:
           command: find
           sha: ${{ github.sha }}
           prefix: ${{ inputs.artifact_prefix }}
+          # A pull request merged before its plan finished is not a pull request without a plan.
+          plan_workflow: ${{ inputs.plan_workflow }}
+          wait_minutes: ${{ inputs.wait_minutes }}
 
       - name: Download the plans' metadata
         if: steps.find.outputs.artifact_id != ''
@@ -125,7 +138,7 @@ jobs:
 
       - name: Open the approval issue, or say why there is none
         id: decide
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@a9384eee15894048026721294ad6d216406b70fc
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@e1bf7adb863260864bbf9e990c2cdd9cb18dbd1f
         with:
           command: decide
           sha: ${{ github.sha }}
@@ -139,6 +152,7 @@ jobs:
           working_directory: ${{ inputs.working_directory }}
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
           label: ${{ inputs.label }}
+          plan_state: ${{ steps.find.outputs.plan_state }}
 
   # The default branch is the only place a cache entry every pull request can read is saved.
   warm:
@@ -153,7 +167,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@a9384eee15894048026721294ad6d216406b70fc
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@e1bf7adb863260864bbf9e990c2cdd9cb18dbd1f
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -162,7 +176,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@a9384eee15894048026721294ad6d216406b70fc
+        uses: naviteq/github-actions/.github/actions/registry-token@e1bf7adb863260864bbf9e990c2cdd9cb18dbd1f
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -176,7 +190,7 @@ jobs:
 
       - name: Warm the provider cache from the lock files
         if: steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@a9384eee15894048026721294ad6d216406b70fc
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@e1bf7adb863260864bbf9e990c2cdd9cb18dbd1f
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}

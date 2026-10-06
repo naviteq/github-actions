@@ -15,6 +15,18 @@ inputs:
     description: For find, the plan artifact name prefix
     required: false
     default: terragrunt-plan
+  plan_workflow:
+    description: For find, file name of the caller workflow that runs the plan on pull requests
+    required: false
+    default: terragrunt-plan.yaml
+  wait_minutes:
+    description: For find, how long to wait for a plan of the merged commit that is still running
+    required: false
+    default: "30"
+  plan_state:
+    description: For decide, the plan_state find reported
+    required: false
+    default: ""
   pr:
     description: For decide, the merged pull request; empty for a direct push
     required: false
@@ -72,6 +84,9 @@ outputs:
   run_id:
     description: The run that uploaded that artifact
     value: ${{ steps.gate.outputs.run_id }}
+  plan_state:
+    description: found, running, failed or missing
+    value: ${{ steps.gate.outputs.plan_state }}
   state:
     description: nothing, no-changes, pending or blocked
     value: ${{ steps.gate.outputs.state }}
@@ -90,6 +105,9 @@ runs:
         COMMAND: ${{ inputs.command }}
         SHA: ${{ inputs.sha }}
         PREFIX: ${{ inputs.prefix }}
+        PLAN_WORKFLOW: ${{ inputs.plan_workflow }}
+        WAIT_MINUTES: ${{ inputs.wait_minutes }}
+        PLAN_STATE: ${{ inputs.plan_state }}
         PR: ${{ inputs.pr }}
         PR_URL: ${{ inputs.pr_url }}
         HEAD_SHA: ${{ inputs.head_sha }}
@@ -104,10 +122,13 @@ runs:
         set -euo pipefail
         script="${ACTION_PATH}/gate.py"
         case "${COMMAND}" in
-          find) python3 "${script}" find --sha "${SHA}" --prefix "${PREFIX}" ;;
+          find)
+            python3 "${script}" find --sha "${SHA}" --prefix "${PREFIX}" --plan-workflow "${PLAN_WORKFLOW}" \
+              --wait-seconds "$((WAIT_MINUTES * 60))" ;;
           decide)
             python3 "${script}" decide --sha "${SHA}" --pr "${PR}" --pr-url "${PR_URL}" --head-sha "${HEAD_SHA}" \
               --artifact-id "${ARTIFACT_ID}" --metadata "${METADATA}" --tree "${TREE}" --changed "${CHANGED}" \
-              --working-directory "${WORKING_DIRECTORY}" --approvers "${APPROVERS}" --label "${LABEL}" ;;
+              --working-directory "${WORKING_DIRECTORY}" --approvers "${APPROVERS}" --label "${LABEL}" \
+              --plan-state "${PLAN_STATE}" ;;
           *) echo "::error title=Unknown command::${COMMAND}"; exit 1 ;;
         esac
