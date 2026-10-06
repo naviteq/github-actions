@@ -119,7 +119,7 @@ def _lines(value: str) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--counts-dir", required=True)
-    parser.add_argument("--plans-dir", default="", help="Downloaded encrypted plans; gets manifest.tsv and metadata.json")
+    parser.add_argument("--plans-dir", default="", help="Downloaded encrypted plans, if any; gets manifest.tsv and metadata.json")
     parser.add_argument("--units", default="")
     parser.add_argument("--skipped", default="")
     parser.add_argument("--context-json", default="{}", help="Run facts to put in metadata.json")
@@ -132,12 +132,13 @@ def main(argv: list[str] | None = None) -> int:
     resources = merge_resources(counts_dir) if counts_dir.is_dir() else {}
     skipped = [line.split("\t") for line in _lines(args.skipped)]
     handed_over = False
-    if args.plans_dir and Path(args.plans_dir).is_dir():
+    # Also with nothing planned: the gate must tell "nothing to apply" from "never planned".
+    if args.plans_dir:
+        Path(args.plans_dir).mkdir(parents=True, exist_ok=True)
         manifest = join_manifests(Path(args.plans_dir))
-        if manifest:
-            data = metadata(json.loads(args.context_json), rows, manifest, skipped)
-            (Path(args.plans_dir) / "metadata.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-            handed_over = True
+        data = metadata(json.loads(args.context_json), rows, manifest, skipped)
+        (Path(args.plans_dir) / "metadata.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        handed_over = True
     if args.comment_file:
         Path(args.comment_file).write_text(comment(rows, resources, skipped, args.run_url), encoding="utf-8")
 

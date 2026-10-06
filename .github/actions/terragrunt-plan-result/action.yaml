@@ -9,7 +9,7 @@ inputs:
     description: Directory holding every plan job's <profile>.counts.json and <profile>.resources.json
     required: true
   plans_dir:
-    description: Directory holding the downloaded encrypted plans; empty when none were uploaded
+    description: Directory for the hand-off to the apply, holding any downloaded encrypted plans; empty hands nothing over
     required: false
     default: ""
   units:
@@ -41,7 +41,7 @@ outputs:
     description: true when any unit would change anything
     value: ${{ steps.result.outputs.has_changes }}
   handed_over:
-    description: true when plans_dir now holds manifest.tsv and metadata.json
+    description: true when plans_dir now holds metadata.json, and manifest.tsv if anything was planned
     value: ${{ steps.result.outputs.handed_over }}
 
 runs:
