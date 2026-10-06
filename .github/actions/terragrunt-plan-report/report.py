@@ -11,6 +11,7 @@ of deleted units from the run's log. → docs/terragrunt-plan.md
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,31 @@ def count_actions(plan: dict) -> dict[str, int]:
         elif actions == ["delete"]:
             counts["destroy"] += 1
     return counts
+
+
+def action_of(actions: list[str]) -> str | None:
+    """One word per change, as the apply compares them; None for no-op and read."""
+    if "create" in actions and "delete" in actions:
+        return "replace"
+    if actions in (["create"], ["update"], ["delete"]):
+        return actions[0]
+    return None
+
+
+def resources(plan: dict) -> list[dict[str, str]]:
+    """Address and action of every resource the plan would change, sorted by address."""
+    found = []
+    for change in plan.get("resource_changes") or []:
+        action = action_of(change.get("change", {}).get("actions", []))
+        if action:
+            found.append({"address": change.get("address", ""), "action": action})
+    return sorted(found, key=lambda r: r["address"])
+
+
+def changeset(found: list[dict[str, str]]) -> str:
+    """Hash of what would change, never of values; the apply re-plans and compares it."""
+    text = "\n".join(f"{r['address']} {r['action']}" for r in found)
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def find_plan(unit_dir: Path) -> Path | None:
@@ -88,11 +114,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--units", default="")
     parser.add_argument("--deleted", default="")
     parser.add_argument("--destroy-log", default="")
+    parser.add_argument("--resources-file", default="", help="Write each unit's changed addresses and actions here")
     args = parser.parse_args(argv)
 
     root = Path(args.working_directory)
     rows: list[dict] = []
     plans: list[str] = []
+    detail: dict[str, list[dict[str, str]]] = {}
     for unit in _lines(args.units):
         plan_file = find_plan(root / unit)
         if plan_file is None:
@@ -105,7 +133,9 @@ def main(argv: list[str] | None = None) -> int:
         if shown.returncode != 0:
             rows.append({"unit": unit, "error": "plan unreadable"})
             continue
-        rows.append({"unit": unit, **count_actions(json.loads(shown.stdout))})
+        plan = json.loads(shown.stdout)
+        detail[unit] = resources(plan)
+        rows.append({"unit": unit, **count_actions(plan), "changeset": changeset(detail[unit])})
         plans.append(f"{unit}\t{plan_file}")
 
     deleted = _lines(args.deleted)
@@ -128,6 +158,9 @@ def main(argv: list[str] | None = None) -> int:
             out.write(f"changes={json.dumps(rows, separators=(',', ':'))}\n")
             out.write(f"has_changes={'true' if has_changes else 'false'}\n")
             out.write("plans<<PLAN_REPORT_EOF\n" + "\n".join(plans) + "\nPLAN_REPORT_EOF\n")
+    if args.resources_file:
+        Path(args.resources_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.resources_file).write_text(json.dumps(detail, separators=(",", ":")), encoding="utf-8")
     if failed:
         print(f"::error title=Missing plans::{', '.join(failed)}")
         return 1

@@ -1,0 +1,702 @@
+---
+# Applies exactly the plans a terragrunt-plan run saved, after an approval on the gate
+# issue or against an expectations policy. → docs/terragrunt-apply.md
+name: Terragrunt apply
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      working_directory:
+        description: Directory the units live under, relative to the repository root; as in the plan
+        required: false
+        type: string
+        default: "."
+      engine:
+        description: Engine Terragrunt drives, tofu or terraform
+        required: false
+        type: string
+        default: tofu
+      terragrunt_version:
+        description: Terragrunt version; read from the repository's .terragrunt-version when empty
+        required: false
+        type: string
+        default: ""
+      opentofu_version:
+        description: OpenTofu version; read from the repository's .opentofu-version when empty
+        required: false
+        type: string
+        default: ""
+      terraform_version:
+        description: Terraform version for engine terraform; read from the repository's .terraform-version when empty
+        required: false
+        type: string
+        default: ""
+      approval:
+        description: issue, when an approver's comment on the gate issue started this run, or expectations, to apply automatically within the expect policy
+        required: false
+        type: string
+        default: issue
+      approvers:
+        description: For issue approval, comma-separated GitHub logins allowed to approve; empty reads vars.TERRAGRUNT_APPLY_APPROVERS
+        required: false
+        type: string
+        default: ""
+      label:
+        description: Label prefix of the gate issues, as the gate was given it
+        required: false
+        type: string
+        default: terragrunt-apply
+      artifact_name:
+        description: For expectations approval, the plan artifact to apply, as the plan's artifact output names it
+        required: false
+        type: string
+        default: ""
+      plan_run_id:
+        description: For expectations approval, the run that uploaded artifact_name; empty for this run
+        required: false
+        type: string
+        default: ""
+      expect:
+        description: For expectations approval, YAML policy (allow_replace, allow_destroy, require_changes, units with exact counts)
+        required: false
+        type: string
+        default: ""
+      verify_clean:
+        description: After applying, plan every applied unit again and fail unless nothing would change
+        required: false
+        type: boolean
+        default: false
+      github_environment:
+        description: GitHub Environment the apply jobs run in, for a role whose trust policy matches on it; empty for none
+        required: false
+        type: string
+        default: ""
+      aws_region:
+        description: Assume the aws_iam_role secret in this region; the default for a profile that names no region
+        required: false
+        type: string
+        default: ""
+      profiles:
+        description: YAML credential profiles as in terragrunt-plan, naming the roles that may write; empty applies everything under aws_iam_role
+        required: false
+        type: string
+        default: ""
+      env_vars:
+        description: Non-secret KEY=VALUE lines exported before applying
+        required: false
+        type: string
+        default: ""
+      provider_cache:
+        description: Restore the provider cache the default branch saved
+        required: false
+        type: boolean
+        default: true
+      provider_cache_registries:
+        description: Extra provider registry hostnames to cache, comma-separated, besides the two public ones
+        required: false
+        type: string
+        default: ""
+    secrets:
+      plan_age_key:
+        description: age private key matching the plan's plan_recipient; decrypts the saved plans
+        required: true
+      naviteq_github_app_id:
+        description: GitHub App id; with the key, mints a read-only token so private git sources resolve
+        required: false
+      naviteq_github_app_key:
+        description: Private key of that GitHub App
+        required: false
+      runestra_client_id:
+        description: Runestra registry client id, exchanged for a registry token
+        required: false
+      runestra_client_secret:
+        description: Runestra registry client secret
+        required: false
+      aws_iam_role:
+        description: AWS role assumed through OIDC for a profile with no aws_role; this one writes
+        required: false
+      terragrunt_extra_env:
+        description: KEY=VALUE lines exported with masked values; with profiles, a job gets only the keys its profile lists
+        required: false
+    outputs:
+      applied:
+        description: true when every approved plan was applied
+        value: ${{ jobs.result.outputs.applied }}
+      units:
+        description: The units whose plans were applied, in run order, one per line
+        value: ${{ jobs.verify.outputs.units }}
+
+permissions: {}
+
+# One apply at a time per repository and directory; a queued one waits, never cancels.
+concurrency:
+  group: terragrunt-apply-${{ github.repository }}-${{ inputs.working_directory }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify the approval and the plans
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APPROVAL: ${{ inputs.approval }}
+    outputs:
+      legs: ${{ steps.profiles.outputs.legs }}
+      units: ${{ steps.plans.outputs.units }}
+      has_changes: ${{ steps.plans.outputs.has_changes }}
+      commit: ${{ steps.source.outputs.commit }}
+      artifact_id: ${{ steps.source.outputs.artifact_id }}
+      run_id: ${{ steps.source.outputs.run_id }}
+      issue: ${{ steps.approval.outputs.issue }}
+      approval_reason: ${{ steps.approval.outputs.reason }}
+      reason: ${{ steps.approval.outputs.reason || steps.plans.outputs.reason || steps.source.outputs.reason }}
+    steps:
+      - name: Reject an unknown approval mode
+        if: inputs.approval != 'issue' && inputs.approval != 'expectations'
+        run: |
+          echo "::error title=Unknown approval::approval is '${APPROVAL}'; use issue or expectations."
+          exit 1
+
+      - name: Check the approval comment
+        id: approval
+        if: inputs.approval == 'issue'
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c1f3e1b3f5f8806547bd62539c6a5e948cbf0f8f
+        with:
+          command: approval
+          approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
+          label: ${{ inputs.label }}
+
+      # The artifact as GitHub describes it, not as anyone's comment or input claims.
+      - name: Find the plan artifact
+        id: source
+        env:
+          ARTIFACT_ID: ${{ steps.approval.outputs.artifact_id }}
+          COMMIT: ${{ steps.approval.outputs.commit }}
+          ARTIFACT_NAME: ${{ inputs.artifact_name }}
+          PLAN_RUN_ID: ${{ inputs.plan_run_id || github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "${APPROVAL}" = "issue" ]; then
+            artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}")"
+            commit="${COMMIT}"
+          else
+            artifact="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PLAN_RUN_ID}/artifacts?name=${ARTIFACT_NAME}" \
+              --jq '.artifacts[0] // empty')"
+            commit="${GITHUB_SHA}"
+          fi
+          if [ -z "${artifact}" ]; then
+            echo "reason=no plan artifact was found" >> "$GITHUB_OUTPUT"
+            echo "::error title=No plan artifact::nothing to apply from"
+            exit 1
+          fi
+          {
+            echo "artifact=$(jq -c . <<< "${artifact}")"
+            echo "artifact_id=$(jq -r .id <<< "${artifact}")"
+            echo "run_id=$(jq -r .workflow_run.id <<< "${artifact}")"
+            echo "commit=${commit}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.source.outputs.commit }}
+
+      - name: Record the tree about to be applied
+        id: tree
+        env:
+          SCOPE: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          scope="${SCOPE#./}"
+          scope="${scope%/}"
+          if [ -z "${scope}" ] || [ "${scope}" = "." ]; then ref="HEAD^{tree}"; else ref="HEAD:${scope}"; fi
+          echo "tree=$(git rev-parse "${ref}")" >> "$GITHUB_OUTPUT"
+
+      - name: Download the plan artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ steps.source.outputs.artifact_id }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/terragrunt-plans
+
+      - name: Read the expectations
+        id: expect
+        if: inputs.approval == 'expectations'
+        env:
+          EXPECT: ${{ inputs.expect }}
+        run: |
+          set -euo pipefail
+          json='{}'
+          if [ -n "${EXPECT//[[:space:]]/}" ]; then json="$(yq -o=json -I=0 '.' <<< "${EXPECT}")"; fi
+          echo "json=${json}" >> "$GITHUB_OUTPUT"
+
+      - name: Check the plans against the approval
+        id: plans
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c1f3e1b3f5f8806547bd62539c6a5e948cbf0f8f
+        with:
+          command: plans
+          metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
+          commit_tree: ${{ steps.tree.outputs.tree }}
+          marker_json: ${{ steps.approval.outputs.marker }}
+          artifact_json: ${{ inputs.approval == 'issue' && steps.source.outputs.artifact || '' }}
+          expect_json: ${{ steps.expect.outputs.json }}
+
+      - name: Match the units to credential profiles
+        id: profiles
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@c1f3e1b3f5f8806547bd62539c6a5e948cbf0f8f
+        with:
+          profiles: ${{ inputs.profiles }}
+          units: ${{ steps.plans.outputs.units }}
+          aws_region: ${{ inputs.aws_region }}
+
+      - name: Mark the gate issue as applying
+        if: inputs.approval == 'issue'
+        env:
+          ISSUE: ${{ steps.approval.outputs.issue }}
+          LABEL: ${{ inputs.label }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/labels/${LABEL}:pending" > /dev/null
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/labels" -f "labels[]=${LABEL}:applying" > /dev/null
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/comments" \
+            -f body="Approved. Re-planning every unit, then applying the saved plans: [run](${RUN_URL})." > /dev/null
+
+  check:
+    name: Check ${{ matrix.leg.name }}
+    needs: verify
+    if: needs.verify.outputs.has_changes == 'true'
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    environment: ${{ inputs.github_environment }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.verify.outputs.legs) }}
+    env:
+      HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
+      HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
+      TG_NO_CAS: "1"
+      LEG: ${{ matrix.leg.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+
+      - name: Generate a GitHub App token for the private git sources
+        id: app-token
+        if: env.HAS_GITHUB_APP == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.naviteq_github_app_id }}
+          private-key: ${{ secrets.naviteq_github_app_key }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            infrastructure-catalog
+            terraform-modules
+          permission-contents: read
+
+      - name: Rewrite git@github.com to an authenticated https remote
+        if: env.HAS_GITHUB_APP == 'true'
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          for form in "git@github.com:" "ssh://git@github.com/"; do
+            git config --global --add url."https://x-access-token:${TOKEN}@github.com/".insteadOf "${form}"
+          done
+
+      - name: Install Terragrunt and the engine
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c1f3e1b3f5f8806547bd62539c6a5e948cbf0f8f
+        with:
+          engine: ${{ inputs.engine }}
+          terragrunt_version: ${{ inputs.terragrunt_version }}
+          opentofu_version: ${{ inputs.opentofu_version }}
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Require the profile's AWS role
+        if: matrix.leg.aws_region != ''
+        env:
+          AWS_IAM_ROLE: ${{ matrix.leg.aws_role || secrets.aws_iam_role }}
+        run: |
+          if [ -z "${AWS_IAM_ROLE}" ]; then
+            echo "::error title=No AWS role::profile ${LEG} names no aws_role and the aws_iam_role secret is empty."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        if: matrix.leg.aws_region != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ matrix.leg.aws_role || secrets.aws_iam_role }}
+          role-session-name: gh-terragrunt-apply-${{ github.run_id }}-${{ matrix.leg.name }}
+          aws-region: ${{ matrix.leg.aws_region }}
+
+      - name: Exchange the registry client credentials for a token
+        if: env.HAS_REGISTRY_CLIENT == 'true'
+        uses: naviteq/github-actions/.github/actions/registry-token@c1f3e1b3f5f8806547bd62539c6a5e948cbf0f8f
+        with:
+          client_id: ${{ secrets.runestra_client_id }}
+          client_secret: ${{ secrets.runestra_client_secret }}
+
+      # A profile sees only the terragrunt_extra_env keys it lists. → docs/terragrunt-plan.md
+      - name: Export env_vars and the profile's TERRAGRUNT_EXTRA_ENV keys
+        env:
+          PLAIN_ENV: ${{ inputs.env_vars }}
+          SECRET_ENV: ${{ secrets.terragrunt_extra_env }}
+          ALLOWED: ${{ join(matrix.leg.env, ' ') }}
+          ENV_ALL: ${{ matrix.leg.env_all }}
+        run: |
+          set -euo pipefail
+          echo "TERRAGRUNT_PLAN_PROFILE=${LEG}" >> "$GITHUB_ENV"
+          while IFS='=' read -r key value; do
+            case "${key}" in "" | \#*) continue ;; esac
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done <<< "${PLAIN_ENV}"
+          found=" "
+          while IFS='=' read -r key value; do
+            case "${key}" in "" | \#*) continue ;; esac
+            if [ "${ENV_ALL}" != "true" ] && [[ " ${ALLOWED} " != *" ${key} "* ]]; then continue; fi
+            if [ -n "${value}" ]; then echo "::add-mask::${value}"; fi
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            # A caller whose secret is unset passes KEY= with nothing after it.
+            [ -z "${value}" ] || found+="${key} "
+          done <<< "${SECRET_ENV}"
+          for key in ${ALLOWED}; do
+            if [[ "${found}" != *" ${key} "* ]]; then
+              echo "::error title=Missing secret key::profile ${LEG} lists ${key}, which terragrunt_extra_env does not carry or leaves empty."
+              exit 1
+            fi
+          done
+
+      - name: Turn on the provider cache
+        if: inputs.provider_cache
+        env:
+          EXTRA_REGISTRIES: ${{ inputs.provider_cache_registries }}
+        run: |
+          set -euo pipefail
+          registries="registry.terraform.io,registry.opentofu.org"
+          [ -z "${EXTRA_REGISTRIES}" ] || registries="${registries},${EXTRA_REGISTRIES}"
+          {
+            echo "TG_PROVIDER_CACHE=1"
+            echo "TG_PROVIDER_CACHE_DIR=${RUNNER_TEMP}/terragrunt-providers"
+            echo "TG_PROVIDER_CACHE_REGISTRY_NAMES=${registries}"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore the provider cache
+        if: inputs.provider_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/terragrunt-providers
+          key: terragrunt-providers-${{ runner.os }}-${{ runner.arch }}-${{ inputs.engine }}-${{ hashFiles(format('{0}/**/.terraform.lock.hcl', inputs.working_directory)) }}
+          restore-keys: |
+            terragrunt-providers-${{ runner.os }}-${{ runner.arch }}-${{ inputs.engine }}-
+
+      - name: Generate the stacks
+        working-directory: ${{ inputs.working_directory }}
+        run: terragrunt stack generate --non-interactive
+
+
+      - name: Download the plan artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact_id }}
+          run-id: ${{ needs.verify.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/terragrunt-plans
+
+      # Every unit before anything is applied, so a later unit cannot see an earlier apply.
+      - name: Re-plan and compare with the saved plans
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c1f3e1b3f5f8806547bd62539c6a5e948cbf0f8f
+        with:
+          command: run
+          phase: check
+          metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
+          units: ${{ matrix.leg.units }}
+          working_directory: ${{ inputs.working_directory }}
+          engine: ${{ inputs.engine }}
+
+  apply:
+    name: Apply ${{ matrix.leg.name }}
+    needs: [verify, check]
+    if: needs.verify.outputs.has_changes == 'true'
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    environment: ${{ inputs.github_environment }}
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        leg: ${{ fromJSON(needs.verify.outputs.legs) }}
+    env:
+      HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
+      HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
+      TG_NO_CAS: "1"
+      LEG: ${{ matrix.leg.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+
+      - name: Generate a GitHub App token for the private git sources
+        id: app-token
+        if: env.HAS_GITHUB_APP == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.naviteq_github_app_id }}
+          private-key: ${{ secrets.naviteq_github_app_key }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            infrastructure-catalog
+            terraform-modules
+          permission-contents: read
+
+      - name: Rewrite git@github.com to an authenticated https remote
+        if: env.HAS_GITHUB_APP == 'true'
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          for form in "git@github.com:" "ssh://git@github.com/"; do
+            git config --global --add url."https://x-access-token:${TOKEN}@github.com/".insteadOf "${form}"
+          done
+
+      - name: Install Terragrunt and the engine
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c1f3e1b3f5f8806547bd62539c6a5e948cbf0f8f
+        with:
+          engine: ${{ inputs.engine }}
+          terragrunt_version: ${{ inputs.terragrunt_version }}
+          opentofu_version: ${{ inputs.opentofu_version }}
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Require the profile's AWS role
+        if: matrix.leg.aws_region != ''
+        env:
+          AWS_IAM_ROLE: ${{ matrix.leg.aws_role || secrets.aws_iam_role }}
+        run: |
+          if [ -z "${AWS_IAM_ROLE}" ]; then
+            echo "::error title=No AWS role::profile ${LEG} names no aws_role and the aws_iam_role secret is empty."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        if: matrix.leg.aws_region != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ matrix.leg.aws_role || secrets.aws_iam_role }}
+          role-session-name: gh-terragrunt-apply-${{ github.run_id }}-${{ matrix.leg.name }}
+          aws-region: ${{ matrix.leg.aws_region }}
+
+      - name: Exchange the registry client credentials for a token
+        if: env.HAS_REGISTRY_CLIENT == 'true'
+        uses: naviteq/github-actions/.github/actions/registry-token@c1f3e1b3f5f8806547bd62539c6a5e948cbf0f8f
+        with:
+          client_id: ${{ secrets.runestra_client_id }}
+          client_secret: ${{ secrets.runestra_client_secret }}
+
+      # A profile sees only the terragrunt_extra_env keys it lists. → docs/terragrunt-plan.md
+      - name: Export env_vars and the profile's TERRAGRUNT_EXTRA_ENV keys
+        env:
+          PLAIN_ENV: ${{ inputs.env_vars }}
+          SECRET_ENV: ${{ secrets.terragrunt_extra_env }}
+          ALLOWED: ${{ join(matrix.leg.env, ' ') }}
+          ENV_ALL: ${{ matrix.leg.env_all }}
+        run: |
+          set -euo pipefail
+          echo "TERRAGRUNT_PLAN_PROFILE=${LEG}" >> "$GITHUB_ENV"
+          while IFS='=' read -r key value; do
+            case "${key}" in "" | \#*) continue ;; esac
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done <<< "${PLAIN_ENV}"
+          found=" "
+          while IFS='=' read -r key value; do
+            case "${key}" in "" | \#*) continue ;; esac
+            if [ "${ENV_ALL}" != "true" ] && [[ " ${ALLOWED} " != *" ${key} "* ]]; then continue; fi
+            if [ -n "${value}" ]; then echo "::add-mask::${value}"; fi
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            # A caller whose secret is unset passes KEY= with nothing after it.
+            [ -z "${value}" ] || found+="${key} "
+          done <<< "${SECRET_ENV}"
+          for key in ${ALLOWED}; do
+            if [[ "${found}" != *" ${key} "* ]]; then
+              echo "::error title=Missing secret key::profile ${LEG} lists ${key}, which terragrunt_extra_env does not carry or leaves empty."
+              exit 1
+            fi
+          done
+
+      - name: Turn on the provider cache
+        if: inputs.provider_cache
+        env:
+          EXTRA_REGISTRIES: ${{ inputs.provider_cache_registries }}
+        run: |
+          set -euo pipefail
+          registries="registry.terraform.io,registry.opentofu.org"
+          [ -z "${EXTRA_REGISTRIES}" ] || registries="${registries},${EXTRA_REGISTRIES}"
+          {
+            echo "TG_PROVIDER_CACHE=1"
+            echo "TG_PROVIDER_CACHE_DIR=${RUNNER_TEMP}/terragrunt-providers"
+            echo "TG_PROVIDER_CACHE_REGISTRY_NAMES=${registries}"
+          } >> "$GITHUB_ENV"
+
+      - name: Restore the provider cache
+        if: inputs.provider_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/terragrunt-providers
+          key: terragrunt-providers-${{ runner.os }}-${{ runner.arch }}-${{ inputs.engine }}-${{ hashFiles(format('{0}/**/.terraform.lock.hcl', inputs.working_directory)) }}
+          restore-keys: |
+            terragrunt-providers-${{ runner.os }}-${{ runner.arch }}-${{ inputs.engine }}-
+
+      - name: Generate the stacks
+        working-directory: ${{ inputs.working_directory }}
+        run: terragrunt stack generate --non-interactive
+
+
+      - name: Download the plan artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact_id }}
+          run-id: ${{ needs.verify.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/terragrunt-plans
+
+      # A pinned, checksummed release binary: a plan file carries state values in clear.
+      - name: Install age
+        run: |
+          set -euo pipefail
+          case "${RUNNER_ARCH}" in
+            X64) arch=amd64 sum=cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10 ;;
+            ARM64) arch=arm64 sum=6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4 ;;
+            *) echo "::error title=Unsupported architecture::${RUNNER_ARCH}"; exit 1 ;;
+          esac
+          archive="${RUNNER_TEMP}/age.tar.gz"
+          curl -fsSL -o "${archive}" "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-${arch}.tar.gz"
+          echo "${sum}  ${archive}" | sha256sum -c -
+          tar -xzf "${archive}" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/age" >> "$GITHUB_PATH"
+
+      - name: Decrypt this profile's plans
+        env:
+          AGE_KEY: ${{ secrets.plan_age_key }}
+          UNITS: ${{ matrix.leg.units }}
+        run: |
+          set -euo pipefail
+          key="${RUNNER_TEMP}/age.key"
+          (umask 077; printf '%s\n' "${AGE_KEY}" > "${key}")
+          dir="${RUNNER_TEMP}/terragrunt-plans"
+          while read -r unit; do
+            [ -n "${unit}" ] || continue
+            file="$(jq -r --arg u "${unit}" '.units[] | select(.unit == $u) | .file' "${dir}/metadata.json")"
+            age --decrypt --identity "${key}" --output "${dir}/${file%.age}" "${dir}/${file}"
+          done <<< "${UNITS}"
+          rm -f "${key}"
+
+      - name: Apply the saved plans
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c1f3e1b3f5f8806547bd62539c6a5e948cbf0f8f
+        with:
+          command: run
+          phase: apply
+          metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
+          units: ${{ matrix.leg.units }}
+          working_directory: ${{ inputs.working_directory }}
+          plans_dir: ${{ runner.temp }}/terragrunt-plans
+
+      - name: Prove a second plan changes nothing
+        if: inputs.verify_clean
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c1f3e1b3f5f8806547bd62539c6a5e948cbf0f8f
+        with:
+          command: run
+          phase: clean
+          metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
+          units: ${{ matrix.leg.units }}
+          working_directory: ${{ inputs.working_directory }}
+
+  result:
+    name: Result
+    needs: [verify, check, apply]
+    if: always()
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      issues: write
+    outputs:
+      applied: ${{ steps.outcome.outputs.applied }}
+    steps:
+      - name: Settle the outcome
+        id: outcome
+        env:
+          VERIFY: ${{ needs.verify.result }}
+          CHECK: ${{ needs.check.result }}
+          APPLY: ${{ needs.apply.result }}
+          HAS_CHANGES: ${{ needs.verify.outputs.has_changes }}
+          REASON: ${{ needs.verify.outputs.reason }}
+        run: |
+          set -euo pipefail
+          if [ "${VERIFY}" != "success" ]; then
+            state=refused; text="Refused: ${REASON:-the approval or the plans did not check out}."
+          elif [ "${HAS_CHANGES}" != "true" ]; then
+            state=applied; text="Nothing to apply: no saved plan changes anything."
+          elif [ "${CHECK}" != "success" ]; then
+            state=refused; text="Refused: a unit would now change differently than planned. Nothing was applied; re-plan it."
+          elif [ "${APPLY}" != "success" ]; then
+            state=failed; text="The apply failed; see the run for which units were applied."
+          else
+            state=applied; text="Applied every saved plan."
+          fi
+          {
+            echo "state=${state}"
+            echo "text=${text}"
+            echo "applied=$([ "${state}" = applied ] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+          echo "${text}" >> "$GITHUB_STEP_SUMMARY"
+
+      # A refused comment changes nothing on the issue, or anyone could close the gate.
+      - name: Answer a comment that is not an approval
+        if: inputs.approval == 'issue' && needs.verify.outputs.issue == '' && github.event.issue.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          REASON: ${{ needs.verify.outputs.approval_reason }}
+        run: |
+          set -euo pipefail
+          [ -n "${REASON}" ] || exit 0
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/comments" \
+            -f body="Not applied: ${REASON}. The issue still waits for an approver." > /dev/null
+
+      - name: Report on the gate issue
+        if: inputs.approval == 'issue' && needs.verify.outputs.issue != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ needs.verify.outputs.issue }}
+          LABEL: ${{ inputs.label }}
+          STATE: ${{ steps.outcome.outputs.state }}
+          TEXT: ${{ steps.outcome.outputs.text }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for old in pending applying; do
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/labels/${LABEL}:${old}" > /dev/null 2>&1 || true
+          done
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/labels" -f "labels[]=${LABEL}:${STATE}" > /dev/null
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/comments" -f body="${TEXT} [Run](${RUN_URL})." > /dev/null
+          if [ "${STATE}" = "applied" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}" -f state=closed -f state_reason=completed > /dev/null
+          fi
+
+      - name: Fail unless applied
+        if: steps.outcome.outputs.applied != 'true'
+        run: exit 1

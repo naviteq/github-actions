@@ -1,0 +1,66 @@
+---
+name: Terragrunt plan result
+description: >
+  Merge the plan jobs' counts in run order, join their encrypted-plan manifests with a
+  metadata.json the apply checks against, and render the pull-request comment.
+
+inputs:
+  counts_dir:
+    description: Directory holding every plan job's <profile>.counts.json and <profile>.resources.json
+    required: true
+  plans_dir:
+    description: Directory holding the downloaded encrypted plans; empty when none were uploaded
+    required: false
+    default: ""
+  units:
+    description: Selected units in run order, one per line
+    required: false
+    default: ""
+  skipped:
+    description: Lines of unit<TAB>profile<TAB>reason a skip profile left out
+    required: false
+    default: ""
+  context_json:
+    description: JSON object of run facts written into metadata.json
+    required: false
+    default: "{}"
+  run_url:
+    description: Link to the plan run, for the comment
+    required: false
+    default: ""
+  comment_file:
+    description: File to write the pull-request comment to; empty writes none
+    required: false
+    default: ""
+
+outputs:
+  changes:
+    description: JSON list of per-unit counts (unit, profile, add, change, replace, destroy, deleted, changeset)
+    value: ${{ steps.result.outputs.changes }}
+  has_changes:
+    description: true when any unit would change anything
+    value: ${{ steps.result.outputs.has_changes }}
+  handed_over:
+    description: true when plans_dir now holds manifest.tsv and metadata.json
+    value: ${{ steps.result.outputs.handed_over }}
+
+runs:
+  using: composite
+  steps:
+    - name: Merge the plan results
+      id: result
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        COUNTS_DIR: ${{ inputs.counts_dir }}
+        PLANS_DIR: ${{ inputs.plans_dir }}
+        UNITS: ${{ inputs.units }}
+        SKIPPED: ${{ inputs.skipped }}
+        CONTEXT_JSON: ${{ inputs.context_json }}
+        RUN_URL: ${{ inputs.run_url }}
+        COMMENT_FILE: ${{ inputs.comment_file }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/result.py" --counts-dir "${COUNTS_DIR}" --plans-dir "${PLANS_DIR}" \
+          --units "${UNITS}" --skipped "${SKIPPED}" --context-json "${CONTEXT_JSON}" \
+          --run-url "${RUN_URL}" --comment-file "${COMMENT_FILE}"

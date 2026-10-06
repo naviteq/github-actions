@@ -1,0 +1,113 @@
+---
+name: Terragrunt apply gate
+description: >
+  After a merge, find the pull request's saved Terragrunt plans and open the issue that
+  gates their apply, or a blocking issue that says why they cannot be applied.
+
+inputs:
+  command:
+    description: find or decide
+    required: true
+  sha:
+    description: The merged commit
+    required: true
+  prefix:
+    description: For find, the plan artifact name prefix
+    required: false
+    default: terragrunt-plan
+  pr:
+    description: For decide, the merged pull request; empty for a direct push
+    required: false
+    default: ""
+  pr_url:
+    description: For decide, the pull request's URL
+    required: false
+    default: ""
+  head_sha:
+    description: For decide, the pull request's last commit
+    required: false
+    default: ""
+  artifact_id:
+    description: For decide, the plan artifact found
+    required: false
+    default: ""
+  metadata:
+    description: For decide, path of the artifact's metadata.json; empty when none was found
+    required: false
+    default: ""
+  tree:
+    description: For decide, the tree of working_directory in the merged commit
+    required: false
+    default: ""
+  changed:
+    description: For decide, true when the merge changed anything under working_directory
+    required: false
+    default: "true"
+  working_directory:
+    description: For decide, the directory the units live under
+    required: false
+    default: "."
+  approvers:
+    description: For decide, comma-separated GitHub logins allowed to approve
+    required: false
+    default: ""
+  label:
+    description: For decide, the label prefix of gate issues
+    required: false
+    default: terragrunt-apply
+
+outputs:
+  pr:
+    description: The merged pull request; empty for a direct push
+    value: ${{ steps.gate.outputs.pr }}
+  pr_url:
+    description: Its URL
+    value: ${{ steps.gate.outputs.pr_url }}
+  head_sha:
+    description: Its last commit
+    value: ${{ steps.gate.outputs.head_sha }}
+  artifact_id:
+    description: Its live plan artifact; empty when none was found
+    value: ${{ steps.gate.outputs.artifact_id }}
+  run_id:
+    description: The run that uploaded that artifact
+    value: ${{ steps.gate.outputs.run_id }}
+  state:
+    description: nothing, no-changes, pending or blocked
+    value: ${{ steps.gate.outputs.state }}
+  issue:
+    description: The issue opened, if any
+    value: ${{ steps.gate.outputs.issue }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run the gate step
+      id: gate
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        COMMAND: ${{ inputs.command }}
+        SHA: ${{ inputs.sha }}
+        PREFIX: ${{ inputs.prefix }}
+        PR: ${{ inputs.pr }}
+        PR_URL: ${{ inputs.pr_url }}
+        HEAD_SHA: ${{ inputs.head_sha }}
+        ARTIFACT_ID: ${{ inputs.artifact_id }}
+        METADATA: ${{ inputs.metadata }}
+        TREE: ${{ inputs.tree }}
+        CHANGED: ${{ inputs.changed }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        APPROVERS: ${{ inputs.approvers }}
+        LABEL: ${{ inputs.label }}
+      run: |
+        set -euo pipefail
+        script="${ACTION_PATH}/gate.py"
+        case "${COMMAND}" in
+          find) python3 "${script}" find --sha "${SHA}" --prefix "${PREFIX}" ;;
+          decide)
+            python3 "${script}" decide --sha "${SHA}" --pr "${PR}" --pr-url "${PR_URL}" --head-sha "${HEAD_SHA}" \
+              --artifact-id "${ARTIFACT_ID}" --metadata "${METADATA}" --tree "${TREE}" --changed "${CHANGED}" \
+              --working-directory "${WORKING_DIRECTORY}" --approvers "${APPROVERS}" --label "${LABEL}" ;;
+          *) echo "::error title=Unknown command::${COMMAND}"; exit 1 ;;
+        esac

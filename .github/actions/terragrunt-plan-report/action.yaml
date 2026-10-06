@@ -25,10 +25,14 @@ inputs:
     description: Log file of the destroy-plan run for the deleted units
     required: false
     default: ""
+  resources_file:
+    description: File to write each unit's changed resource addresses and actions to, as JSON; empty writes none
+    required: false
+    default: ""
 
 outputs:
   changes:
-    description: JSON list of per-unit counts (unit, add, change, replace, destroy, deleted)
+    description: JSON list of per-unit counts (unit, add, change, replace, destroy, deleted) and changeset hash
     value: ${{ steps.report.outputs.changes }}
   has_changes:
     description: true when any unit would change anything
@@ -50,7 +54,9 @@ runs:
         UNITS: ${{ inputs.units }}
         DELETED: ${{ inputs.deleted }}
         DESTROY_LOG: ${{ inputs.destroy_log }}
+        RESOURCES_FILE: ${{ inputs.resources_file }}
       run: |
         set -euo pipefail
         python3 "${ACTION_PATH}/report.py" --working-directory "${WORKING_DIRECTORY}" \
-          --engine "${ENGINE}" --units "${UNITS}" --deleted "${DELETED}" --destroy-log "${DESTROY_LOG}"
+          --engine "${ENGINE}" --units "${UNITS}" --deleted "${DELETED}" --destroy-log "${DESTROY_LOG}" \
+          --resources-file "${RESOURCES_FILE}"

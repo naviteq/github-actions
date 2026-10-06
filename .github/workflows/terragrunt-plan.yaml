@@ -82,7 +82,7 @@ on:
         type: string
         default: ""
       artifact_name:
-        description: Name of the encrypted-plan artifact; defaults to terragrunt-plan-<sha>
+        description: Name of the encrypted-plan artifact; defaults to terragrunt-plan-pr<number>-<head sha> on a pull request, terragrunt-plan-<sha> otherwise
         required: false
         type: string
         default: ""
@@ -91,6 +91,11 @@ on:
         required: false
         type: number
         default: 14
+      pr_comment:
+        description: On a pull request, keep one comment on it with the counts and the changed resource addresses; needs pull-requests write
+        required: false
+        type: boolean
+        default: true
       provider_cache:
         description: Share providers between units through Terragrunt's provider cache, saved on the default branch
         required: false
@@ -165,6 +170,7 @@ jobs:
       legs: ${{ steps.profiles.outputs.legs }}
       skipped: ${{ steps.profiles.outputs.skipped }}
       artifact: ${{ steps.artifact.outputs.name }}
+      tree: ${{ steps.tree.outputs.tree }}
     steps:
       - name: Reject contradictory inputs
         if: inputs.filter_affected && inputs.filter != ''
@@ -175,12 +181,28 @@ jobs:
       - name: Name the artifacts
         id: artifact
         env:
-          NAME: ${{ inputs.artifact_name || format('terragrunt-plan-{0}', github.sha) }}
+          # The apply finds a merged PR's plans by this name. → docs/terragrunt-plan.md
+          NAME: >-
+            ${{ inputs.artifact_name || (github.event_name == 'pull_request'
+            && format('terragrunt-plan-pr{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha)
+            || format('terragrunt-plan-{0}', github.sha)) }}
         run: echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: ${{ inputs.filter_affected && '0' || '1' }}
+
+      # The apply refuses a plan whose code differs from what was merged.
+      - name: Record the tree that was planned
+        id: tree
+        env:
+          SCOPE: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          scope="${SCOPE#./}"
+          scope="${scope%/}"
+          if [ -z "${scope}" ] || [ "${scope}" = "." ]; then ref="HEAD^{tree}"; else ref="HEAD:${scope}"; fi
+          echo "tree=$(git rev-parse "${ref}")" >> "$GITHUB_OUTPUT"
 
       - name: Generate a GitHub App token for the private git sources
         id: app-token
@@ -206,7 +228,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@9c7d21f552664bbf481c1dcce42aff066dfda068
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@12d71718306edab5434a2134eeb92ecbc90dd79b
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -234,7 +256,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@9c7d21f552664bbf481c1dcce42aff066dfda068
+        uses: naviteq/github-actions/.github/actions/registry-token@12d71718306edab5434a2134eeb92ecbc90dd79b
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -281,7 +303,7 @@ jobs:
 
       - name: Select the units and show their run order
         id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@9c7d21f552664bbf481c1dcce42aff066dfda068
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@12d71718306edab5434a2134eeb92ecbc90dd79b
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -293,18 +315,22 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@9c7d21f552664bbf481c1dcce42aff066dfda068
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@12d71718306edab5434a2134eeb92ecbc90dd79b
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.units.outputs.units }}
           deleted: ${{ steps.units.outputs.deleted }}
           aws_region: ${{ inputs.aws_region }}
 
-      # A push to the default branch selects nothing to plan, so warm every provider.
+      # From the lock files, not `run --all init`: that resolves dependency outputs,
+      # which need state this job cannot read. → docs/terragrunt-plan.md
       - name: Warm the provider cache
         if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
-        working-directory: ${{ inputs.working_directory }}
-        run: terragrunt run --all --non-interactive -- init -backend=false -input=false
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@12d71718306edab5434a2134eeb92ecbc90dd79b
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          engine: ${{ inputs.engine }}
+          cache_dir: ${{ runner.temp }}/terragrunt-providers
 
       - name: Save the provider cache
         if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
@@ -362,7 +388,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@9c7d21f552664bbf481c1dcce42aff066dfda068
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@12d71718306edab5434a2134eeb92ecbc90dd79b
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -389,7 +415,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@9c7d21f552664bbf481c1dcce42aff066dfda068
+        uses: naviteq/github-actions/.github/actions/registry-token@12d71718306edab5434a2134eeb92ecbc90dd79b
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -490,13 +516,14 @@ jobs:
       - name: Count the planned changes
         id: report
         if: ${{ !cancelled() }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@9c7d21f552664bbf481c1dcce42aff066dfda068
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@12d71718306edab5434a2134eeb92ecbc90dd79b
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
           units: ${{ matrix.leg.units }}
           deleted: ${{ matrix.leg.deleted }}
           destroy_log: ${{ matrix.leg.deleted != '' && format('{0}/terragrunt-destroy-plan.log', runner.temp) || '' }}
+          resources_file: ${{ runner.temp }}/terragrunt-plan-counts/${{ matrix.leg.name }}.resources.json
 
       - name: Keep the counts for the result job
         if: ${{ !cancelled() && steps.report.outputs.changes != '' }}
@@ -506,7 +533,7 @@ jobs:
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/terragrunt-plan-counts"
           jq --arg profile "${LEG}" 'map(. + {profile: $profile})' <<< "${CHANGES}" \
-            > "${RUNNER_TEMP}/terragrunt-plan-counts/${LEG}.json"
+            > "${RUNNER_TEMP}/terragrunt-plan-counts/${LEG}.counts.json"
 
       - name: Upload the counts
         if: ${{ !cancelled() && steps.report.outputs.changes != '' }}
@@ -565,12 +592,14 @@ jobs:
     needs: [select, plan]
     if: ${{ !cancelled() && needs.select.result == 'success' }}
     runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
-    permissions: {}
+    permissions:
+      contents: read
+      pull-requests: write
     env:
       ARTIFACT: ${{ needs.select.outputs.artifact }}
     outputs:
-      changes: ${{ steps.counts.outputs.changes }}
-      has_changes: ${{ steps.counts.outputs.has_changes }}
+      changes: ${{ steps.result.outputs.changes }}
+      has_changes: ${{ steps.result.outputs.has_changes }}
       artifact: ${{ steps.upload.outcome == 'success' && needs.select.outputs.artifact || '' }}
     steps:
       - name: Download the counts
@@ -581,26 +610,7 @@ jobs:
           path: counts
           merge-multiple: true
 
-      - name: Merge the counts in run order
-        id: counts
-        env:
-          UNITS: ${{ needs.select.outputs.units }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(counts/*.json)
-          changes='[]'
-          if [ "${#files[@]}" -gt 0 ]; then
-            changes="$(jq -cs --arg units "${UNITS}" '
-              ($units | split("\n") | to_entries | map({key: .value, value: .key}) | from_entries) as $pos
-              | add | sort_by($pos[.unit] // 1e9)' "${files[@]}")"
-          fi
-          has_changes="$(jq -r 'any(.[]; [.add, .change, .replace, .destroy] | map(. // 0) | add > 0)' <<< "${changes}")"
-          echo "changes=${changes}" >> "$GITHUB_OUTPUT"
-          echo "has_changes=${has_changes}" >> "$GITHUB_OUTPUT"
-
       - name: Download the encrypted plans
-        id: download
         if: inputs.plan_recipient != '' && needs.plan.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -608,27 +618,67 @@ jobs:
           path: plans
           merge-multiple: true
 
-      - name: Join the manifests
-        id: manifest
-        if: steps.download.outcome == 'success'
+      # Facts the apply checks the plans against before it touches anything.
+      - name: Describe this plan run
+        id: context
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TREE: ${{ needs.select.outputs.tree }}
+          SCOPE: ${{ inputs.working_directory }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          manifests=(plans/manifest.*.tsv)
-          if [ "${#manifests[@]}" -eq 0 ]; then
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          cat "${manifests[@]}" > plans/manifest.tsv
-          rm "${manifests[@]}"
-          echo "found=true" >> "$GITHUB_OUTPUT"
+          jq -cn --arg repository "${GITHUB_REPOSITORY}" --arg pr "${PR}" --arg head_sha "${HEAD_SHA}" \
+            --arg commit "${GITHUB_SHA}" --arg tree "${TREE}" --arg working_directory "${SCOPE}" \
+            --arg run_id "${GITHUB_RUN_ID}" --arg run_attempt "${GITHUB_RUN_ATTEMPT}" --arg artifact "${ARTIFACT}" \
+            --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{repository: $repository, pr: ($pr | if . == "" then null else tonumber end), head_sha: $head_sha,
+              commit: $commit, tree: $tree, working_directory: $working_directory, plan_run_id: ($run_id | tonumber),
+              plan_run_attempt: ($run_attempt | tonumber), artifact: $artifact, created_at: $created_at}' \
+            | sed 's/^/json=/' >> "$GITHUB_OUTPUT"
+
+      - name: Merge the counts and hand the plans over
+        id: result
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@12d71718306edab5434a2134eeb92ecbc90dd79b
+        with:
+          counts_dir: counts
+          plans_dir: ${{ inputs.plan_recipient != '' && needs.plan.result == 'success' && 'plans' || '' }}
+          units: ${{ needs.select.outputs.units }}
+          skipped: ${{ needs.select.outputs.skipped }}
+          context_json: ${{ steps.context.outputs.json }}
+          run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          comment_file: ${{ runner.temp }}/terragrunt-plan-comment.md
 
       - name: Upload the encrypted plans
         id: upload
-        if: steps.manifest.outputs.found == 'true'
+        if: steps.result.outputs.handed_over == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ env.ARTIFACT }}
           path: plans
           retention-days: ${{ inputs.artifact_retention_days }}
           if-no-files-found: error
+
+      # Never on a fork's PR: its token cannot write, and its plan never reaches an apply.
+      - name: Comment on the pull request
+        if: >-
+          inputs.pr_comment && github.event_name == 'pull_request'
+          && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          COMMENT_FILE: ${{ runner.temp }}/terragrunt-plan-comment.md
+          MARKER: terragrunt-plan:${{ inputs.working_directory }}
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = `<!-- ${process.env.MARKER} -->`;
+            const body = `${marker}\n${fs.readFileSync(process.env.COMMENT_FILE, 'utf8')}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const mine = comments.find((c) => c.user?.type === 'Bot' && c.body?.startsWith(marker));
+            if (mine) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
