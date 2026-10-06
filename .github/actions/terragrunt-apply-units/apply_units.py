@@ -4,7 +4,8 @@
 `approval` validates an `/approve apply-<id>` comment on a gate issue; `plans` checks the
 downloaded metadata.json against that approval, or against an expectations policy; `run`
 re-plans each unit and compares changesets (`check`), applies the saved plan files
-(`apply`), or proves a second plan is empty (`clean`). It lives beside its action, not in
+(`apply`), proves a second plan is empty (`clean`), or plans, checks and applies each
+unit in dependency order with no saved plan (`fresh`). It lives beside its action, not in
 scripts/, because the public mirror copies actions only. → docs/terragrunt-apply.md
 
     python3 .github/actions/terragrunt-apply-units/apply_units.py approval --approvers "$APPROVERS"
@@ -20,6 +21,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 MARKER = re.compile(r"<!-- terragrunt-apply: (\{.*?\}) -->")
@@ -99,29 +102,44 @@ def check_plans(metadata: dict, marker: dict | None, artifact: dict | None, comm
             raise Refused(f"metadata.json {key} {metadata.get(key)!r} differs from the gate's {marker.get(key)!r}")
 
 
-def check_expectations(metadata: dict, expect: dict) -> None:
-    """An automatic apply's policy: which actions it may take, and optionally exact counts."""
+def check_policy(expect: dict) -> None:
+    """Typos in a policy fail before anything is planned."""
     known = {"allow_replace", "allow_destroy", "units", "require_changes"}
     unknown = sorted(set(expect) - known)
     if unknown:
         raise Refused(f"expect has unknown keys: {', '.join(unknown)}")
+    for name, counts in (expect.get("units") or {}).items():
+        bad = sorted(set(counts) - set(COUNT_KEYS))
+        if bad:
+            raise Refused(f"expect.units.{name} has unknown counts: {', '.join(bad)}")
+
+
+def unit_violation(unit: dict, expect: dict) -> str:
+    """Why one unit's counts break the policy; empty when they do not."""
+    if unit.get("replace") and not expect.get("allow_replace", False):
+        return f"{unit['unit']} would replace {unit['replace']} resources and allow_replace is off"
+    if unit.get("destroy") and not expect.get("allow_destroy", False):
+        return f"{unit['unit']} would destroy {unit['destroy']} resources and allow_destroy is off"
+    for key, wanted in ((expect.get("units") or {}).get(unit["unit"]) or {}).items():
+        if unit.get(key, 0) != wanted:
+            return f"{unit['unit']} would {key} {unit.get(key, 0)}, expected {wanted}"
+    return ""
+
+
+def check_expectations(metadata: dict, expect: dict) -> None:
+    """An automatic apply's policy: which actions it may take, and optionally exact counts."""
+    check_policy(expect)
     if metadata.get("deleted"):
         raise Refused("the plan deletes units, which an automatic apply never does: "
                       + ", ".join(metadata["deleted"]))
     units = {u["unit"]: u for u in metadata.get("units", [])}
     for unit in units.values():
-        if unit.get("replace") and not expect.get("allow_replace", False):
-            raise Refused(f"{unit['unit']} would replace {unit['replace']} resources and allow_replace is off")
-        if unit.get("destroy") and not expect.get("allow_destroy", False):
-            raise Refused(f"{unit['unit']} would destroy {unit['destroy']} resources and allow_destroy is off")
-    for name, counts in (expect.get("units") or {}).items():
+        violation = unit_violation(unit, expect)
+        if violation:
+            raise Refused(violation)
+    for name in expect.get("units") or {}:
         if name not in units:
             raise Refused(f"expected unit {name} was not planned")
-        for key, wanted in counts.items():
-            if key not in COUNT_KEYS:
-                raise Refused(f"expect.units.{name} has unknown count {key}")
-            if units[name].get(key, 0) != wanted:
-                raise Refused(f"{name} would {key} {units[name].get(key, 0)}, expected {wanted}")
     if expect.get("require_changes") and not metadata.get("has_changes"):
         raise Refused("the plan changes nothing and require_changes is on")
 
@@ -182,6 +200,104 @@ def run_clean(root: Path, units: list[dict]) -> None:
         raise Refused("still not converged after the apply: " + ", ".join(dirty))
 
 
+def counts_of(found: list[dict[str, str]]) -> dict[str, int]:
+    actions = [r["action"] for r in found]
+    return {"add": actions.count("create"), "change": actions.count("update"),
+            "replace": actions.count("replace"), "destroy": actions.count("delete")}
+
+
+def parse_dependencies(listing: str, wanted: list[str]) -> dict[str, set[str]]:
+    """Each wanted unit's dependencies among the wanted units, from `terragrunt list --long --dependencies`."""
+    chosen = set(wanted)
+    found: dict[str, set[str]] = {unit: set() for unit in wanted}
+    for line in listing.splitlines()[1:]:
+        fields = line.split(None, 2)
+        if len(fields) < 2 or fields[0] != "unit" or fields[1] not in chosen:
+            continue
+        deps = [d.strip() for d in (fields[2] if len(fields) > 2 else "").split(",") if d.strip()]
+        found[fields[1]] = {d for d in deps if d in chosen}
+    return found
+
+
+def levels(order: list[str], deps: dict[str, set[str]]) -> list[list[str]]:
+    """Groups that can run together: a unit's level is one past its deepest dependency's."""
+    depth: dict[str, int] = {}
+
+    def of(unit: str, seen: frozenset = frozenset()) -> int:
+        if unit in seen:
+            raise Refused(f"dependency cycle through {unit}")
+        if unit not in depth:
+            depth[unit] = 1 + max((of(d, seen | {unit}) for d in deps.get(unit, ())), default=-1)
+        return depth[unit]
+
+    grouped: dict[int, list[str]] = {}
+    for unit in order:
+        grouped.setdefault(of(unit), []).append(unit)
+    return [grouped[level] for level in sorted(grouped)]
+
+
+_PRINT = threading.Lock()
+
+
+def streamed(unit: str, cwd: Path, *args: str) -> int:
+    """terragrunt run in one unit, its output prefixed so parallel units stay readable."""
+    process = subprocess.Popen(["terragrunt", "run", "--non-interactive", "--", *args], cwd=cwd,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    assert process.stdout is not None
+    for line in process.stdout:
+        with _PRINT:
+            print(f"[{unit}] {line}", end="", flush=True)
+    return process.wait()
+
+
+def fresh_unit(root: Path, unit: str, expect: dict, engine: str) -> dict:
+    """Plan one unit now, check the plan against the policy, then apply exactly that plan."""
+    unit_dir = root / unit
+    if streamed(unit, unit_dir, "plan", "-input=false", "-out=tfplan-fresh") != 0:
+        return {"unit": unit, "outcome": "plan failed"}
+    plan_file = find_newest(unit_dir, "tfplan-fresh")
+    if plan_file is None:
+        return {"unit": unit, "outcome": "left no plan"}
+    shown = subprocess.run([engine, "show", "-json", plan_file.name], cwd=plan_file.parent,
+                           capture_output=True, text=True, check=True)
+    row = {"unit": unit, **counts_of(resources(json.loads(shown.stdout)))}
+    violation = unit_violation(row, expect)
+    if violation:
+        return {**row, "outcome": "refused", "reason": violation}
+    if not any(row[key] for key in COUNT_KEYS):
+        return {**row, "outcome": "unchanged"}
+    if streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve())) != 0:
+        return {**row, "outcome": "apply failed"}
+    return {**row, "outcome": "applied"}
+
+
+def run_fresh(root: Path, order: list[str], expect: dict, engine: str, parallelism: int) -> list[dict]:
+    """Level by level in dependency order; a level that fails anywhere is the last one run."""
+    check_policy(expect)
+    listing = subprocess.run(["terragrunt", "list", "--long", "--dependencies", "--queue-construct-as", "apply"],
+                             cwd=root.resolve(), capture_output=True, text=True, check=True).stdout
+    rows: list[dict] = []
+    for group in levels(order, parse_dependencies(listing, order)):
+        with ThreadPoolExecutor(max_workers=max(1, parallelism)) as pool:
+            done = list(pool.map(lambda unit: fresh_unit(root, unit, expect, engine), group))
+        rows.extend(done)
+        if any(row["outcome"] not in ("applied", "unchanged") for row in done):
+            break
+    return rows
+
+
+def fresh_report(rows: list[dict], order: list[str]) -> str:
+    lines = ["### Fresh apply", "", "| Unit | Add | Change | Replace | Destroy | Outcome |", "|---|---|---|---|---|---|"]
+    for row in rows:
+        counts = " | ".join(str(row.get(key, "")) for key in COUNT_KEYS)
+        lines.append(f"| `{row['unit']}` | {counts} | {row.get('reason') or row['outcome']} |")
+    reached = {row["unit"] for row in rows}
+    for unit in order:
+        if unit not in reached:
+            lines.append(f"| `{unit}` | | | | | not reached |")
+    return "\n".join(lines) + "\n"
+
+
 def write_outputs(**values: object) -> None:
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
@@ -210,8 +326,10 @@ def main(argv: list[str] | None = None) -> int:
     plans.add_argument("--artifact-json", default="")
     plans.add_argument("--expect-json", default="")
     run = sub.add_parser("run")
-    run.add_argument("--phase", choices=["check", "apply", "clean"], required=True)
-    run.add_argument("--metadata", required=True)
+    run.add_argument("--phase", choices=["check", "apply", "clean", "fresh"], required=True)
+    run.add_argument("--metadata", default="")
+    run.add_argument("--expect-json", default="")
+    run.add_argument("--parallelism", type=int, default=4)
     run.add_argument("--units", default="", help="This job's units, one per line; empty means all")
     run.add_argument("--working-directory", default=".")
     run.add_argument("--plans-dir", default="")
@@ -225,6 +343,31 @@ def main(argv: list[str] | None = None) -> int:
             print(f"@{marker['actor']} approved artifact {marker['artifact_id']} of PR #{marker['pr']}")
             write_outputs(marker=json.dumps(marker, separators=(",", ":")), artifact_id=marker["artifact_id"],
                           plan_run_id=marker["plan_run_id"], commit=marker["commit"], issue=marker["issue"])
+            return 0
+        if args.command == "run" and args.phase == "fresh":
+            order = [line.strip() for line in args.units.splitlines() if line.strip()]
+            expect = json.loads(args.expect_json or "{}")
+            rows = run_fresh(Path(args.working_directory), order, expect, args.engine, args.parallelism)
+            report = fresh_report(rows, order)
+            print(report, end="")
+            if os.environ.get("GITHUB_STEP_SUMMARY"):
+                with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+                    out.write(report)
+            applied = [row["unit"] for row in rows if row["outcome"] == "applied"]
+            write_outputs(changes=json.dumps(rows, separators=(",", ":")))
+            if os.environ.get("GITHUB_OUTPUT"):
+                with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                    out.write("applied<<APPLY_UNITS_EOF\n" + "".join(u + "\n" for u in applied) + "APPLY_UNITS_EOF\n")
+            stopped = [row for row in rows if row["outcome"] not in ("applied", "unchanged")]
+            if stopped:
+                raise Refused("; ".join(f"{row['unit']}: {row.get('reason') or row['outcome']}" for row in stopped)
+                              + ". Units after these were not reached")
+            if expect.get("require_changes") and not applied:
+                raise Refused("nothing changed and require_changes is on")
+            return 0
+        if args.command == "run" and args.phase == "clean" and not args.metadata:
+            run_clean(Path(args.working_directory),
+                      [{"unit": line.strip()} for line in args.units.splitlines() if line.strip()])
             return 0
         metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
         if args.command == "plans":

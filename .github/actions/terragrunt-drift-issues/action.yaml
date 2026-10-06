@@ -1,0 +1,55 @@
+---
+name: Terragrunt drift issues
+description: >
+  Keep one [drift] <unit> issue per unit whose infrastructure no longer matches its code,
+  from the plan workflow's counts and resource addresses; close it once the unit is clean.
+
+inputs:
+  changes:
+    description: The plan workflow's changes output
+    required: true
+  counts_dir:
+    description: Directory holding the plan jobs' <profile>.resources.json files
+    required: false
+    default: ""
+  label:
+    description: Label of the drift issues
+    required: false
+    default: terragrunt-drift
+  open_issues:
+    description: Open, update and close issues; false only reports
+    required: false
+    default: "true"
+  run_url:
+    description: Link to this run, for the issues
+    required: false
+    default: ""
+
+outputs:
+  drifted:
+    description: Units that would change, one per line
+    value: ${{ steps.drift.outputs.drifted }}
+  has_drift:
+    description: true when any unit drifted
+    value: ${{ steps.drift.outputs.has_drift }}
+  failed:
+    description: true when a unit could not be planned
+    value: ${{ steps.drift.outputs.failed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Reconcile the drift issues
+      id: drift
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CHANGES: ${{ inputs.changes }}
+        COUNTS_DIR: ${{ inputs.counts_dir }}
+        LABEL: ${{ inputs.label }}
+        OPEN_ISSUES: ${{ inputs.open_issues }}
+        RUN_URL: ${{ inputs.run_url }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/drift.py" --changes "${CHANGES}" --counts-dir "${COUNTS_DIR}" \
+          --label "${LABEL}" --open-issues "${OPEN_ISSUES}" --run-url "${RUN_URL}"

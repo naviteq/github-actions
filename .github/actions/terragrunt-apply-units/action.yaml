@@ -9,7 +9,7 @@ inputs:
     description: approval, plans or run
     required: true
   phase:
-    description: For run, check, apply or clean
+    description: For run, check, apply, clean, or fresh to plan, check and apply each unit with no saved plan
     required: false
     default: ""
   approvers:
@@ -25,7 +25,7 @@ inputs:
     required: false
     default: terragrunt-apply
   metadata:
-    description: For plans and run, path of the downloaded metadata.json
+    description: For plans and run, path of the downloaded metadata.json; fresh needs none
     required: false
     default: ""
   commit_tree:
@@ -41,7 +41,7 @@ inputs:
     required: false
     default: ""
   expect_json:
-    description: For plans without a marker, the expectations policy as JSON
+    description: For plans without a marker, and for run fresh, the expectations policy as JSON
     required: false
     default: ""
   units:
@@ -57,9 +57,13 @@ inputs:
     required: false
     default: ""
   engine:
-    description: For run check, the engine binary that reads plans
+    description: For run check and fresh, the engine binary that reads plans
     required: false
     default: tofu
+  parallelism:
+    description: For run fresh, how many units of one dependency level run at once
+    required: false
+    default: "4"
 
 outputs:
   marker:
@@ -83,6 +87,12 @@ outputs:
   has_changes:
     description: true when any unit would change anything
     value: ${{ steps.units.outputs.has_changes }}
+  changes:
+    description: For run fresh, JSON list of each reached unit's counts and outcome
+    value: ${{ steps.units.outputs.changes }}
+  applied:
+    description: For run fresh, the units applied, one per line
+    value: ${{ steps.units.outputs.applied }}
   reason:
     description: Why the apply was refused; empty when it was not
     value: ${{ steps.units.outputs.reason }}
@@ -109,6 +119,7 @@ runs:
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
         PLANS_DIR: ${{ inputs.plans_dir }}
         ENGINE: ${{ inputs.engine }}
+        PARALLELISM: ${{ inputs.parallelism }}
       run: |
         set -euo pipefail
         script="${ACTION_PATH}/apply_units.py"
@@ -120,6 +131,7 @@ runs:
               --marker-json "${MARKER_JSON}" --artifact-json "${ARTIFACT_JSON}" --expect-json "${EXPECT_JSON}" ;;
           run)
             python3 "${script}" run --phase "${PHASE}" --metadata "${METADATA}" --units "${UNITS}" \
-              --working-directory "${WORKING_DIRECTORY}" --plans-dir "${PLANS_DIR}" --engine "${ENGINE}" ;;
+              --working-directory "${WORKING_DIRECTORY}" --plans-dir "${PLANS_DIR}" --engine "${ENGINE}" \
+              --expect-json "${EXPECT_JSON}" --parallelism "${PARALLELISM}" ;;
           *) echo "::error title=Unknown command::${COMMAND}"; exit 1 ;;
         esac

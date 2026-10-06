@@ -1,0 +1,177 @@
+---
+# Plans every unit on a schedule and keeps one [drift] <unit> issue per unit whose
+# infrastructure no longer matches its code. → docs/terragrunt-drift.md
+name: Terragrunt drift
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      working_directory:
+        description: Directory the units live under, relative to the repository root
+        required: false
+        type: string
+        default: "."
+      engine:
+        description: Engine Terragrunt drives, tofu or terraform
+        required: false
+        type: string
+        default: tofu
+      terragrunt_version:
+        description: Terragrunt version; read from the repository's .terragrunt-version when empty
+        required: false
+        type: string
+        default: ""
+      opentofu_version:
+        description: OpenTofu version; read from the repository's .opentofu-version when empty
+        required: false
+        type: string
+        default: ""
+      terraform_version:
+        description: Terraform version for engine terraform; read from the repository's .terraform-version when empty
+        required: false
+        type: string
+        default: ""
+      filter:
+        description: Terragrunt --filter expression narrowing the units checked; empty checks every unit
+        required: false
+        type: string
+        default: ""
+      parallelism:
+        description: How many units Terragrunt plans at once
+        required: false
+        type: number
+        default: 4
+      github_environment:
+        description: GitHub Environment the plan jobs run in, for a role whose trust policy matches on it; empty for none
+        required: false
+        type: string
+        default: ""
+      aws_region:
+        description: Assume the aws_iam_role secret in this region; the default for a profile that names no region
+        required: false
+        type: string
+        default: ""
+      profiles:
+        description: YAML credential profiles, as in terragrunt-plan, naming the read-only roles
+        required: false
+        type: string
+        default: ""
+      env_vars:
+        description: Non-secret KEY=VALUE lines exported before planning
+        required: false
+        type: string
+        default: ""
+      provider_cache:
+        description: Restore the provider cache the default branch saved
+        required: false
+        type: boolean
+        default: true
+      provider_cache_registries:
+        description: Extra provider registry hostnames to cache, comma-separated, besides the two public ones
+        required: false
+        type: string
+        default: ""
+      label:
+        description: Label of the drift issues
+        required: false
+        type: string
+        default: terragrunt-drift
+      open_issues:
+        description: Open, update and close drift issues; false only reports
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      naviteq_github_app_id:
+        description: GitHub App id; with the key, mints a read-only token so private git sources resolve
+        required: false
+      naviteq_github_app_key:
+        description: Private key of that GitHub App
+        required: false
+      runestra_client_id:
+        description: Runestra registry client id, exchanged for a registry token
+        required: false
+      runestra_client_secret:
+        description: Runestra registry client secret
+        required: false
+      aws_iam_role:
+        description: AWS role assumed through OIDC when aws_region is set; read-only is enough
+        required: false
+      terragrunt_extra_env:
+        description: KEY=VALUE lines exported with masked values; with profiles, a job gets only the keys its profile lists
+        required: false
+    outputs:
+      drifted:
+        description: Units whose plan would change something, one per line
+        value: ${{ jobs.issues.outputs.drifted }}
+      has_drift:
+        description: true when any unit drifted
+        value: ${{ jobs.issues.outputs.has_drift }}
+
+permissions: {}
+
+jobs:
+  plan:
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@fc2e977494a91d30ce65b3416592e90bd7757bc1
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      runner: ${{ inputs.runner }}
+      working_directory: ${{ inputs.working_directory }}
+      engine: ${{ inputs.engine }}
+      terragrunt_version: ${{ inputs.terragrunt_version }}
+      opentofu_version: ${{ inputs.opentofu_version }}
+      terraform_version: ${{ inputs.terraform_version }}
+      filter: ${{ inputs.filter }}
+      filter_affected: false
+      parallelism: ${{ inputs.parallelism }}
+      github_environment: ${{ inputs.github_environment }}
+      aws_region: ${{ inputs.aws_region }}
+      profiles: ${{ inputs.profiles }}
+      env_vars: ${{ inputs.env_vars }}
+      # Nothing is kept for an apply: a drift plan is a report, not a change to approve.
+      plan_recipient: ""
+      pr_comment: false
+      artifact_name: terragrunt-drift-${{ github.run_id }}-${{ github.run_attempt }}
+      provider_cache: ${{ inputs.provider_cache }}
+      provider_cache_registries: ${{ inputs.provider_cache_registries }}
+    secrets: inherit
+
+  # Also after a failed plan job: units it did plan still get their issues reconciled.
+  issues:
+    name: Reconcile the drift issues
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.changes != '' }}
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      drifted: ${{ steps.drift.outputs.drifted }}
+      has_drift: ${{ steps.drift.outputs.has_drift }}
+    steps:
+      - name: Download the changed resource addresses
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: terragrunt-drift-${{ github.run_id }}-${{ github.run_attempt }}-counts-*
+          path: counts
+          merge-multiple: true
+
+      - name: Reconcile the drift issues
+        id: drift
+        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@fc2e977494a91d30ce65b3416592e90bd7757bc1
+        with:
+          changes: ${{ needs.plan.outputs.changes }}
+          counts_dir: counts
+          label: ${{ inputs.label }}
+          open_issues: ${{ inputs.open_issues }}
+          run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
