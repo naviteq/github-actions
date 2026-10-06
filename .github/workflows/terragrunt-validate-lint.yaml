@@ -114,6 +114,9 @@ on:
       tflint:
         description: Outcome of tflint; skipped unless the tflint input is set
         value: ${{ jobs.validate-lint.outputs.tflint }}
+      units:
+        description: The units input validation covered, in run order, one per line; empty when it is off
+        value: ${{ jobs.validate-lint.outputs.units }}
 
 permissions: {}
 
@@ -136,6 +139,7 @@ jobs:
       stack_generate: ${{ steps.stack-generate.outcome }}
       hcl_validate: ${{ steps.hcl-validate.outcome }}
       tflint: ${{ steps.tflint.outcome }}
+      units: ${{ steps.units.outputs.list }}
     steps:
       - name: Reject contradictory inputs
         if: inputs.filter_affected && inputs.filter != ''
@@ -171,7 +175,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@4381e690cd163fd97611888ed0c53346390831a1
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@dc2c4763d2ab444b0b9b52ea9eff7a06c418ac76
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -198,7 +202,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@4381e690cd163fd97611888ed0c53346390831a1
+        uses: naviteq/github-actions/.github/actions/registry-token@dc2c4763d2ab444b0b9b52ea9eff7a06c418ac76
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -271,11 +275,9 @@ jobs:
 
       # A git range searches the whole repository, so it is intersected with
       # working_directory. → docs/terragrunt-validate-lint.md
-      - name: Validate the inputs
-        id: hcl-validate
+      - name: Resolve the unit filter
+        id: filter
         if: inputs.validate_inputs
-        continue-on-error: ${{ inputs.allow_failure }}
-        working-directory: ${{ inputs.working_directory }}
         env:
           FILTER: ${{ inputs.filter }}
           FILTER_AFFECTED: ${{ inputs.filter_affected }}
@@ -289,7 +291,78 @@ jobs:
             SCOPE="${SCOPE%/}"
             [ -z "${SCOPE}" ] || [ "${SCOPE}" = "." ] || FILTER="./${SCOPE}/** | ${FILTER}"
           fi
-          args=(hcl validate --inputs --all --non-interactive)
+          echo "value=${FILTER}" >> "$GITHUB_OUTPUT"
+
+      # A git range also returns the units a change deletes, which only exist in the
+      # base revision; they are listed and left out. → docs/terragrunt-validate-lint.md
+      - name: Select the units and show their run order
+        id: units
+        if: inputs.validate_inputs
+        continue-on-error: true
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          FILTER: ${{ steps.filter.outputs.value }}
+        run: |
+          set -euo pipefail
+          args=(list --long --dependencies --dag --non-interactive)
           [ -z "${FILTER}" ] || args+=(--filter "${FILTER}")
+          table="$(terragrunt "${args[@]}")"
+          units=""
+          deleted=""
+          while read -r kind path _; do
+            [ "${kind}" = "unit" ] || continue
+            if [ -d "${path}" ]; then units+="${path}"$'\n'; else deleted+="${path}"$'\n'; fi
+          done < <(printf '%s\n' "${table}" | tail -n +2)
+          {
+            echo "### Units to validate, in run order"
+            echo
+            echo "Filter: \`${FILTER:-none}\`"
+            echo
+            if [ -z "${units}" ]; then
+              echo "The filter selects no units."
+            else
+              fence='```'
+              printf '%stext\n%s\n%s\n' "${fence}" "${table}" "${fence}"
+            fi
+            if [ -n "${deleted}" ]; then
+              echo
+              echo "Deleted by this change, so not validated:"
+              while read -r path; do
+                [ -z "${path}" ] || echo "- \`${path}\`"
+              done <<< "${deleted}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "${table:-The filter selects no units.}"
+          [ -z "${deleted}" ] || echo "Deleted by this change, not validated: $(printf '%s' "${deleted}" | tr '\n' ' ')"
+          {
+            echo "list<<UNITS_EOF"
+            printf '%s' "${units}"
+            echo "UNITS_EOF"
+            echo "selected=true"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate the inputs
+        id: hcl-validate
+        if: inputs.validate_inputs
+        continue-on-error: ${{ inputs.allow_failure }}
+        working-directory: ${{ inputs.working_directory }}
+        env:
+          FILTER: ${{ steps.filter.outputs.value }}
+          SELECTED: ${{ steps.units.outputs.selected }}
+          UNITS: ${{ steps.units.outputs.list }}
+        run: |
+          set -euo pipefail
+          args=(hcl validate --inputs --all --non-interactive)
+          if [ -n "${FILTER}" ] && [ "${SELECTED}" = "true" ]; then
+            if [ -z "${UNITS}" ]; then
+              echo "::notice title=Nothing to validate::The filter selects no unit that exists in this revision."
+              exit 0
+            fi
+            while read -r unit; do
+              [ -z "${unit}" ] || args+=(--filter "./${unit}")
+            done <<< "${UNITS}"
+          elif [ -n "${FILTER}" ]; then
+            args+=(--filter "${FILTER}")
+          fi
           terragrunt "${args[@]}"
 
