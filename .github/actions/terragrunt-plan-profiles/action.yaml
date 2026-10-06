@@ -1,0 +1,57 @@
+---
+name: Terragrunt plan profiles
+description: >
+  Split the selected Terragrunt units into credential profiles by path glob, one plan
+  leg per profile, and fail on any unit no profile matches.
+
+inputs:
+  profiles:
+    description: YAML list of profiles (name, paths, aws_role, aws_region, env, skip); empty puts every unit in one default leg
+    required: false
+    default: ""
+  units:
+    description: Selected units, one per line, as terragrunt-select-units reports them
+    required: false
+    default: ""
+  deleted:
+    description: Deleted units, one per line
+    required: false
+    default: ""
+  aws_region:
+    description: Region for a profile that names none
+    required: false
+    default: ""
+
+outputs:
+  legs:
+    description: JSON list of plan legs (name, units, deleted, aws_role, aws_region, env, env_all)
+    value: ${{ steps.match.outputs.legs }}
+  skipped:
+    description: One "unit<TAB>profile<TAB>reason" line per unit a skip profile left out
+    value: ${{ steps.match.outputs.skipped }}
+
+runs:
+  using: composite
+  steps:
+    - name: Match the units to credential profiles
+      id: match
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PROFILES: ${{ inputs.profiles }}
+        UNITS: ${{ inputs.units }}
+        DELETED: ${{ inputs.deleted }}
+        AWS_REGION_DEFAULT: ${{ inputs.aws_region }}
+      run: |
+        set -euo pipefail
+        args=(--units "${UNITS}" --deleted "${DELETED}" --aws-region "${AWS_REGION_DEFAULT}")
+        if [ -n "${PROFILES//[[:space:]]/}" ]; then
+          if ! command -v yq >/dev/null; then
+            echo "::error title=yq not found::profiles is YAML and this runner has no yq to read it."
+            exit 1
+          fi
+          json="${RUNNER_TEMP}/terragrunt-plan-profiles.json"
+          yq -o=json '.' <<< "${PROFILES}" > "${json}"
+          args+=(--profiles-json "${json}")
+        fi
+        python3 "${ACTION_PATH}/match_profiles.py" "${args[@]}"

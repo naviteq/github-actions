@@ -62,7 +62,12 @@ on:
         type: string
         default: ""
       aws_region:
-        description: Assume the aws_iam_role secret in this region
+        description: Assume the aws_iam_role secret in this region; the default for a profile that names no region
+        required: false
+        type: string
+        default: ""
+      profiles:
+        description: YAML list of credential profiles (name, paths, aws_role, aws_region, env, skip), one plan job each; empty plans everything under aws_iam_role
         required: false
         type: string
         default: ""
@@ -110,33 +115,36 @@ on:
         description: Runestra registry client secret
         required: false
       aws_iam_role:
-        description: AWS role assumed through OIDC when aws_region is set
+        description: AWS role assumed through OIDC when aws_region is set; selects the units, and plans those of a profile with no aws_role
         required: false
       terragrunt_extra_env:
-        description: KEY=VALUE lines exported with masked values, e.g. TF_TOKEN_<host> for another registry
+        description: KEY=VALUE lines exported with masked values, e.g. TF_TOKEN_<host>; with profiles, a plan job gets only the keys its profile lists
         required: false
     outputs:
       units:
         description: The units planned, in run order, one per line
-        value: ${{ jobs.plan.outputs.units }}
+        value: ${{ jobs.select.outputs.units }}
       deleted:
         description: Units the change deletes, planned for destruction, one per line
-        value: ${{ jobs.plan.outputs.deleted }}
+        value: ${{ jobs.select.outputs.deleted }}
+      skipped:
+        description: Units a skip profile left out, one "unit<TAB>profile<TAB>reason" line each
+        value: ${{ jobs.select.outputs.skipped }}
       changes:
-        description: JSON list of per-unit counts (unit, add, change, replace, destroy, deleted)
-        value: ${{ jobs.plan.outputs.changes }}
+        description: JSON list of per-unit counts (unit, profile, add, change, replace, destroy, deleted)
+        value: ${{ jobs.result.outputs.changes }}
       has_changes:
         description: true when any unit would change anything
-        value: ${{ jobs.plan.outputs.has_changes }}
+        value: ${{ jobs.result.outputs.has_changes }}
       artifact:
         description: Name of the uploaded encrypted-plan artifact; empty when nothing was uploaded
-        value: ${{ jobs.plan.outputs.artifact }}
+        value: ${{ jobs.result.outputs.artifact }}
 
 permissions: {}
 
 jobs:
-  plan:
-    name: Plan
+  select:
+    name: Select
     runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
     # The name lands in the OIDC subject, which a role's trust policy may match on.
     environment: ${{ inputs.github_environment }}
@@ -148,18 +156,27 @@ jobs:
       HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
       # CAS resolves git refs over SSH and never sees the insteadOf rewrite. → docs/validate-oke.md
       TG_NO_CAS: "1"
+      WARM_CACHE: >-
+        ${{ inputs.provider_cache && github.event_name == 'push'
+        && github.ref_name == github.event.repository.default_branch }}
     outputs:
       units: ${{ steps.units.outputs.units }}
       deleted: ${{ steps.units.outputs.deleted }}
-      changes: ${{ steps.report.outputs.changes }}
-      has_changes: ${{ steps.report.outputs.has_changes }}
-      artifact: ${{ steps.upload.outcome == 'success' && steps.artifact.outputs.name || '' }}
+      legs: ${{ steps.profiles.outputs.legs }}
+      skipped: ${{ steps.profiles.outputs.skipped }}
+      artifact: ${{ steps.artifact.outputs.name }}
     steps:
       - name: Reject contradictory inputs
         if: inputs.filter_affected && inputs.filter != ''
         run: |
           echo "::error title=Contradictory inputs::filter and filter_affected are both set; Terragrunt would union them. Pick one."
           exit 1
+
+      - name: Name the artifacts
+        id: artifact
+        env:
+          NAME: ${{ inputs.artifact_name || format('terragrunt-plan-{0}', github.sha) }}
+        run: echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -189,7 +206,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@1602c960fc5d01e11f3e0a4826d1dd7b9df110f0
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@9c7d21f552664bbf481c1dcce42aff066dfda068
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -206,6 +223,7 @@ jobs:
             exit 1
           fi
 
+      # Selection parses every unit, and get_aws_account_id() there needs some identity.
       - name: Configure AWS credentials
         if: inputs.aws_region != ''
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -216,27 +234,195 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@1602c960fc5d01e11f3e0a4826d1dd7b9df110f0
+        uses: naviteq/github-actions/.github/actions/registry-token@9c7d21f552664bbf481c1dcce42aff066dfda068
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
-      # KEY=VALUE lines for get_env() and other registries. → docs/terragrunt-validate-lint.md
-      - name: Export env_vars and TERRAGRUNT_EXTRA_ENV
+      # Only env_vars: no unit runs here, so no provider token is needed.
+      - name: Export env_vars
+        env:
+          PLAIN_ENV: ${{ inputs.env_vars }}
+        run: |
+          set -euo pipefail
+          while IFS='=' read -r key value; do
+            case "${key}" in "" | \#*) continue ;; esac
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done <<< "${PLAIN_ENV}"
+
+      - name: Turn on the provider cache
+        if: env.WARM_CACHE == 'true'
+        env:
+          EXTRA_REGISTRIES: ${{ inputs.provider_cache_registries }}
+        run: |
+          set -euo pipefail
+          registries="registry.terraform.io,registry.opentofu.org"
+          [ -z "${EXTRA_REGISTRIES}" ] || registries="${registries},${EXTRA_REGISTRIES}"
+          {
+            echo "TG_PROVIDER_CACHE=1"
+            echo "TG_PROVIDER_CACHE_DIR=${RUNNER_TEMP}/terragrunt-providers"
+            echo "TG_PROVIDER_CACHE_REGISTRY_NAMES=${registries}"
+          } >> "$GITHUB_ENV"
+
+      # Saved only on the default branch, so PRs share one entry. → terraform-modules ADR-0036
+      - name: Restore the provider cache
+        id: provider-cache
+        if: env.WARM_CACHE == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/terragrunt-providers
+          key: terragrunt-providers-${{ runner.os }}-${{ runner.arch }}-${{ inputs.engine }}-${{ hashFiles(format('{0}/**/.terraform.lock.hcl', inputs.working_directory)) }}
+          restore-keys: |
+            terragrunt-providers-${{ runner.os }}-${{ runner.arch }}-${{ inputs.engine }}-
+
+      - name: Generate the stacks
+        working-directory: ${{ inputs.working_directory }}
+        run: terragrunt stack generate --non-interactive
+
+      - name: Select the units and show their run order
+        id: units
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@9c7d21f552664bbf481c1dcce42aff066dfda068
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          filter: ${{ inputs.filter }}
+          filter_affected: ${{ inputs.filter_affected }}
+          with_dependents: ${{ inputs.with_dependents }}
+          verb: plan
+          participle: planned
+          queue_as: plan
+
+      - name: Match the units to credential profiles
+        id: profiles
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@9c7d21f552664bbf481c1dcce42aff066dfda068
+        with:
+          profiles: ${{ inputs.profiles }}
+          units: ${{ steps.units.outputs.units }}
+          deleted: ${{ steps.units.outputs.deleted }}
+          aws_region: ${{ inputs.aws_region }}
+
+      # A push to the default branch selects nothing to plan, so warm every provider.
+      - name: Warm the provider cache
+        if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
+        working-directory: ${{ inputs.working_directory }}
+        run: terragrunt run --all --non-interactive -- init -backend=false -input=false
+
+      - name: Save the provider cache
+        if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/terragrunt-providers
+          key: ${{ steps.provider-cache.outputs.cache-primary-key }}
+
+  plan:
+    name: Plan ${{ matrix.leg.name }}
+    needs: select
+    if: needs.select.outputs.legs != '' && needs.select.outputs.legs != '[]'
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    environment: ${{ inputs.github_environment }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.select.outputs.legs) }}
+    env:
+      HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
+      HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
+      TG_NO_CAS: "1"
+      LEG: ${{ matrix.leg.name }}
+      ARTIFACT: ${{ needs.select.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Deleted units are planned through the git range, which needs the base branch.
+          fetch-depth: ${{ matrix.leg.deleted != '' && '0' || '1' }}
+
+      - name: Generate a GitHub App token for the private git sources
+        id: app-token
+        if: env.HAS_GITHUB_APP == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.naviteq_github_app_id }}
+          private-key: ${{ secrets.naviteq_github_app_key }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            infrastructure-catalog
+            terraform-modules
+          permission-contents: read
+
+      - name: Rewrite git@github.com to an authenticated https remote
+        if: env.HAS_GITHUB_APP == 'true'
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          for form in "git@github.com:" "ssh://git@github.com/"; do
+            git config --global --add url."https://x-access-token:${TOKEN}@github.com/".insteadOf "${form}"
+          done
+
+      - name: Install Terragrunt and the engine
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@9c7d21f552664bbf481c1dcce42aff066dfda068
+        with:
+          engine: ${{ inputs.engine }}
+          terragrunt_version: ${{ inputs.terragrunt_version }}
+          opentofu_version: ${{ inputs.opentofu_version }}
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Require the profile's AWS role
+        if: matrix.leg.aws_region != ''
+        env:
+          AWS_IAM_ROLE: ${{ matrix.leg.aws_role || secrets.aws_iam_role }}
+        run: |
+          if [ -z "${AWS_IAM_ROLE}" ]; then
+            echo "::error title=No AWS role::profile ${LEG} names no aws_role and the aws_iam_role secret is empty."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        if: matrix.leg.aws_region != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ matrix.leg.aws_role || secrets.aws_iam_role }}
+          role-session-name: gh-terragrunt-plan-${{ github.run_id }}-${{ matrix.leg.name }}
+          aws-region: ${{ matrix.leg.aws_region }}
+
+      - name: Exchange the registry client credentials for a token
+        if: env.HAS_REGISTRY_CLIENT == 'true'
+        uses: naviteq/github-actions/.github/actions/registry-token@9c7d21f552664bbf481c1dcce42aff066dfda068
+        with:
+          client_id: ${{ secrets.runestra_client_id }}
+          client_secret: ${{ secrets.runestra_client_secret }}
+
+      # A profile sees only the terragrunt_extra_env keys it lists. → docs/terragrunt-plan.md
+      - name: Export env_vars and the profile's TERRAGRUNT_EXTRA_ENV keys
         env:
           PLAIN_ENV: ${{ inputs.env_vars }}
           SECRET_ENV: ${{ secrets.terragrunt_extra_env }}
+          ALLOWED: ${{ join(matrix.leg.env, ' ') }}
+          ENV_ALL: ${{ matrix.leg.env_all }}
         run: |
           set -euo pipefail
-          export_pairs() {
-            while IFS='=' read -r key value; do
-              case "${key}" in "" | \#*) continue ;; esac
-              if [ "$1" = "mask" ] && [ -n "${value}" ]; then echo "::add-mask::${value}"; fi
-              echo "${key}=${value}" >> "$GITHUB_ENV"
-            done <<< "$2"
-          }
-          export_pairs plain "${PLAIN_ENV}"
-          export_pairs mask "${SECRET_ENV}"
+          echo "TERRAGRUNT_PLAN_PROFILE=${LEG}" >> "$GITHUB_ENV"
+          while IFS='=' read -r key value; do
+            case "${key}" in "" | \#*) continue ;; esac
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done <<< "${PLAIN_ENV}"
+          found=" "
+          while IFS='=' read -r key value; do
+            case "${key}" in "" | \#*) continue ;; esac
+            if [ "${ENV_ALL}" != "true" ] && [[ " ${ALLOWED} " != *" ${key} "* ]]; then continue; fi
+            if [ -n "${value}" ]; then echo "::add-mask::${value}"; fi
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            # A caller whose secret is unset passes KEY= with nothing after it.
+            [ -z "${value}" ] || found+="${key} "
+          done <<< "${SECRET_ENV}"
+          for key in ${ALLOWED}; do
+            if [[ "${found}" != *" ${key} "* ]]; then
+              echo "::error title=Missing secret key::profile ${LEG} lists ${key}, which terragrunt_extra_env does not carry or leaves empty."
+              exit 1
+            fi
+          done
 
       - name: Turn on the provider cache
         if: inputs.provider_cache
@@ -252,10 +438,7 @@ jobs:
             echo "TG_PROVIDER_CACHE_REGISTRY_NAMES=${registries}"
           } >> "$GITHUB_ENV"
 
-      # Restored everywhere, saved only on the default branch, so PRs share one entry.
-      # → terraform-modules ADR-0036, docs/terragrunt-plan.md
       - name: Restore the provider cache
-        id: provider-cache
         if: inputs.provider_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -268,25 +451,14 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: terragrunt stack generate --non-interactive
 
-      - name: Select the units and show their run order
-        id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@1602c960fc5d01e11f3e0a4826d1dd7b9df110f0
-        with:
-          working_directory: ${{ inputs.working_directory }}
-          filter: ${{ inputs.filter }}
-          filter_affected: ${{ inputs.filter_affected }}
-          with_dependents: ${{ inputs.with_dependents }}
-          verb: plan
-          participle: planned
-          queue_as: plan
-
       # Explicit paths, not the git range: a range runs units in a temporary worktree,
       # where their plan files are lost. → docs/terragrunt-plan.md
       - name: Plan the units
-        if: steps.units.outputs.units != ''
+        id: plan
+        if: matrix.leg.units != ''
         working-directory: ${{ inputs.working_directory }}
         env:
-          UNITS: ${{ steps.units.outputs.units }}
+          UNITS: ${{ matrix.leg.units }}
           PARALLELISM: ${{ inputs.parallelism }}
         run: |
           set -euo pipefail
@@ -297,10 +469,10 @@ jobs:
           terragrunt "${args[@]}" -- plan -lock=false -input=false -out=tfplan
 
       - name: Plan the destruction of deleted units
-        if: steps.units.outputs.deleted != ''
+        if: matrix.leg.deleted != ''
         working-directory: ${{ inputs.working_directory }}
         env:
-          DELETED: ${{ steps.units.outputs.deleted }}
+          DELETED: ${{ matrix.leg.deleted }}
           BASE: ${{ github.base_ref || github.event.repository.default_branch }}
           SCOPE: ${{ inputs.working_directory }}
         run: |
@@ -317,25 +489,37 @@ jobs:
       # Also after a failed plan, so the summary shows which units planned and which did not.
       - name: Count the planned changes
         id: report
-        if: ${{ !cancelled() && steps.units.outcome == 'success' }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@1602c960fc5d01e11f3e0a4826d1dd7b9df110f0
+        if: ${{ !cancelled() }}
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@9c7d21f552664bbf481c1dcce42aff066dfda068
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
-          units: ${{ steps.units.outputs.units }}
-          deleted: ${{ steps.units.outputs.deleted }}
-          destroy_log: ${{ steps.units.outputs.deleted != '' && format('{0}/terragrunt-destroy-plan.log', runner.temp) || '' }}
+          units: ${{ matrix.leg.units }}
+          deleted: ${{ matrix.leg.deleted }}
+          destroy_log: ${{ matrix.leg.deleted != '' && format('{0}/terragrunt-destroy-plan.log', runner.temp) || '' }}
 
-      - name: Name the artifact
-        id: artifact
-        if: success() && inputs.plan_recipient != '' && steps.report.outputs.plans != ''
+      - name: Keep the counts for the result job
+        if: ${{ !cancelled() && steps.report.outputs.changes != '' }}
         env:
-          NAME: ${{ inputs.artifact_name || format('terragrunt-plan-{0}', github.sha) }}
-        run: echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          CHANGES: ${{ steps.report.outputs.changes }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/terragrunt-plan-counts"
+          jq --arg profile "${LEG}" 'map(. + {profile: $profile})' <<< "${CHANGES}" \
+            > "${RUNNER_TEMP}/terragrunt-plan-counts/${LEG}.json"
+
+      - name: Upload the counts
+        if: ${{ !cancelled() && steps.report.outputs.changes != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.ARTIFACT }}-counts-${{ matrix.leg.name }}
+          path: ${{ runner.temp }}/terragrunt-plan-counts
+          retention-days: 1
+          if-no-files-found: error
 
       # A pinned, checksummed release binary: a plan file carries state values in clear.
       - name: Install age
-        if: steps.artifact.outcome == 'success'
+        if: success() && inputs.plan_recipient != '' && steps.report.outputs.plans != ''
         run: |
           set -euo pipefail
           case "${RUNNER_ARCH}" in
@@ -350,7 +534,8 @@ jobs:
           echo "${RUNNER_TEMP}/age" >> "$GITHUB_PATH"
 
       - name: Encrypt the plans
-        if: steps.artifact.outcome == 'success'
+        id: encrypt
+        if: success() && inputs.plan_recipient != '' && steps.report.outputs.plans != ''
         env:
           PLANS: ${{ steps.report.outputs.plans }}
           RECIPIENT: ${{ inputs.plan_recipient }}
@@ -362,32 +547,88 @@ jobs:
             [ -n "${unit}" ] || continue
             name="${unit//\//__}.tfplan.age"
             age --encrypt --recipient "${RECIPIENT}" --output "${out}/${name}" "${file}"
-            printf '%s\t%s\n' "${unit}" "${name}" >> "${out}/manifest.tsv"
+            printf '%s\t%s\t%s\n' "${unit}" "${name}" "${LEG}" >> "${out}/manifest.${LEG}.tsv"
           done <<< "${PLANS}"
+
+      # One artifact per job; the result job merges them into the one the apply reads.
+      - name: Upload this profile's encrypted plans
+        if: steps.encrypt.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.ARTIFACT }}-plans-${{ matrix.leg.name }}
+          path: ${{ runner.temp }}/terragrunt-plans
+          retention-days: 1
+          if-no-files-found: error
+
+  result:
+    name: Result
+    needs: [select, plan]
+    if: ${{ !cancelled() && needs.select.result == 'success' }}
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions: {}
+    env:
+      ARTIFACT: ${{ needs.select.outputs.artifact }}
+    outputs:
+      changes: ${{ steps.counts.outputs.changes }}
+      has_changes: ${{ steps.counts.outputs.has_changes }}
+      artifact: ${{ steps.upload.outcome == 'success' && needs.select.outputs.artifact || '' }}
+    steps:
+      - name: Download the counts
+        if: needs.plan.result != 'skipped'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: ${{ env.ARTIFACT }}-counts-*
+          path: counts
+          merge-multiple: true
+
+      - name: Merge the counts in run order
+        id: counts
+        env:
+          UNITS: ${{ needs.select.outputs.units }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(counts/*.json)
+          changes='[]'
+          if [ "${#files[@]}" -gt 0 ]; then
+            changes="$(jq -cs --arg units "${UNITS}" '
+              ($units | split("\n") | to_entries | map({key: .value, value: .key}) | from_entries) as $pos
+              | add | sort_by($pos[.unit] // 1e9)' "${files[@]}")"
+          fi
+          has_changes="$(jq -r 'any(.[]; [.add, .change, .replace, .destroy] | map(. // 0) | add > 0)' <<< "${changes}")"
+          echo "changes=${changes}" >> "$GITHUB_OUTPUT"
+          echo "has_changes=${has_changes}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the encrypted plans
+        id: download
+        if: inputs.plan_recipient != '' && needs.plan.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: ${{ env.ARTIFACT }}-plans-*
+          path: plans
+          merge-multiple: true
+
+      - name: Join the manifests
+        id: manifest
+        if: steps.download.outcome == 'success'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          manifests=(plans/manifest.*.tsv)
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cat "${manifests[@]}" > plans/manifest.tsv
+          rm "${manifests[@]}"
+          echo "found=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload the encrypted plans
         id: upload
-        if: steps.artifact.outcome == 'success'
+        if: steps.manifest.outputs.found == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ steps.artifact.outputs.name }}
-          path: ${{ runner.temp }}/terragrunt-plans
+          name: ${{ env.ARTIFACT }}
+          path: plans
           retention-days: ${{ inputs.artifact_retention_days }}
           if-no-files-found: error
-
-      # A push to the default branch selects nothing to plan, so warm every provider.
-      - name: Warm the provider cache
-        if: >-
-          inputs.provider_cache && steps.provider-cache.outputs.cache-hit != 'true'
-          && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
-        working-directory: ${{ inputs.working_directory }}
-        run: terragrunt run --all --non-interactive -- init -backend=false -input=false
-
-      - name: Save the provider cache
-        if: >-
-          inputs.provider_cache && steps.provider-cache.outputs.cache-hit != 'true'
-          && github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/terragrunt-providers
-          key: ${{ steps.provider-cache.outputs.cache-primary-key }}
