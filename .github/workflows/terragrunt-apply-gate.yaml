@@ -118,7 +118,7 @@ jobs:
 
       - name: Find the merged pull request and its plans
         id: find
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@685b3ca6563e972674b002f7c329d4263224d116
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@d21a524349f5f3133e3a7cbed1fb2da41be6655b
         with:
           command: find
           sha: ${{ github.sha }}
@@ -138,7 +138,7 @@ jobs:
 
       - name: Open the approval issue, or say why there is none
         id: decide
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@685b3ca6563e972674b002f7c329d4263224d116
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@d21a524349f5f3133e3a7cbed1fb2da41be6655b
         with:
           command: decide
           sha: ${{ github.sha }}
@@ -167,7 +167,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@685b3ca6563e972674b002f7c329d4263224d116
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@d21a524349f5f3133e3a7cbed1fb2da41be6655b
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -176,7 +176,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@685b3ca6563e972674b002f7c329d4263224d116
+        uses: naviteq/github-actions/.github/actions/registry-token@d21a524349f5f3133e3a7cbed1fb2da41be6655b
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -190,7 +190,7 @@ jobs:
 
       - name: Warm the provider cache from the lock files
         if: steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@685b3ca6563e972674b002f7c329d4263224d116
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@d21a524349f5f3133e3a7cbed1fb2da41be6655b
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
