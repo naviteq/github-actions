@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 FENCE = "```"
+# A git range runs units in a temporary checkout of each revision, and `list` may print a
+# unit by its path there: ../../tmp/terragrunt-worktree-HEAD-123/<repository path>.
+WORKTREE = re.compile(r"(?:^|/)terragrunt-worktree-[^/]*-\d+/(?P<path>.+)$")
 
 
 def resolve_filter(
@@ -49,11 +53,28 @@ def parse_units(table: str) -> list[str]:
     return units
 
 
-def split_existing(units: list[str], root: Path) -> tuple[list[str], list[str]]:
+def from_worktree(unit: str, prefix: str) -> str:
+    """A unit path inside a range's temporary checkout, as a path under the working directory."""
+    match = WORKTREE.search(unit)
+    if not match:
+        return unit
+    path = match["path"]
+    return path[len(prefix):] if prefix and path.startswith(prefix) else path
+
+
+def split_existing(units: list[str], root: Path, prefix: str = "") -> tuple[list[str], list[str]]:
     """Units present in this revision, and the ones a git range found deleted."""
-    existing = [unit for unit in units if (root / unit).is_dir()]
-    deleted = [unit for unit in units if not (root / unit).is_dir()]
+    seen = list(dict.fromkeys(from_worktree(unit, prefix) for unit in units))
+    existing = [unit for unit in seen if (root / unit).is_dir()]
+    deleted = [unit for unit in seen if not (root / unit).is_dir()]
     return existing, deleted
+
+
+def repository_prefix(root: Path) -> str:
+    """The working directory's path from the repository root, with a trailing slash."""
+    shown = subprocess.run(["git", "rev-parse", "--show-prefix"], cwd=root, capture_output=True, text=True,
+                           check=False)
+    return shown.stdout.strip() if shown.returncode == 0 else ""
 
 
 def summary(
@@ -112,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         return listed.returncode
 
     table = listed.stdout.rstrip("\n")
-    existing, deleted = split_existing(parse_units(table), root)
+    existing, deleted = split_existing(parse_units(table), root, repository_prefix(root))
 
     print(table if existing else "The filter selects no units.")
     if deleted:
