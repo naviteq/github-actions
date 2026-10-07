@@ -146,6 +146,11 @@ def main(argv: list[str] | None = None) -> int:
             rows.append({"unit": unit, "error": "plan unreadable"})
             continue
         plan = json.loads(shown.stdout)
+        if plan.get("errored"):
+            # Terraform and OpenTofu save the plan even when planning fails; its partial
+            # changes would read as a clean unit.
+            rows.append({"unit": unit, "error": "plan failed"})
+            continue
         detail[unit] = resources(plan)
         rows.append({"unit": unit, **count_actions(plan), "changeset": changeset(detail[unit])})
         plans.append(f"{unit}\t{plan_file}")
