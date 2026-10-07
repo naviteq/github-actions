@@ -423,7 +423,7 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@39f0a7a6a824bbc00d476fca736a5531abcfa087
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@7f47d11190e7bcd5ab8f52eeca24775008dc3f58
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -545,7 +545,7 @@ jobs:
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@39f0a7a6a824bbc00d476fca736a5531abcfa087
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@7f47d11190e7bcd5ab8f52eeca24775008dc3f58
         with:
           version: ${{ inputs.aws_nuke_version }}
 
