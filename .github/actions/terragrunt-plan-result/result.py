@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 COMMENT_LIMIT = 60000
-COUNT_KEYS = ("add", "change", "replace", "destroy")
+COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
 SIGN = {"create": "+", "update": "~", "replace": "-/+", "delete": "-"}
 
 
@@ -74,7 +74,7 @@ def metadata(context: dict, rows: list[dict], manifest: list[list[str]], skipped
 
 def _count_cells(row: dict) -> str:
     if row.get("error"):
-        return f"{row['error']} | | | "
+        return f"{row['error']} | | | | "
     return " | ".join(str(row.get(key, 0)) for key in COUNT_KEYS)
 
 
@@ -90,7 +90,7 @@ def comment(rows: list[dict], resources: dict[str, list[dict[str, str]]], skippe
     else:
         head.append(f"**No changes** in {len(rows)} units. [Run]({run_url})")
     if rows:
-        head += ["", "| Unit | Profile | Add | Change | Replace | Destroy |", "|---|---|---|---|---|---|"]
+        head += ["", "| Unit | Profile | Add | Change | Replace | Destroy | Outputs |", "|---|---|---|---|---|---|---|"]
         for row in rows:
             unit = f"`{row['unit']}`" + (" (deleted)" if row.get("deleted") else "")
             head.append(f"| {unit} | {row.get('profile', '')} | {_count_cells(row)} |")

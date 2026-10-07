@@ -27,25 +27,32 @@ from pathlib import Path
 
 MARKER = re.compile(r"<!-- terragrunt-apply: (\{.*?\}) -->")
 APPROVE = re.compile(r"^\s*/approve\s+apply-(\d+)\s*$")
-COUNT_KEYS = ("add", "change", "replace", "destroy")
+COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
 
 
 class Refused(Exception):
     """A reason not to apply, shown to whoever approved."""
 
 
+def action_of(actions: list[str]) -> str | None:
+    if "create" in actions and "delete" in actions:
+        return "replace"
+    if actions in (["create"], ["update"], ["delete"]):
+        return actions[0]
+    return None
+
+
 def resources(plan: dict) -> list[dict[str, str]]:
-    """Same as terragrunt-plan-report's: address and action per changing resource."""
+    """Same as terragrunt-plan-report's: address and action per changing resource and root output."""
     found = []
+    for name, change in (plan.get("output_changes") or {}).items():
+        action = action_of(change.get("actions", []))
+        if action:
+            found.append({"address": f"output.{name}", "action": action})
     for change in plan.get("resource_changes") or []:
-        actions = change.get("change", {}).get("actions", [])
-        if "create" in actions and "delete" in actions:
-            action = "replace"
-        elif actions in (["create"], ["update"], ["delete"]):
-            action = actions[0]
-        else:
-            continue
-        found.append({"address": change.get("address", ""), "action": action})
+        action = action_of(change.get("change", {}).get("actions", []))
+        if action:
+            found.append({"address": change.get("address", ""), "action": action})
     return sorted(found, key=lambda r: r["address"])
 
 
@@ -201,9 +208,10 @@ def run_clean(root: Path, units: list[dict]) -> None:
 
 
 def counts_of(found: list[dict[str, str]]) -> dict[str, int]:
-    actions = [r["action"] for r in found]
+    actions = [r["action"] for r in found if not r["address"].startswith("output.")]
     return {"add": actions.count("create"), "change": actions.count("update"),
-            "replace": actions.count("replace"), "destroy": actions.count("delete")}
+            "replace": actions.count("replace"), "destroy": actions.count("delete"),
+            "outputs": len(found) - len(actions)}
 
 
 def parse_dependencies(listing: str, wanted: list[str]) -> dict[str, set[str]]:
@@ -287,14 +295,15 @@ def run_fresh(root: Path, order: list[str], expect: dict, engine: str, paralleli
 
 
 def fresh_report(rows: list[dict], order: list[str]) -> str:
-    lines = ["### Fresh apply", "", "| Unit | Add | Change | Replace | Destroy | Outcome |", "|---|---|---|---|---|---|"]
+    lines = ["### Fresh apply", "", "| Unit | Add | Change | Replace | Destroy | Outputs | Outcome |",
+             "|---|---|---|---|---|---|---|"]
     for row in rows:
         counts = " | ".join(str(row.get(key, "")) for key in COUNT_KEYS)
         lines.append(f"| `{row['unit']}` | {counts} | {row.get('reason') or row['outcome']} |")
     reached = {row["unit"] for row in rows}
     for unit in order:
         if unit not in reached:
-            lines.append(f"| `{unit}` | | | | | not reached |")
+            lines.append(f"| `{unit}` | | | | | | not reached |")
     return "\n".join(lines) + "\n"
 
 

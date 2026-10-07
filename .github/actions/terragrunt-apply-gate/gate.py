@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 MARKER = "terragrunt-apply"
-COUNT_KEYS = ("add", "change", "replace", "destroy")
+COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
 
 
 def gh(*args: str, payload: dict | None = None) -> object:
@@ -97,7 +97,7 @@ def check(metadata: dict, pr: int, head_sha: str, tree: str) -> str:
 
 
 def table(units: list[dict]) -> list[str]:
-    lines = ["| Unit | Profile | Add | Change | Replace | Destroy |", "|---|---|---|---|---|---|"]
+    lines = ["| Unit | Profile | Add | Change | Replace | Destroy | Outputs |", "|---|---|---|---|---|---|---|"]
     for unit in units:
         lines.append(f"| `{unit['unit']}` | {unit.get('profile', '')} | "
                      + " | ".join(str(unit.get(key, 0)) for key in COUNT_KEYS) + " |")

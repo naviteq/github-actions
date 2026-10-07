@@ -27,8 +27,10 @@ ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def count_actions(plan: dict) -> dict[str, int]:
-    """Tally resource_changes by action; a replace is counted once, as a replace."""
-    counts = {"add": 0, "change": 0, "replace": 0, "destroy": 0}
+    """Tally resource_changes by action; a replace is counted once, as a replace. outputs
+    counts changed root outputs: a unit whose only change is an output still needs an apply,
+    or its dependents keep reading the old value, or their mocks."""
+    counts = {"add": 0, "change": 0, "replace": 0, "destroy": 0, "outputs": len(output_changes(plan))}
     for change in plan.get("resource_changes") or []:
         actions = change.get("change", {}).get("actions", [])
         if "create" in actions and "delete" in actions:
@@ -51,9 +53,19 @@ def action_of(actions: list[str]) -> str | None:
     return None
 
 
-def resources(plan: dict) -> list[dict[str, str]]:
-    """Address and action of every resource the plan would change, sorted by address."""
+def output_changes(plan: dict) -> list[dict[str, str]]:
+    """Root outputs the plan would change, addressed as output.<name>."""
     found = []
+    for name, change in (plan.get("output_changes") or {}).items():
+        action = action_of(change.get("actions", []))
+        if action:
+            found.append({"address": f"output.{name}", "action": action})
+    return found
+
+
+def resources(plan: dict) -> list[dict[str, str]]:
+    """Address and action of every resource and output the plan would change, sorted by address."""
+    found = output_changes(plan)
     for change in plan.get("resource_changes") or []:
         action = action_of(change.get("change", {}).get("actions", []))
         if action:
@@ -93,13 +105,13 @@ def destroy_counts(log: str, deleted: list[str]) -> dict[str, dict[str, int]]:
 
 
 def table(rows: list[dict]) -> str:
-    lines = ["| Unit | Add | Change | Replace | Destroy |", "|---|---|---|---|---|"]
+    lines = ["| Unit | Add | Change | Replace | Destroy | Outputs |", "|---|---|---|---|---|---|"]
     for row in rows:
         unit = f"`{row['unit']}`" + (" (deleted)" if row.get("deleted") else "")
         if row.get("error"):
-            lines.append(f"| {unit} | {row['error']} | | | |")
+            lines.append(f"| {unit} | {row['error']} | | | | |")
             continue
-        lines.append(f"| {unit} | {row['add']} | {row['change']} | {row['replace']} | {row['destroy']} |")
+        lines.append(f"| {unit} | {row['add']} | {row['change']} | {row['replace']} | {row['destroy']} | {row.get('outputs', 0)} |")
     return "\n".join(lines) + "\n"
 
 
@@ -146,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
         rows.append({"unit": unit, "deleted": True, **found.get(unit, {"error": "no destroy plan"})})
 
     failed = [row["unit"] for row in rows if row.get("error")]
-    has_changes = any(row.get(key) for row in rows for key in ("add", "change", "replace", "destroy"))
+    has_changes = any(row.get(key) for row in rows for key in ("add", "change", "replace", "destroy", "outputs"))
     report = table(rows)
     print(report, end="")
 

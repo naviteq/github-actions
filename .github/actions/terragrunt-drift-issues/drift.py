@@ -2,8 +2,9 @@
 """Keep one `[drift] <unit>` issue per unit whose live infrastructure no longer matches its code.
 
 Reads the plan workflow's per-unit counts and resource addresses (never values): opens or
-updates the issue of every unit that would change, closes the issue of a unit that plans
-clean again, and notes on its issue a unit that could not be planned. It lives beside its
+updates the issue of every unit that would change, and closes the issue of a unit that plans
+clean again. Units that could not be planned share one issue: a broken credential fails a
+whole profile at once, and that is one problem, not one per unit. It lives beside its
 action, not in scripts/, because the public mirror copies actions only. → docs/terragrunt-drift.md
 
     python3 .github/actions/terragrunt-drift-issues/drift.py --changes "$CHANGES" --counts-dir counts
@@ -19,7 +20,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-COUNT_KEYS = ("add", "change", "replace", "destroy")
+COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
 SIGN = {"create": "+", "update": "~", "replace": "-/+", "delete": "-"}
 
 
@@ -30,6 +31,9 @@ def gh(*args: str, payload: dict | None = None) -> object:
     result = subprocess.run(command, input=json.dumps(payload) if payload is not None else None,
                             capture_output=True, text=True, check=True)
     return json.loads(result.stdout) if result.stdout.strip() else None
+
+
+FAILED_TITLE = "[drift] Units could not be planned"
 
 
 def title_of(unit: str) -> str:
@@ -54,12 +58,21 @@ def classify(rows: list[dict]) -> dict[str, list[dict]]:
 def body(row: dict, resources: list[dict[str, str]], run_url: str, now: str) -> str:
     lines = [f"<!-- terragrunt-drift: {row['unit']} -->",
              f"`{row['unit']}` no longer matches its code: applying it now would change the infrastructure.", "",
-             "| Add | Change | Replace | Destroy |", "|---|---|---|---|",
+             "| Add | Change | Replace | Destroy | Outputs |", "|---|---|---|---|---|",
              "| " + " | ".join(str(row.get(key, 0)) for key in COUNT_KEYS) + " |", ""]
     if resources:
         lines += ["```diff", *[f"{SIGN[r['action']]} {r['address']}" for r in resources], "```", ""]
     lines += [f"Last seen {now} in [this run]({run_url}). Either apply the code through a pull request, "
               "or change the code to match what was done by hand. The issue closes itself once the unit plans clean.", ""]
+    return "\n".join(lines)
+
+
+def failed_body(rows: list[dict], run_url: str, now: str) -> str:
+    lines = ["<!-- terragrunt-drift: failed -->",
+             f"{len(rows)} units could not be planned at {now}, so their drift is unknown. "
+             f"The job logs of [the run]({run_url}) say why; when a whole profile fails, look at its credentials first.", "",
+             "| Unit | Error |", "|---|---|", *[f"| `{r['unit']}` | {r['error']} |" for r in rows], "",
+             "The issue closes itself once every unit plans again.", ""]
     return "\n".join(lines)
 
 
@@ -102,14 +115,22 @@ def reconcile(repo: str, label: str, rows: list[dict], resources: dict[str, list
             done["closed"].append(row["unit"])
     for row in groups["failed"]:
         issue = existing.get(title_of(row["unit"]))
-        note = f"Could not be planned at {now} ({row['error']}); drift unknown. [Run]({run_url})."
         if issue:
-            gh(f"repos/{repo}/issues/{issue['number']}/comments", "--method", "POST", payload={"body": note})
-        else:
-            gh(f"repos/{repo}/issues", "--method", "POST",
-               payload={"title": title_of(row["unit"]), "body": f"<!-- terragrunt-drift: {row['unit']} -->\n{note}\n",
-                        "labels": [label]})
+            gh(f"repos/{repo}/issues/{issue['number']}/comments", "--method", "POST",
+               payload={"body": f"Could not be planned at {now} ({row['error']}); drift unknown. [Run]({run_url})."})
         done["failed"].append(row["unit"])
+    issue = existing.get(FAILED_TITLE)
+    if groups["failed"]:
+        text = failed_body(groups["failed"], run_url, now)
+        if issue:
+            gh(f"repos/{repo}/issues/{issue['number']}", "--method", "PATCH", payload={"body": text})
+        else:
+            gh(f"repos/{repo}/issues", "--method", "POST", payload={"title": FAILED_TITLE, "body": text, "labels": [label]})
+    elif issue:
+        gh(f"repos/{repo}/issues/{issue['number']}/comments", "--method", "POST",
+           payload={"body": f"Every unit planned as of {now} ([run]({run_url})). Closing."})
+        gh(f"repos/{repo}/issues/{issue['number']}", "--method", "PATCH",
+           payload={"state": "closed", "state_reason": "completed"})
     return done
 
 
