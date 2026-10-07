@@ -106,6 +106,11 @@ on:
         required: false
         type: string
         default: ""
+      dependency_outputs_from_state:
+        description: Read the outputs of a dependency outside the run straight from its S3 state, without init; turn off for OpenTofu state encryption
+        required: false
+        type: boolean
+        default: true
     secrets:
       naviteq_github_app_id:
         description: GitHub App id; with the key, mints a read-only token so private git sources resolve
@@ -228,7 +233,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -256,7 +261,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/registry-token@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -303,7 +308,7 @@ jobs:
 
       - name: Select the units and show their run order
         id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -315,7 +320,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.units.outputs.units }}
@@ -326,7 +331,7 @@ jobs:
       # which need state this job cannot read. → docs/terragrunt-plan.md
       - name: Warm the provider cache
         if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -356,6 +361,8 @@ jobs:
       HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
       HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
       TG_NO_CAS: "1"
+      # Skips the init that breaks under the provider cache. → see docs/terragrunt-plan.md
+      TG_DEPENDENCY_FETCH_OUTPUT_FROM_STATE: ${{ inputs.dependency_outputs_from_state }}
       LEG: ${{ matrix.leg.name }}
       ARTIFACT: ${{ needs.select.outputs.artifact }}
     steps:
@@ -388,7 +395,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -415,7 +422,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/registry-token@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -516,7 +523,7 @@ jobs:
       - name: Count the planned changes
         id: report
         if: ${{ !cancelled() }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -537,7 +544,7 @@ jobs:
 
       - name: Upload the counts
         if: ${{ !cancelled() && steps.report.outputs.changes != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.ARTIFACT }}-counts-${{ matrix.leg.name }}
           path: ${{ runner.temp }}/terragrunt-plan-counts
@@ -580,7 +587,7 @@ jobs:
       # One artifact per job; the result job merges them into the one the apply reads.
       - name: Upload this profile's encrypted plans
         if: steps.encrypt.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.ARTIFACT }}-plans-${{ matrix.leg.name }}
           path: ${{ runner.temp }}/terragrunt-plans
@@ -604,7 +611,7 @@ jobs:
     steps:
       - name: Download the counts
         if: needs.plan.result != 'skipped'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: ${{ env.ARTIFACT }}-counts-*
           path: counts
@@ -612,7 +619,7 @@ jobs:
 
       - name: Download the encrypted plans
         if: inputs.plan_recipient != '' && needs.plan.result == 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: ${{ env.ARTIFACT }}-plans-*
           path: plans
@@ -639,7 +646,7 @@ jobs:
 
       - name: Merge the counts and hand the plans over
         id: result
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           counts_dir: counts
           plans_dir: >-
@@ -654,7 +661,7 @@ jobs:
       - name: Upload the encrypted plans
         id: upload
         if: steps.result.outputs.handed_over == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ env.ARTIFACT }}
           path: plans

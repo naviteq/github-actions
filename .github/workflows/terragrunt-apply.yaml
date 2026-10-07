@@ -101,6 +101,11 @@ on:
         required: false
         type: string
         default: ""
+      dependency_outputs_from_state:
+        description: Read the outputs of a dependency outside the run straight from its S3 state, without init; turn off for OpenTofu state encryption
+        required: false
+        type: boolean
+        default: true
     secrets:
       plan_age_key:
         description: age private key matching the plan's plan_recipient; decrypts the saved plans
@@ -169,7 +174,7 @@ jobs:
       - name: Check the approval comment
         id: approval
         if: inputs.approval == 'issue'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           command: approval
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
@@ -221,7 +226,7 @@ jobs:
           echo "tree=$(git rev-parse "${ref}")" >> "$GITHUB_OUTPUT"
 
       - name: Download the plan artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ steps.source.outputs.artifact_id }}
           run-id: ${{ steps.source.outputs.run_id }}
@@ -241,7 +246,7 @@ jobs:
 
       - name: Check the plans against the approval
         id: plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           command: plans
           metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
@@ -252,7 +257,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.plans.outputs.units }}
@@ -289,6 +294,8 @@ jobs:
       HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
       HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
       TG_NO_CAS: "1"
+      # Skips the init that breaks under the provider cache. → see docs/terragrunt-plan.md
+      TG_DEPENDENCY_FETCH_OUTPUT_FROM_STATE: ${{ inputs.dependency_outputs_from_state }}
       LEG: ${{ matrix.leg.name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -319,7 +326,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -346,7 +353,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/registry-token@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -410,7 +417,7 @@ jobs:
 
 
       - name: Download the plan artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.verify.outputs.artifact_id }}
           run-id: ${{ needs.verify.outputs.run_id }}
@@ -419,7 +426,7 @@ jobs:
 
       # Every unit before anything is applied, so a later unit cannot see an earlier apply.
       - name: Re-plan and compare with the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           command: run
           phase: check
@@ -447,6 +454,8 @@ jobs:
       HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
       HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
       TG_NO_CAS: "1"
+      # Skips the init that breaks under the provider cache. → see docs/terragrunt-plan.md
+      TG_DEPENDENCY_FETCH_OUTPUT_FROM_STATE: ${{ inputs.dependency_outputs_from_state }}
       LEG: ${{ matrix.leg.name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -477,7 +486,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -504,7 +513,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/registry-token@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -568,7 +577,7 @@ jobs:
 
 
       - name: Download the plan artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           artifact-ids: ${{ needs.verify.outputs.artifact_id }}
           run-id: ${{ needs.verify.outputs.run_id }}
@@ -607,7 +616,7 @@ jobs:
           rm -f "${key}"
 
       - name: Apply the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           command: run
           phase: apply
@@ -618,7 +627,7 @@ jobs:
 
       - name: Prove a second plan changes nothing
         if: inputs.verify_clean
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           command: run
           phase: clean

@@ -76,6 +76,11 @@ on:
         required: false
         type: string
         default: ""
+      dependency_outputs_from_state:
+        description: Read the outputs of a dependency outside the run straight from its S3 state, without init; turn off for OpenTofu state encryption
+        required: false
+        type: boolean
+        default: true
       label:
         description: Label of the drift issues
         required: false
@@ -117,7 +122,7 @@ permissions: {}
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@a7813010f39dbd444a535256b0f476fe3dcf98df
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@b4bb96279c1a201577287ae535185b6e26e11165
     permissions:
       contents: read
       id-token: write
@@ -142,6 +147,7 @@ jobs:
       artifact_name: terragrunt-drift-${{ github.run_id }}-${{ github.run_attempt }}
       provider_cache: ${{ inputs.provider_cache }}
       provider_cache_registries: ${{ inputs.provider_cache_registries }}
+      dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
     secrets: inherit
 
   # Also after a failed plan job: units it did plan still get their issues reconciled.
@@ -160,7 +166,7 @@ jobs:
       has_drift: ${{ steps.drift.outputs.has_drift }}
     steps:
       - name: Download the changed resource addresses
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: terragrunt-drift-${{ github.run_id }}-${{ github.run_attempt }}-counts-*
           path: counts
@@ -168,7 +174,7 @@ jobs:
 
       - name: Reconcile the drift issues
         id: drift
-        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@25299ee2d0dc3851c13aa9c7909a251123ec8df6
+        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@b4bb96279c1a201577287ae535185b6e26e11165
         with:
           changes: ${{ needs.plan.outputs.changes }}
           counts_dir: counts

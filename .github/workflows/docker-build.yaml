@@ -509,7 +509,7 @@ jobs:
           echo "::endgroup::"
       - name: Upload platform digest
         if: matrix.platform != '' && inputs.docker_push
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ steps.platform_digest.outputs.artifact }}
           path: ${{ runner.temp }}/digests/*
@@ -564,7 +564,7 @@ jobs:
       - &upload_scan_report
         name: Upload scan report artifact
         if: ${{ always() && env.DOCKER_BUILD_PUBLISHES == 'true' && inputs.security_scan_enabled && inputs.docker_push && hashFiles('scan-report.txt') != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: docker-build-trivy-scan-report
           path: scan-report.txt
@@ -572,7 +572,7 @@ jobs:
       - &upload_sbom
         name: Upload SBOM artifact
         if: ${{ always() && env.DOCKER_BUILD_PUBLISHES == 'true' && inputs.sbom_enabled && inputs.docker_push && hashFiles('sbom.json') != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: docker-build-cyclonedx-sbom
           path: sbom.json
@@ -648,7 +648,7 @@ jobs:
       - *registry_login
       - *docker_meta
       - name: Download platform digests
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: ${{ needs.build.outputs.digest-artifact-prefix }}*
           path: ${{ runner.temp }}/digests
