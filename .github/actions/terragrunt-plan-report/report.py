@@ -158,6 +158,11 @@ def describe(value: object, parts: tuple, sensitive: object, unknown: object, hi
     return show(value)
 
 
+def empty(value: object) -> bool:
+    """Nothing worth a line: absent, null, or an empty list or map."""
+    return value is ABSENT or value is None or value == [] or value == {}
+
+
 def resource_lines(change: dict, resource_type: str, patterns: list[str]) -> list[list[str]]:
     """[sign, text] per changed attribute of one resource, the way `show` reads, without secrets."""
     actions = change.get("actions", [])
@@ -176,20 +181,20 @@ def resource_lines(change: dict, resource_type: str, patterns: list[str]) -> lis
     for parts in sorted(set(old) | set(new) | unknown_paths, key=path_text):
         was, now = old.get(parts, ABSENT), new.get(parts, ABSENT)
         pending = marked(unknown, parts)
-        if creating and (now in (None, ABSENT) or now == [] or now == {}) and not pending:
+        if not pending and empty(now) and (creating or empty(was)):
             continue
         if not creating and not pending and normalise(was) == normalise(now):
             continue
         hidden = masked_name(parts, resource_type, patterns)
         name = path_text(parts)
         forces = "  # forces replacement" if any(parts[:len(r)] == r for r in replace_paths) else ""
-        after_text = describe(now, parts, after_sensitive, unknown, hidden)
-        if creating or was in (None, ABSENT):
-            lines.append(["+", f"{name} = {after_text}{forces}"])
-        elif now is ABSENT or (now is None and not pending):
+        if creating or was is ABSENT or was is None:
+            lines.append(["+", f"{name} = {describe(now, parts, after_sensitive, unknown, hidden)}{forces}"])
+        elif (now is ABSENT or now is None) and not pending:
             lines.append(["-", f"{name} = {describe(was, parts, before_sensitive, None, hidden)}{forces}"])
         else:
-            lines.append(["~", f"{name} = {describe(was, parts, before_sensitive, None, hidden)} → {after_text}{forces}"])
+            lines.append(["~", f"{name} = {describe(was, parts, before_sensitive, None, hidden)} → "
+                               f"{describe(now, parts, after_sensitive, unknown, hidden)}{forces}"])
     if len(lines) > LINES_PER_RESOURCE:
         lines = lines[:LINES_PER_RESOURCE] + [[" ", f"… {len(lines) - LINES_PER_RESOURCE} more attributes in the run"]]
     return lines
