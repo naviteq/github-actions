@@ -103,6 +103,9 @@ def comment(rows: list[dict], resources: dict[str, list[dict[str, str]]], skippe
 
     sections = []
     for row in changing:
+        # A deleted unit's destroy plan is counted from the log; it has no addresses.
+        if not resources.get(row["unit"]):
+            continue
         lines = [f"<details><summary><code>{row['unit']}</code></summary>", "", "```diff"]
         lines += [f"{SIGN[r['action']]} {r['address']}" for r in resources.get(row["unit"], [])]
         lines += ["```", "</details>", ""]

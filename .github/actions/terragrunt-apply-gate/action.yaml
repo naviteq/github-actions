@@ -98,7 +98,7 @@ outputs:
     description: The issue opened, if any
     value: ${{ steps.gate.outputs.issue }}
   deleted:
-    description: For decide, a filter per unit the merge deleted, one per line; empty when none or the plans were refused
+    description: For decide, a filter per unit the merge deleted, one per line; empty when none, or when the plans belong to another commit
     value: ${{ steps.gate.outputs.deleted }}
   deleted_ref:
     description: For decide, the commit where those units still exist

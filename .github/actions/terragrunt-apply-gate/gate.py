@@ -238,17 +238,22 @@ def cmd_decide(args: argparse.Namespace) -> int:
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     problem = check(metadata, pr, args.head_sha, args.tree)
+    # A moved base makes the saved plans stale, not the deletions: the destroy plans afresh
+    # from the commit before the merge and asks for its own approval. → docs/terragrunt-destroy.md
+    moved_base = bool(problem) and check(metadata, pr, args.head_sha, metadata.get("tree", "")) == ""
+    if not problem or moved_base:
+        write_outputs(**deleted_outputs(metadata, args.base_commit))
     if problem:
         number = open_issue(args, f"No Terragrunt apply for PR #{pr}: stale plan",
                             blocked_body(problem[0].upper() + problem[1:], pr, args.pr_url, args.sha), "blocked")
         comment_on_pr(args, pr, f"The plans of this PR cannot be applied; see #{number}.")
         write_outputs(state="blocked", issue=number)
         return 1
-    if not metadata.get("has_changes"):
-        comment_on_pr(args, pr, "Merged. The plan had no changes, so there is nothing to apply.")
+    if not any(any(u.get(key) for key in COUNT_KEYS) for u in metadata["units"]):
+        why = "only deletes units, whose destroy is a separate request" if metadata.get("deleted") else "had no changes"
+        comment_on_pr(args, pr, f"Merged. The plan {why}, so there is nothing to apply.")
         write_outputs(state="no-changes", issue="")
         return 0
-    write_outputs(**deleted_outputs(metadata, args.base_commit))
 
     marker = {"artifact_id": int(args.artifact_id), "plan_run_id": metadata["plan_run_id"], "pr": pr,
               "head_sha": args.head_sha, "commit": args.sha, "tree": args.tree,
