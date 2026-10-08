@@ -47,6 +47,9 @@ outputs:
   handed_over:
     description: true when plans_dir now holds metadata.json, and manifest.tsv if anything was planned
     value: ${{ steps.result.outputs.handed_over }}
+  quiet:
+    description: true when nothing changes and nothing failed, so there is nothing to comment on or post
+    value: ${{ steps.result.outputs.quiet }}
 
 runs:
   using: composite
