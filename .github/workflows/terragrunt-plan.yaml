@@ -111,6 +111,11 @@ on:
         required: false
         type: boolean
         default: false
+      report_no_changes:
+        description: Also comment and post to Slack when nothing changes and nothing failed; by default such a run is silent
+        required: false
+        type: boolean
+        default: false
       provider_cache:
         description: Share providers between units through Terragrunt's provider cache, saved on the default branch
         required: false
@@ -262,7 +267,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -290,7 +295,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/registry-token@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -337,7 +342,7 @@ jobs:
 
       - name: Select the units and show their run order
         id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -349,7 +354,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.units.outputs.units }}
@@ -360,7 +365,7 @@ jobs:
       # which need state this job cannot read. → docs/terragrunt-plan.md
       - name: Warm the provider cache
         if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -425,7 +430,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -452,7 +457,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/registry-token@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -571,7 +576,7 @@ jobs:
       - name: Count the planned changes
         id: report
         if: ${{ !cancelled() }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -700,7 +705,7 @@ jobs:
 
       - name: Merge the counts and hand the plans over
         id: result
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           counts_dir: counts
           plans_dir: >-
@@ -732,6 +737,8 @@ jobs:
         env:
           COMMENT_FILE: ${{ runner.temp }}/terragrunt-plan-comment.md
           MARKER: terragrunt-plan:${{ inputs.working_directory }}
+          # A clean run posts nothing new, but corrects a comment an earlier push left.
+          SILENT: ${{ steps.result.outputs.quiet == 'true' && !inputs.report_no_changes }}
         with:
           script: |
             const fs = require('fs');
@@ -743,7 +750,7 @@ jobs:
             const mine = comments.find((c) => c.user?.type === 'Bot' && c.body?.startsWith(marker));
             if (mine) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
-            } else {
+            } else if (process.env.SILENT !== 'true') {
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
 
@@ -751,10 +758,13 @@ jobs:
       - name: Post the summary to Slack
         if: >-
           inputs.slack_notify && env.HAS_SLACK_WEBHOOK == 'true'
+          && (steps.result.outputs.quiet != 'true' || inputs.report_no_changes)
           && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         continue-on-error: true
         uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4
         with:
+          # A rejected post fails the step visibly; continue-on-error keeps the plan green.
+          errors: true
           webhook: ${{ secrets.slack_webhook }}
           webhook-type: incoming-webhook
           payload-file-path: ${{ runner.temp }}/terragrunt-plan-slack.json

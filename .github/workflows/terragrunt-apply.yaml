@@ -175,7 +175,7 @@ jobs:
       - name: Check the approval comment
         id: approval
         if: inputs.approval == 'issue'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           command: approval
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
@@ -247,7 +247,7 @@ jobs:
 
       - name: Check the plans against the approval
         id: plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           command: plans
           metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
@@ -258,7 +258,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.plans.outputs.units }}
@@ -270,6 +270,7 @@ jobs:
           ISSUE: ${{ steps.approval.outputs.issue }}
           LABEL: ${{ inputs.label }}
           DESTROY: ${{ steps.plans.outputs.destroy }}
+          ACTOR: ${{ github.event.comment.user.login }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -278,7 +279,7 @@ jobs:
           then="applying the saved plans"
           [ "${DESTROY}" != "true" ] || then="destroying the units one by one"
           gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/comments" \
-            -f body="Approved. Re-planning every unit, then ${then}: [run](${RUN_URL})." > /dev/null
+            -f body="▶️ **Approved by @${ACTOR}.** Re-planning every unit, then ${then}. [Follow the run](${RUN_URL})" > /dev/null
 
   check:
     name: Check ${{ matrix.leg.name }}
@@ -330,7 +331,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -357,7 +358,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/registry-token@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -430,7 +431,7 @@ jobs:
 
       # Every unit before anything is applied, so a later unit cannot see an earlier apply.
       - name: Re-plan and compare with the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           command: run
           phase: check
@@ -490,7 +491,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -517,7 +518,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/registry-token@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -627,7 +628,7 @@ jobs:
 
       # For a destroy, `destroy` per unit instead of the plan files. → docs/terragrunt-destroy.md
       - name: Apply the saved plans, or destroy the units
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           command: run
           phase: apply
@@ -638,7 +639,7 @@ jobs:
 
       - name: Prove a second plan changes nothing
         if: inputs.verify_clean && needs.verify.outputs.destroy != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@1dd2bbf6da6c854cd2dfc54fcbbf5936c9afa816
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@98ff5af167e50c4dc36ddf479d7663002a15e089
         with:
           command: run
           phase: clean
@@ -667,16 +668,16 @@ jobs:
           REASON: ${{ needs.verify.outputs.reason }}
         run: |
           set -euo pipefail
-          verb=apply; done_text="Applied every saved plan."
-          if [ "${DESTROY}" = "true" ]; then verb=destroy; done_text="Destroyed every planned unit."; fi
+          verb=apply; done_text="✅ **Applied** every saved plan."
+          if [ "${DESTROY}" = "true" ]; then verb=destroy; done_text="✅ **Destroyed** every planned unit."; fi
           if [ "${VERIFY}" != "success" ]; then
-            state=refused; text="Refused: ${REASON:-the approval or the plans did not check out}."
+            state=refused; text="⛔ **Refused:** ${REASON:-the approval or the plans did not check out}."
           elif [ "${HAS_CHANGES}" != "true" ]; then
-            state=applied; text="Nothing to ${verb}: no plan changes anything."
+            state=applied; text="✅ **Nothing to ${verb}:** no plan changes anything."
           elif [ "${CHECK}" != "success" ]; then
-            state=refused; text="Refused: a unit would now change differently than planned. Nothing was touched; re-plan it."
+            state=refused; text="⛔ **Refused:** a unit would now change differently than planned. Nothing was touched; re-plan it."
           elif [ "${APPLY}" != "success" ]; then
-            state=failed; text="The ${verb} failed; see the run for which units were done."
+            state=failed; text="❌ **The ${verb} failed.** The run shows which units were done."
           else
             state=applied; text="${done_text}"
           fi
@@ -698,7 +699,7 @@ jobs:
           set -euo pipefail
           [ -n "${REASON}" ] || exit 0
           gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/comments" \
-            -f body="Not applied: ${REASON}. The issue still waits for an approver." > /dev/null
+            -f body="🚫 **Not applied:** ${REASON}. The issue still waits for an approver." > /dev/null
 
       - name: Report on the gate issue
         if: inputs.approval == 'issue' && needs.verify.outputs.issue != ''
@@ -715,7 +716,7 @@ jobs:
             gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/labels/${LABEL}:${old}" > /dev/null 2>&1 || true
           done
           gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/labels" -f "labels[]=${LABEL}:${STATE}" > /dev/null
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/comments" -f body="${TEXT} [Run](${RUN_URL})." > /dev/null
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/comments" -f body="${TEXT} [Run](${RUN_URL})" > /dev/null
           if [ "${STATE}" = "applied" ]; then
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}" -f state=closed -f state_reason=completed > /dev/null
           fi

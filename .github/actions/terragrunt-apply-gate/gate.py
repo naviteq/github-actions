@@ -97,59 +97,108 @@ def check(metadata: dict, pr: int, head_sha: str, tree: str) -> str:
     return ""
 
 
+SYMBOL = {"add": "+", "change": "~", "replace": "±", "destroy": "-", "outputs": "→"}
+NOUN = {"add": "to add", "change": "to change", "replace": "to replace", "destroy": "to destroy", "outputs": "outputs"}
+
+
+def noun(key: str, count: int) -> str:
+    if key == "outputs":
+        return "output" if count == 1 else "outputs"
+    return NOUN[key]
+
+
+def _cell(unit: dict, key: str) -> str:
+    value = int(unit.get(key) or 0)
+    return f"{SYMBOL[key]}{value}" if value else "·"
+
+
 def table(units: list[dict]) -> list[str]:
-    lines = ["| Unit | Profile | Add | Change | Replace | Destroy | Outputs |", "|---|---|---|---|---|---|---|"]
+    lines = ["| | Unit | Profile | Add | Change | Replace | Destroy | Outputs |", "|:-:|---|---|:-:|:-:|:-:|:-:|:-:|"]
     for unit in units:
-        lines.append(f"| `{unit['unit']}` | {unit.get('profile', '')} | "
-                     + " | ".join(str(unit.get(key, 0)) for key in COUNT_KEYS) + " |")
+        mark = "⚠️" if unit.get("destroy") or unit.get("replace") else "📝"
+        lines.append(f"| {mark} | `{unit['unit']}` | {unit.get('profile', '')} | "
+                     + " | ".join(_cell(unit, key) for key in COUNT_KEYS) + " |")
     return lines
+
+
+def totals_line(units: list[dict]) -> str:
+    sums = {key: sum(int(u.get(key) or 0) for u in units) for key in COUNT_KEYS}
+    return " · ".join(f"**{SYMBOL[key]}{sums[key]}** {noun(key, sums[key])}" for key in COUNT_KEYS if sums[key])
+
+
+def _approve_block(verb: str, artifact_id: object, approvers: list[str]) -> list[str]:
+    who = " ".join("@" + a for a in approvers) or "_nobody: no approvers are configured_"
+    return ["> [!IMPORTANT]", f"> **To {verb}**, one of {who} comments exactly:", ">", "> ```",
+            f"> /approve {verb}-{artifact_id}", "> ```"]
+
+
+def _facts(*parts: str) -> str:
+    return " · ".join(part for part in parts if part)
 
 
 def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, run_url: str,
                base_commit: str = "") -> str:
     """The approval issue: what would change, who may approve, and the exact command."""
     changing = [u for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
+    destroys = sum(int(u.get("destroy") or 0) + int(u.get("replace") or 0) for u in changing)
     lines = [f"<!-- {MARKER}: {json.dumps(marker, separators=(',', ':'))} -->",
-             f"### Apply the plans of [PR #{marker['pr']}]({pr_url})", "",
-             f"Merged as `{marker['commit'][:7]}`; planned in [this run]({run_url}), "
-             f"artifact `{metadata['artifact']}`.", "", *table(changing)]
+             f"## 🚦 Apply waiting for approval: [PR #{marker['pr']}]({pr_url})", "",
+             _facts(f"Merged as `{marker['commit'][:7]}`", f"[Plan run]({run_url})", f"artifact `{metadata['artifact']}`"),
+             "", *_approve_block("apply", marker["artifact_id"], approvers), ""]
+    total = totals_line(changing)
+    if total:
+        lines += [total, ""]
+    if destroys:
+        lines += ["> [!WARNING]", "> This apply destroys or replaces resources. Check the units marked ⚠️.", ""]
+    lines += [*table(changing), ""]
     if metadata.get("deleted"):
-        lines += ["", "**Deleted units are not destroyed by this apply:** "
+        lines += ["> [!NOTE]", "> Deleted units are not destroyed by this apply: "
                   + ", ".join(f"`{u}`" for u in metadata["deleted"])
-                  + f". Request their destroy with `terragrunt-destroy` from `{base_commit[:7] or 'the commit before this merge'}`;"
-                  " a repository that chains it after this gate gets that issue on its own."]
+                  + f". Their destroy is requested from `{base_commit[:7] or 'the commit before this merge'}`;"
+                  " a repository that chains `terragrunt-destroy` after this gate gets that issue on its own.", ""]
     if metadata.get("skipped"):
-        lines += ["", "Not planned: " + ", ".join(f"`{s['unit']}` ({s['reason']})" for s in metadata["skipped"])]
-    lines += ["", "The apply re-plans every unit first and stops if anything differs from the plans above.", "",
-              f"To apply, one of {' '.join('@' + a for a in approvers) or '(no approvers configured)'} "
-              "comments exactly:", "", "```", f"/approve apply-{marker['artifact_id']}", "```", ""]
+        lines += ["> [!NOTE]", "> Not planned: "
+                  + ", ".join(f"`{s['unit']}` ({s['reason']})" for s in metadata["skipped"]) + ".", ""]
+    lines += ["<details><summary>What happens on approval</summary>", "",
+              "Every unit is planned again first. If any unit would now change differently from the table above, "
+              "nothing is applied and the issue is refused. Otherwise the saved plans are applied, one credential "
+              "profile at a time, and this issue is closed with the result.", "", "</details>", ""]
     return "\n".join(lines)
 
 
 def destroy_body(metadata: dict, marker: dict, approvers: list[str], actor: str, run_url: str) -> str:
     """The destroy issue: what would go, what stays, who may approve, and the exact command."""
     going = [u for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
+    noun = "unit" if len(going) == 1 else "units"
     lines = [f"<!-- {MARKER}: {json.dumps(marker, separators=(',', ':'))} -->",
-             f"### Destroy under `{marker['working_directory']}`", "",
-             f"Requested by @{actor}; planned at `{marker['commit'][:7]}` in [this run]({run_url}), "
-             f"artifact `{metadata['artifact']}`.", "", *table(going)]
+             f"## 🧨 Destroy waiting for approval: {len(going)} {noun}", "",
+             _facts(f"Requested by @{actor}" if actor else "", f"planned at `{marker['commit'][:7]}`",
+                    f"[Plan run]({run_url})", f"artifact `{metadata['artifact']}`"),
+             "", *_approve_block("destroy", marker["artifact_id"], approvers), ""]
+    total = totals_line(going)
+    if total:
+        lines += [total, ""]
+    lines += ["> [!CAUTION]", "> Everything these units manage is deleted. This cannot be undone from here.", "",
+              *table(going), ""]
     if metadata.get("kept"):
-        lines += ["", "Kept, as `prevent_destroy` or a dependency of one: "
-                  + ", ".join(f"`{u}`" for u in metadata["kept"])]
+        lines += ["> [!NOTE]", "> Kept, as `prevent_destroy` or a dependency of one: "
+                  + ", ".join(f"`{u}`" for u in metadata["kept"]) + ".", ""]
     if metadata.get("skipped"):
-        lines += ["", "Not planned: " + ", ".join(f"`{s['unit']}` ({s['reason']})" for s in metadata["skipped"])]
-    lines += ["", "The destroy re-plans every unit first and stops if anything differs from the plans above, "
-              "then destroys the units one by one, dependents first.", "",
-              f"To destroy, one of {' '.join('@' + a for a in approvers) or '(no approvers configured)'} "
-              "comments exactly:", "", "```", f"/approve destroy-{marker['artifact_id']}", "```", ""]
+        lines += ["> [!NOTE]", "> Not planned: "
+                  + ", ".join(f"`{s['unit']}` ({s['reason']})" for s in metadata["skipped"]) + ".", ""]
+    lines += ["<details><summary>What happens on approval</summary>", "",
+              "Every unit is planned for destruction again first. If anything differs from the table above, nothing "
+              "is destroyed and the issue is refused. Otherwise the units are destroyed one by one, dependents first, "
+              "with `destroy` so that their destroy hooks run, and this issue is closed with the result.", "",
+              "</details>", ""]
     return "\n".join(lines)
 
 
 def blocked_body(reason: str, pr: int | None, pr_url: str, commit: str) -> str:
     where = f"[PR #{pr}]({pr_url})" if pr else f"commit `{commit[:7]}`"
-    return "\n".join([f"### No apply for {where}", "", reason + ".", "",
-                      "Nothing was applied. Open a pull request that plans the change again; its merge "
-                      "opens a new issue.", ""])
+    return "\n".join([f"## ⛔ Apply blocked: {where}", "", "> [!CAUTION]", f"> {reason}.", "",
+                      "Nothing was applied. **Next step:** open a pull request that plans the change again; "
+                      "its merge opens a new approval issue.", ""])
 
 
 def write_outputs(**values: object) -> None:
@@ -246,12 +295,12 @@ def cmd_decide(args: argparse.Namespace) -> int:
     if problem:
         number = open_issue(args, f"No Terragrunt apply for PR #{pr}: stale plan",
                             blocked_body(problem[0].upper() + problem[1:], pr, args.pr_url, args.sha), "blocked")
-        comment_on_pr(args, pr, f"The plans of this PR cannot be applied; see #{number}.")
+        comment_on_pr(args, pr, f"⛔ The plans of this pull request cannot be applied; see #{number}.")
         write_outputs(state="blocked", issue=number)
         return 1
     if not any(any(u.get(key) for key in COUNT_KEYS) for u in metadata["units"]):
         why = "only deletes units, whose destroy is a separate request" if metadata.get("deleted") else "had no changes"
-        comment_on_pr(args, pr, f"Merged. The plan {why}, so there is nothing to apply.")
+        comment_on_pr(args, pr, f"✅ Merged. The plan {why}, so there is nothing to apply.")
         write_outputs(state="no-changes", issue="")
         return 0
 
@@ -261,7 +310,7 @@ def cmd_decide(args: argparse.Namespace) -> int:
     run_url = f"{args.server_url}/{args.repo}/actions/runs/{metadata['plan_run_id']}"
     body = issue_body(metadata, marker, approvers_of(args.approvers), args.pr_url, run_url, args.base_commit)
     number = open_issue(args, f"Terragrunt apply: PR #{pr}", body, "pending")
-    comment_on_pr(args, pr, f"Merged. Applying its plans waits for approval in #{number}.")
+    comment_on_pr(args, pr, f"🚦 Merged. Applying its plans waits for approval in #{number}.")
     write_outputs(state="pending", issue=number)
     return 0
 

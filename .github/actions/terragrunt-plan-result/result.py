@@ -74,86 +74,187 @@ def metadata(context: dict, rows: list[dict], manifest: list[list[str]], skipped
     }
 
 
-def _count_cells(row: dict) -> str:
+SYMBOL = {"add": "+", "change": "~", "replace": "±", "destroy": "-", "outputs": "→"}
+NOUN = {"add": "to add", "change": "to change", "replace": "to replace", "destroy": "to destroy", "outputs": "outputs"}
+
+
+def noun(key: str, count: int) -> str:
+    if key == "outputs":
+        return "output" if count == 1 else "outputs"
+    return NOUN[key]
+
+
+def changes(row: dict) -> bool:
+    return any(row.get(key) for key in COUNT_KEYS)
+
+
+def totals(rows: list[dict]) -> dict[str, int]:
+    return {key: sum(int(row.get(key) or 0) for row in rows if not row.get("error")) for key in COUNT_KEYS}
+
+
+def quiet(rows: list[dict]) -> bool:
+    """Nothing worth a comment or a message: no unit changes and none failed."""
+    return not any(changes(row) or row.get("error") for row in rows)
+
+
+def units(count: int) -> str:
+    return f"{count} unit" if count == 1 else f"{count} units"
+
+
+def status(rows: list[dict]) -> tuple[str, str]:
+    """Emoji and one-line outcome for a heading."""
+    failed = [row for row in rows if row.get("error")]
+    changing = [row for row in rows if changes(row)]
+    sums = totals(rows)
+    if not rows:
+        return "✅", "nothing to plan"
+    if failed:
+        return "❌", f"{len(failed)} of {units(len(rows))} failed to plan"
+    if not changing:
+        return "✅", f"no changes in {units(len(rows))}"
+    verb = "changes" if len(changing) == 1 else "change"
+    emoji = "⚠️" if sums["destroy"] or sums["replace"] else "📝"
+    return emoji, f"{len(changing)} of {units(len(rows))} {verb}"
+
+
+def totals_line(rows: list[dict]) -> str:
+    sums = totals(rows)
+    parts = [f"**{SYMBOL[key]}{sums[key]}** {noun(key, sums[key])}" for key in COUNT_KEYS if sums[key]]
+    return " · ".join(parts)
+
+
+def _resources(count: int) -> str:
+    return "1 resource" if count == 1 else f"{count} resources"
+
+
+def _cell(row: dict, key: str) -> str:
+    value = int(row.get(key) or 0)
+    return f"{SYMBOL[key]}{value}" if value else "·"
+
+
+def _unit_status(row: dict) -> str:
     if row.get("kept"):
-        return "kept: prevent_destroy | | | | "
+        return "🛡️"
     if row.get("error"):
-        return f"{row['error']} | | | | "
-    return " | ".join(str(row.get(key, 0)) for key in COUNT_KEYS)
+        return "❌"
+    if row.get("deleted"):
+        return "🗑️"
+    if row.get("destroy") or row.get("replace"):
+        return "⚠️"
+    return "📝" if changes(row) else "✅"
+
+
+def table(rows: list[dict]) -> list[str]:
+    lines = ["| | Unit | Profile | Add | Change | Replace | Destroy | Outputs |",
+             "|:-:|---|---|:-:|:-:|:-:|:-:|:-:|"]
+    for row in rows:
+        unit = f"`{row['unit']}`" + (" _(deleted)_" if row.get("deleted") else "")
+        if row.get("kept"):
+            cells = "kept: `prevent_destroy` | | | |"
+        elif row.get("error"):
+            cells = f"**{row['error']}** | | | |"
+        else:
+            cells = " | ".join(_cell(row, key) for key in COUNT_KEYS)
+        lines.append(f"| {_unit_status(row)} | {unit} | {row.get('profile', '')} | {cells} |")
+    return lines
 
 
 def comment(rows: list[dict], resources: dict[str, list[dict[str, str]]], skipped: list[list[str]],
-            run_url: str, limit: int = COMMENT_LIMIT) -> str:
-    """The sticky PR comment: counts per unit, then each changing unit's addresses and actions."""
-    changing = [row for row in rows if any(row.get(key) for key in COUNT_KEYS)]
-    head = ["### Terragrunt plan", ""]
-    if not rows:
-        head.append("No units were planned.")
-    elif changing:
-        head.append(f"**{len(changing)} of {len(rows)} units would change.** [Run]({run_url})")
-    else:
-        head.append(f"**No changes** in {len(rows)} units. [Run]({run_url})")
+            run_url: str, context: dict | None = None, limit: int = COMMENT_LIMIT) -> str:
+    """The sticky PR comment: the outcome at a glance, the table, then each changing unit's addresses."""
+    context = context or {}
+    emoji, outcome = status(rows)
+    head = [f"### {emoji} Terragrunt plan: {outcome}", ""]
+    line = totals_line(rows)
+    if line:
+        head += [line, ""]
+    failed = [row for row in rows if row.get("error")]
+    if failed:
+        head += ["> [!CAUTION]", "> These units failed to plan, so their changes are unknown: "
+                 + ", ".join(f"`{row['unit']}`" for row in failed) + f". The [run]({run_url}) says why.", ""]
+    sums = totals(rows)
+    if sums["destroy"] or sums["replace"]:
+        what = " and ".join(part for part in (
+            f"destroys {_resources(sums['destroy'])}" if sums["destroy"] else "",
+            f"replaces {_resources(sums['replace'])}" if sums["replace"] else "") if part)
+        head += ["> [!WARNING]", f"> This plan {what}. Check the units marked ⚠️ before merging.", ""]
     if rows:
-        head += ["", "| Unit | Profile | Add | Change | Replace | Destroy | Outputs |", "|---|---|---|---|---|---|---|"]
-        for row in rows:
-            unit = f"`{row['unit']}`" + (" (deleted)" if row.get("deleted") else "")
-            head.append(f"| {unit} | {row.get('profile', '')} | {_count_cells(row)} |")
+        head += [*table(rows), ""]
+    deleted = [row["unit"] for row in rows if row.get("deleted")]
+    if deleted:
+        head += ["> [!NOTE]", "> Deleted units are never applied. After the merge their destroy is a separate "
+                 "request with its own approval: " + ", ".join(f"`{u}`" for u in deleted) + ".", ""]
     if skipped:
-        head += ["", "Not planned: " + ", ".join(f"`{s[0]}` ({s[2]})" for s in skipped if len(s) >= 3)]
+        head += ["> [!NOTE]", "> Not planned: " + ", ".join(f"`{s[0]}` ({s[2]})" for s in skipped if len(s) >= 3)
+                 + ".", ""]
+    commit = str(context.get("commit") or "")[:7]
+    footer = "<sub>" + " · ".join(part for part in (
+        f"Planned at `{commit}`" if commit else "", f"[Run]({run_url})" if run_url else "",
+        "Updated on every push") if part) + "</sub>\n"
     body = "\n".join(head) + "\n"
 
     sections = []
-    for row in changing:
+    for row in rows:
         # A deleted unit's destroy plan is counted from the log; it has no addresses.
-        if not resources.get(row["unit"]):
+        found = resources.get(row["unit"]) if changes(row) else None
+        if not found:
             continue
-        lines = [f"<details><summary><code>{row['unit']}</code></summary>", "", "```diff"]
-        lines += [f"{SIGN[r['action']]} {r['address']}" for r in resources.get(row["unit"], [])]
-        lines += ["```", "</details>", ""]
+        count = len(found)
+        lines = [f"<details><summary>{_unit_status(row)} <code>{row['unit']}</code>: "
+                 f"{count} change{'s' if count != 1 else ''}</summary>", "", "```diff"]
+        lines += [f"{SIGN[r['action']]} {r['address']}" for r in found]
+        lines += ["```", "", "</details>", "", ""]
         sections.append("\n".join(lines))
-    note = f"\n_Resource lists cut to fit; the full plan is in the [run]({run_url})._\n"
-    for index, section in enumerate(sections):
-        if len(body) + len(section) + len(note) > limit:
-            return body + "\n" + note
-        body += ("\n" if index == 0 else "") + section
-    return body
+    note = f"_Resource lists cut to fit; the full plan is in the [run]({run_url})._\n\n"
+    for section in sections:
+        if len(body) + len(section) + len(note) + len(footer) > limit:
+            return body + note + footer
+        body += section
+    return body + footer
+
+
+SLACK_COLOR = {"✅": "#2eb886", "📝": "#d4a72c", "⚠️": "#e8912d", "❌": "#e01e5a"}
 
 
 def slack_payload(rows: list[dict], context: dict, run_url: str) -> dict:
     """Counts per unit and links only: a Slack channel is read by more people than the repository."""
-    changing = [row for row in rows if any(row.get(key) for key in COUNT_KEYS) or row.get("error")]
-    failed = sum(1 for row in rows if row.get("error"))
+    emoji, outcome = status(rows)
+    repository = context.get("repository", "")
     pr = context.get("pr")
     commit = str(context.get("commit") or "")[:7]
-    where = f"PR #{pr}" if pr else f"`{commit}`"
-    if not rows:
-        outcome = "no units were planned"
-    elif failed:
-        outcome = f"{failed} of {len(rows)} units failed to plan"
-    elif any(any(row.get(key) for key in COUNT_KEYS) for row in rows):
-        outcome = f"{sum(1 for row in changing if not row.get('error'))} of {len(rows)} units would change"
-    else:
-        outcome = f"no changes in {len(rows)} units"
-    head = f"Terragrunt plan for {context.get('repository', '')} {where}: {outcome}"
+    repo_url = run_url.split("/actions/")[0] if "/actions/" in run_url else ""
+    where = f"<{repo_url}/pull/{pr}|PR #{pr}>" if pr and repo_url else (f"PR #{pr}" if pr else f"`{commit}`")
+    head = f"{emoji} Terragrunt plan: {outcome}"
+    fields = [{"type": "mrkdwn", "text": f"*Repository*\n{repository}"},
+              {"type": "mrkdwn", "text": f"*Change*\n{where}"}]
+    sums = totals(rows)
+    if any(sums.values()):
+        fields.append({"type": "mrkdwn", "text": "*Totals*\n" + "  ".join(
+            f"{SYMBOL[key]}{sums[key]} {noun(key, sums[key])}" for key in COUNT_KEYS if sums[key])})
+    listed = [row for row in rows if changes(row) or row.get("error")]
     lines = []
-    for row in changing[:SLACK_UNITS]:
+    for row in listed[:SLACK_UNITS]:
         unit = f"`{row['unit']}`" + (" (deleted)" if row.get("deleted") else "")
         if row.get("error"):
-            lines.append(f"{unit}: {row['error']}")
+            lines.append(f"{_unit_status(row)} {unit}: {row['error']}")
         else:
-            lines.append(f"{unit}: +{row.get('add', 0)} ~{row.get('change', 0)} -/+{row.get('replace', 0)} "
-                         f"-{row.get('destroy', 0)}, outputs {row.get('outputs', 0)}")
-    if len(changing) > SLACK_UNITS:
-        lines.append(f"…and {len(changing) - SLACK_UNITS} more")
-    repo_url = run_url.split("/actions/")[0] if "/actions/" in run_url else ""
-    links = [f"<{repo_url}/pull/{pr}|PR #{pr}>"] if pr and repo_url else []
-    links += [f"<{run_url}|run>"] if run_url else []
-    blocks: list[dict] = [{"type": "section", "text": {"type": "mrkdwn", "text": f"*{head}*"}}]
+            counts = "  ".join(f"{SYMBOL[key]}{row.get(key, 0)}" for key in COUNT_KEYS if row.get(key))
+            lines.append(f"{_unit_status(row)} {unit}  {counts}")
+    if len(listed) > SLACK_UNITS:
+        lines.append(f"…and {len(listed) - SLACK_UNITS} more")
+    blocks: list[dict] = [{"type": "header", "text": {"type": "plain_text", "text": head[:150], "emoji": True}},
+                          {"type": "section", "fields": fields}]
     if lines:
-        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)[:2900]}})
+    links = [f"<{run_url}|View the run>"] if run_url else []
+    if pr and repo_url:
+        links.insert(0, f"<{repo_url}/pull/{pr}|Open the pull request>")
+    if commit:
+        links.append(f"commit `{commit}`")
     if links:
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": " · ".join(links)}]})
-    return {"text": head, "blocks": blocks}
+    return {"text": f"{head} ({repository})",
+            "attachments": [{"color": SLACK_COLOR[emoji], "blocks": blocks}]}
 
 
 def _lines(value: str) -> list[str]:
@@ -185,7 +286,8 @@ def main(argv: list[str] | None = None) -> int:
         (Path(args.plans_dir) / "metadata.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         handed_over = True
     if args.comment_file:
-        Path(args.comment_file).write_text(comment(rows, resources, skipped, args.run_url), encoding="utf-8")
+        context = json.loads(args.context_json)
+        Path(args.comment_file).write_text(comment(rows, resources, skipped, args.run_url, context), encoding="utf-8")
     if args.slack_file:
         payload = slack_payload(rows, json.loads(args.context_json), args.run_url)
         Path(args.slack_file).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -195,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             out.write(f"changes={json.dumps(rows, separators=(',', ':'))}\n")
             out.write(f"has_changes={'true' if has_changes(rows) else 'false'}\n")
             out.write(f"handed_over={'true' if handed_over else 'false'}\n")
+            out.write(f"quiet={'true' if quiet(rows) else 'false'}\n")
     return 0
 
 

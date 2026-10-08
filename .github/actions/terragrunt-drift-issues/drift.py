@@ -55,24 +55,46 @@ def classify(rows: list[dict]) -> dict[str, list[dict]]:
     return found
 
 
+SYMBOL = {"add": "+", "change": "~", "replace": "±", "destroy": "-", "outputs": "→"}
+NOUN = {"add": "to add", "change": "to change", "replace": "to replace", "destroy": "to destroy", "outputs": "outputs"}
+
+
+def noun(key: str, count: int) -> str:
+    if key == "outputs":
+        return "output" if count == 1 else "outputs"
+    return NOUN[key]
+
+
+def _totals(row: dict) -> str:
+    return " · ".join(f"**{SYMBOL[key]}{row.get(key, 0)}** {noun(key, int(row.get(key) or 0))}"
+                      for key in COUNT_KEYS if row.get(key))
+
+
 def body(row: dict, resources: list[dict[str, str]], run_url: str, now: str) -> str:
     lines = [f"<!-- terragrunt-drift: {row['unit']} -->",
-             f"`{row['unit']}` no longer matches its code: applying it now would change the infrastructure.", "",
-             "| Add | Change | Replace | Destroy | Outputs |", "|---|---|---|---|---|",
-             "| " + " | ".join(str(row.get(key, 0)) for key in COUNT_KEYS) + " |", ""]
+             f"## 🌊 Drift: `{row['unit']}`", "",
+             "The live infrastructure no longer matches the code: applying this unit now would change it.", "",
+             _totals(row), ""]
+    if row.get("destroy") or row.get("replace"):
+        lines += ["> [!WARNING]", "> Applying the code as it is would destroy or replace resources.", ""]
     if resources:
-        lines += ["```diff", *[f"{SIGN[r['action']]} {r['address']}" for r in resources], "```", ""]
-    lines += [f"Last seen {now} in [this run]({run_url}). Either apply the code through a pull request, "
-              "or change the code to match what was done by hand. The issue closes itself once the unit plans clean.", ""]
+        lines += ["<details open><summary>What would change</summary>", "", "```diff",
+                  *[f"{SIGN[r['action']]} {r['address']}" for r in resources], "```", "", "</details>", ""]
+    lines += ["> [!TIP]", "> Either apply the code through a pull request, or change the code to match what was "
+              "done by hand. This issue closes itself once the unit plans clean.", "",
+              f"<sub>Last seen {now} · [Drift run]({run_url})</sub>", ""]
     return "\n".join(lines)
 
 
 def failed_body(rows: list[dict], run_url: str, now: str) -> str:
+    noun = "unit" if len(rows) == 1 else "units"
     lines = ["<!-- terragrunt-drift: failed -->",
-             f"{len(rows)} units could not be planned at {now}, so their drift is unknown. "
-             f"The job logs of [the run]({run_url}) say why; when a whole profile fails, look at its credentials first.", "",
-             "| Unit | Error |", "|---|---|", *[f"| `{r['unit']}` | {r['error']} |" for r in rows], "",
-             "The issue closes itself once every unit plans again.", ""]
+             f"## ❌ {len(rows)} {noun} could not be planned", "",
+             "Their drift is unknown until they plan again.", "",
+             "| | Unit | Error |", "|:-:|---|---|", *[f"| ❌ | `{r['unit']}` | {r['error']} |" for r in rows], "",
+             "> [!TIP]", f"> The job logs of [the run]({run_url}) say why. When a whole profile fails, "
+             "look at its credentials first.", "",
+             f"<sub>Last seen {now} · This issue closes itself once every unit plans again</sub>", ""]
     return "\n".join(lines)
 
 
@@ -109,7 +131,7 @@ def reconcile(repo: str, label: str, rows: list[dict], resources: dict[str, list
         issue = existing.get(title_of(row["unit"]))
         if issue:
             gh(f"repos/{repo}/issues/{issue['number']}/comments", "--method", "POST",
-               payload={"body": f"Plans clean again as of {now} ([run]({run_url})). Closing."})
+               payload={"body": f"✅ **Plans clean again** as of {now}. Closing. [Run]({run_url})"})
             gh(f"repos/{repo}/issues/{issue['number']}", "--method", "PATCH",
                payload={"state": "closed", "state_reason": "completed"})
             done["closed"].append(row["unit"])
@@ -117,7 +139,7 @@ def reconcile(repo: str, label: str, rows: list[dict], resources: dict[str, list
         issue = existing.get(title_of(row["unit"]))
         if issue:
             gh(f"repos/{repo}/issues/{issue['number']}/comments", "--method", "POST",
-               payload={"body": f"Could not be planned at {now} ({row['error']}); drift unknown. [Run]({run_url})."})
+               payload={"body": f"❌ **Could not be planned** at {now} ({row['error']}), so the drift is unknown. [Run]({run_url})"})
         done["failed"].append(row["unit"])
     issue = existing.get(FAILED_TITLE)
     if groups["failed"]:
@@ -128,7 +150,7 @@ def reconcile(repo: str, label: str, rows: list[dict], resources: dict[str, list
             gh(f"repos/{repo}/issues", "--method", "POST", payload={"title": FAILED_TITLE, "body": text, "labels": [label]})
     elif issue:
         gh(f"repos/{repo}/issues/{issue['number']}/comments", "--method", "POST",
-           payload={"body": f"Every unit planned as of {now} ([run]({run_url})). Closing."})
+           payload={"body": f"✅ **Every unit planned again** as of {now}. Closing. [Run]({run_url})"})
         gh(f"repos/{repo}/issues/{issue['number']}", "--method", "PATCH",
            payload={"state": "closed", "state_reason": "completed"})
     return done
