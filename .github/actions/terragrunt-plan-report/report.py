@@ -176,7 +176,7 @@ def resource_lines(change: dict, resource_type: str, patterns: list[str]) -> lis
     for parts in sorted(set(old) | set(new) | unknown_paths, key=path_text):
         was, now = old.get(parts, ABSENT), new.get(parts, ABSENT)
         pending = marked(unknown, parts)
-        if creating and now in (None, ABSENT) and not pending:
+        if creating and (now in (None, ABSENT) or now == [] or now == {}) and not pending:
             continue
         if not creating and not pending and normalise(was) == normalise(now):
             continue
@@ -195,16 +195,14 @@ def resource_lines(change: dict, resource_type: str, patterns: list[str]) -> lis
     return lines
 
 
-def output_lines(change: dict) -> list[list[str]]:
+def output_lines(name: str, change: dict, patterns: list[str]) -> list[list[str]]:
+    """An output diffs like an attribute named after it, so a map output shows only the keys that change."""
     if change.get("before_sensitive") or change.get("after_sensitive"):
-        return [["~", SENSITIVE]]
-    actions = change.get("actions", [])
-    after = UNKNOWN if change.get("after_unknown") is True else show(change.get("after"))
-    if actions == ["create"]:
-        return [["+", after]]
-    if actions == ["delete"]:
-        return [["-", show(change.get("before"))]]
-    return [["~", f"{show(change.get('before'))} → {after}"]]
+        return [["~", f"{name} = {SENSITIVE}"]]
+    wrapped = {"actions": change.get("actions", []),
+               "before": {name: change.get("before")}, "after": {name: change.get("after")},
+               "after_unknown": {name: change.get("after_unknown")} if change.get("after_unknown") else None}
+    return resource_lines(wrapped, "output", patterns) or [["~", f"{name} = {show(change.get('after'))}"]]
 
 
 def diffs(plan: dict, patterns: list[str]) -> dict[str, list[list[str]]]:
@@ -212,7 +210,7 @@ def diffs(plan: dict, patterns: list[str]) -> dict[str, list[list[str]]]:
     found: dict[str, list[list[str]]] = {}
     for name, change in (plan.get("output_changes") or {}).items():
         if action_of(change.get("actions", [])):
-            found[f"output.{name}"] = output_lines(change)
+            found[f"output.{name}"] = output_lines(name, change, patterns)
     for change in plan.get("resource_changes") or []:
         if action_of(change.get("change", {}).get("actions", [])):
             found[change.get("address", "")] = resource_lines(change.get("change", {}), change.get("type", ""), patterns)
