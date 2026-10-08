@@ -2,14 +2,15 @@
 name: Terragrunt apply units
 description: >
   Validate an approval against the saved Terragrunt plans, then re-plan each unit to rule
-  out drift, apply exactly the saved plan files, or prove a second plan is empty.
+  out drift, apply exactly the saved plan files, or prove a second plan is empty; or, with
+  no saved plans, apply or destroy each unit in dependency order.
 
 inputs:
   command:
     description: approval, plans or run
     required: true
   phase:
-    description: For run, check, apply, clean, or fresh to plan, check and apply each unit with no saved plan
+    description: For run, check, apply, clean, fresh to plan, check and apply each unit with no saved plan, or destroy to plan, check and destroy each unit, dependents first
     required: false
     default: ""
   approvers:
@@ -41,7 +42,7 @@ inputs:
     required: false
     default: ""
   expect_json:
-    description: For plans without a marker, and for run fresh, the expectations policy as JSON
+    description: For plans without a marker, and for run fresh and destroy, the expectations policy as JSON
     required: false
     default: ""
   units:
@@ -57,11 +58,11 @@ inputs:
     required: false
     default: ""
   engine:
-    description: For run check and fresh, the engine binary that reads plans
+    description: For run check, fresh and destroy, the engine binary that reads plans
     required: false
     default: tofu
   parallelism:
-    description: For run fresh, how many units of one dependency level run at once
+    description: For run fresh and destroy, how many units of one dependency level run at once
     required: false
     default: "4"
 
@@ -88,11 +89,14 @@ outputs:
     description: true when any unit would change anything
     value: ${{ steps.units.outputs.has_changes }}
   changes:
-    description: For run fresh, JSON list of each reached unit's counts and outcome
+    description: For run fresh and destroy, JSON list of each reached unit's counts and outcome
     value: ${{ steps.units.outputs.changes }}
   applied:
     description: For run fresh, the units applied, one per line
     value: ${{ steps.units.outputs.applied }}
+  destroyed:
+    description: For run destroy, the units destroyed, one per line
+    value: ${{ steps.units.outputs.destroyed }}
   reason:
     description: Why the apply was refused; empty when it was not
     value: ${{ steps.units.outputs.reason }}

@@ -4,8 +4,9 @@
 `approval` validates an `/approve apply-<id>` comment on a gate issue; `plans` checks the
 downloaded metadata.json against that approval, or against an expectations policy; `run`
 re-plans each unit and compares changesets (`check`), applies the saved plan files
-(`apply`), proves a second plan is empty (`clean`), or plans, checks and applies each
-unit in dependency order with no saved plan (`fresh`). It lives beside its action, not in
+(`apply`), proves a second plan is empty (`clean`), plans, checks and applies each
+unit in dependency order with no saved plan (`fresh`), or plans, checks and destroys each
+unit in reverse dependency order (`destroy`). It lives beside its action, not in
 scripts/, because the public mirror copies actions only. → docs/terragrunt-apply.md
 
     python3 .github/actions/terragrunt-apply-units/apply_units.py approval --approvers "$APPROVERS"
@@ -131,6 +132,14 @@ def unit_violation(unit: dict, expect: dict) -> str:
         if unit.get(key, 0) != wanted:
             return f"{unit['unit']} would {key} {unit.get(key, 0)}, expected {wanted}"
     return ""
+
+
+def destroy_violation(unit: dict, expect: dict) -> str:
+    """Why one unit's destroy plan breaks the policy; a destroy plan only ever deletes."""
+    for key in ("add", "change", "replace"):
+        if unit.get(key):
+            return f"{unit['unit']} would {key} {unit[key]} resources while being destroyed"
+    return unit_violation(unit, {**expect, "allow_destroy": True})
 
 
 def check_expectations(metadata: dict, expect: dict) -> None:
@@ -279,23 +288,88 @@ def fresh_unit(root: Path, unit: str, expect: dict, engine: str) -> dict:
     return {**row, "outcome": "applied"}
 
 
-def run_fresh(root: Path, order: list[str], expect: dict, engine: str, parallelism: int) -> list[dict]:
-    """Level by level in dependency order; a level that fails anywhere is the last one run."""
+def is_protected(unit_dir: Path) -> bool:
+    """Whether the unit sets prevent_destroy, which makes Terragrunt refuse to plan its destruction."""
+    rendered = subprocess.run(["terragrunt", "render", "--json", "--non-interactive"], cwd=unit_dir,
+                              capture_output=True, text=True, check=False)
+    try:
+        return rendered.returncode == 0 and json.loads(rendered.stdout).get("prevent_destroy") is True
+    except json.JSONDecodeError:
+        return False
+
+
+def destroy_unit(root: Path, unit: str, expect: dict, engine: str) -> dict:
+    """Plan one unit's destruction, check it, then destroy: applying the saved plan would skip `destroy` hooks."""
+    unit_dir = root / unit
+    if streamed(unit, unit_dir, "plan", "-destroy", "-input=false", "-out=tfplan-destroy") != 0:
+        if is_protected(unit_dir):
+            return {"unit": unit, "outcome": "protected", "reason": "protected by prevent_destroy"}
+        return {"unit": unit, "outcome": "plan failed"}
+    plan_file = find_newest(unit_dir, "tfplan-destroy")
+    if plan_file is None:
+        return {"unit": unit, "outcome": "left no plan"}
+    shown = subprocess.run([engine, "show", "-json", plan_file.name], cwd=plan_file.parent,
+                           capture_output=True, text=True, check=True)
+    row = {"unit": unit, **counts_of(resources(json.loads(shown.stdout)))}
+    violation = destroy_violation(row, expect)
+    if violation:
+        return {**row, "outcome": "refused", "reason": violation}
+    if not any(row[key] for key in COUNT_KEYS):
+        return {**row, "outcome": "unchanged"}
+    if streamed(unit, unit_dir, "destroy", "-auto-approve", "-input=false") != 0:
+        return {**row, "outcome": "destroy failed"}
+    return {**row, "outcome": "destroyed"}
+
+
+PHASES = {"fresh": (fresh_unit, "applied", "apply"), "destroy": (destroy_unit, "destroyed", "destroy")}
+
+
+def dependencies_of(unit: str, deps: dict[str, set[str]]) -> set[str]:
+    found: set[str] = set()
+    pending = list(deps.get(unit, ()))
+    while pending:
+        dep = pending.pop()
+        if dep not in found:
+            found.add(dep)
+            pending.extend(deps.get(dep, ()))
+    return found
+
+
+SETTLED = {"applied", "destroyed", "unchanged", "protected", "kept"}
+
+
+def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: str, parallelism: int) -> list[dict]:
+    """Level by level, dependencies first for fresh and last for destroy; a level that fails anywhere is the last one run.
+
+    Like `run --all destroy`, a destroy keeps every prevent_destroy unit and everything it depends on.
+    """
     check_policy(expect)
-    listing = subprocess.run(["terragrunt", "list", "--long", "--dependencies", "--queue-construct-as", "apply"],
+    worker = PHASES[phase][0]
+    listing = subprocess.run(["terragrunt", "list", "--long", "--dependencies", "--queue-construct-as", PHASES[phase][2]],
                              cwd=root.resolve(), capture_output=True, text=True, check=True).stdout
+    deps = parse_dependencies(listing, order)
+    groups = levels(order, deps)
     rows: list[dict] = []
-    for group in levels(order, parse_dependencies(listing, order)):
+    kept: dict[str, str] = {}
+    for group in reversed(groups) if phase == "destroy" else groups:
+        rows.extend({"unit": unit, "outcome": "kept", "reason": f"a dependency of protected {kept[unit]}"}
+                    for unit in group if unit in kept)
+        todo = [unit for unit in group if unit not in kept]
         with ThreadPoolExecutor(max_workers=max(1, parallelism)) as pool:
-            done = list(pool.map(lambda unit: fresh_unit(root, unit, expect, engine), group))
+            done = list(pool.map(lambda unit: worker(root, unit, expect, engine), todo))
         rows.extend(done)
-        if any(row["outcome"] not in ("applied", "unchanged") for row in done):
+        for row in done:
+            if row["outcome"] == "protected":
+                for dep in dependencies_of(row["unit"], deps):
+                    kept.setdefault(dep, row["unit"])
+        if any(row["outcome"] not in SETTLED for row in done):
             break
     return rows
 
 
-def fresh_report(rows: list[dict], order: list[str]) -> str:
-    lines = ["### Fresh apply", "", "| Unit | Add | Change | Replace | Destroy | Outputs | Outcome |",
+def levels_report(phase: str, rows: list[dict], order: list[str]) -> str:
+    title = {"fresh": "Fresh apply", "destroy": "Destroy"}[phase]
+    lines = [f"### {title}", "", "| Unit | Add | Change | Replace | Destroy | Outputs | Outcome |",
              "|---|---|---|---|---|---|---|"]
     for row in rows:
         counts = " | ".join(str(row.get(key, "")) for key in COUNT_KEYS)
@@ -335,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
     plans.add_argument("--artifact-json", default="")
     plans.add_argument("--expect-json", default="")
     run = sub.add_parser("run")
-    run.add_argument("--phase", choices=["check", "apply", "clean", "fresh"], required=True)
+    run.add_argument("--phase", choices=["check", "apply", "clean", "fresh", "destroy"], required=True)
     run.add_argument("--metadata", default="")
     run.add_argument("--expect-json", default="")
     run.add_argument("--parallelism", type=int, default=4)
@@ -353,21 +427,22 @@ def main(argv: list[str] | None = None) -> int:
             write_outputs(marker=json.dumps(marker, separators=(",", ":")), artifact_id=marker["artifact_id"],
                           plan_run_id=marker["plan_run_id"], commit=marker["commit"], issue=marker["issue"])
             return 0
-        if args.command == "run" and args.phase == "fresh":
+        if args.command == "run" and args.phase in PHASES:
             order = [line.strip() for line in args.units.splitlines() if line.strip()]
             expect = json.loads(args.expect_json or "{}")
-            rows = run_fresh(Path(args.working_directory), order, expect, args.engine, args.parallelism)
-            report = fresh_report(rows, order)
+            rows = run_levels(args.phase, Path(args.working_directory), order, expect, args.engine, args.parallelism)
+            report = levels_report(args.phase, rows, order)
             print(report, end="")
             if os.environ.get("GITHUB_STEP_SUMMARY"):
                 with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
                     out.write(report)
-            applied = [row["unit"] for row in rows if row["outcome"] == "applied"]
+            outcome = PHASES[args.phase][1]
+            applied = [row["unit"] for row in rows if row["outcome"] == outcome]
             write_outputs(changes=json.dumps(rows, separators=(",", ":")))
             if os.environ.get("GITHUB_OUTPUT"):
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-                    out.write("applied<<APPLY_UNITS_EOF\n" + "".join(u + "\n" for u in applied) + "APPLY_UNITS_EOF\n")
-            stopped = [row for row in rows if row["outcome"] not in ("applied", "unchanged")]
+                    out.write(f"{outcome}<<APPLY_UNITS_EOF\n" + "".join(u + "\n" for u in applied) + "APPLY_UNITS_EOF\n")
+            stopped = [row for row in rows if row["outcome"] not in SETTLED]
             if stopped:
                 raise Refused("; ".join(f"{row['unit']}: {row.get('reason') or row['outcome']}" for row in stopped)
                               + ". Units after these were not reached")

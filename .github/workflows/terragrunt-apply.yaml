@@ -174,7 +174,7 @@ jobs:
       - name: Check the approval comment
         id: approval
         if: inputs.approval == 'issue'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@d21a524349f5f3133e3a7cbed1fb2da41be6655b
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@5c72de4f6e53b417a2e5dde0c0e622d73df5a1b2
         with:
           command: approval
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
@@ -246,7 +246,7 @@ jobs:
 
       - name: Check the plans against the approval
         id: plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@d21a524349f5f3133e3a7cbed1fb2da41be6655b
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@5c72de4f6e53b417a2e5dde0c0e622d73df5a1b2
         with:
           command: plans
           metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
@@ -257,7 +257,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@d21a524349f5f3133e3a7cbed1fb2da41be6655b
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@5c72de4f6e53b417a2e5dde0c0e622d73df5a1b2
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.plans.outputs.units }}
@@ -326,7 +326,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@d21a524349f5f3133e3a7cbed1fb2da41be6655b
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@5c72de4f6e53b417a2e5dde0c0e622d73df5a1b2
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -353,7 +353,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@d21a524349f5f3133e3a7cbed1fb2da41be6655b
+        uses: naviteq/github-actions/.github/actions/registry-token@5c72de4f6e53b417a2e5dde0c0e622d73df5a1b2
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -426,7 +426,7 @@ jobs:
 
       # Every unit before anything is applied, so a later unit cannot see an earlier apply.
       - name: Re-plan and compare with the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@d21a524349f5f3133e3a7cbed1fb2da41be6655b
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@5c72de4f6e53b417a2e5dde0c0e622d73df5a1b2
         with:
           command: run
           phase: check
@@ -486,7 +486,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@d21a524349f5f3133e3a7cbed1fb2da41be6655b
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@5c72de4f6e53b417a2e5dde0c0e622d73df5a1b2
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -513,7 +513,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@d21a524349f5f3133e3a7cbed1fb2da41be6655b
+        uses: naviteq/github-actions/.github/actions/registry-token@5c72de4f6e53b417a2e5dde0c0e622d73df5a1b2
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -616,7 +616,7 @@ jobs:
           rm -f "${key}"
 
       - name: Apply the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@d21a524349f5f3133e3a7cbed1fb2da41be6655b
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@5c72de4f6e53b417a2e5dde0c0e622d73df5a1b2
         with:
           command: run
           phase: apply
@@ -627,7 +627,7 @@ jobs:
 
       - name: Prove a second plan changes nothing
         if: inputs.verify_clean
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@d21a524349f5f3133e3a7cbed1fb2da41be6655b
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@5c72de4f6e53b417a2e5dde0c0e622d73df5a1b2
         with:
           command: run
           phase: clean
