@@ -34,6 +34,7 @@ def gh(*args: str, payload: dict | None = None) -> object:
 
 
 FAILED_TITLE = "[drift] Units could not be planned"
+ISSUE_LIMIT = 55000
 
 
 def title_of(unit: str) -> str:
@@ -78,8 +79,15 @@ def body(row: dict, resources: list[dict[str, str]], run_url: str, now: str) -> 
     if row.get("destroy") or row.get("replace"):
         lines += ["> [!WARNING]", "> Applying the code as it is would destroy or replace resources.", ""]
     if resources:
-        lines += ["<details open><summary>What would change</summary>", "", "```diff",
-                  *[f"{SIGN[r['action']]} {r['address']}" for r in resources], "```", "", "</details>", ""]
+        diff = []
+        for item in resources:
+            diff.append(f"{SIGN[item['action']]} {item['address']}")
+            diff += [f"{sign if sign in '+-~' else ' '}     {text}" for sign, text in item.get("lines") or []]
+        if sum(len(line) + 1 for line in diff) > ISSUE_LIMIT:
+            diff = [f"{SIGN[item['action']]} {item['address']}" for item in resources]
+        fence = "````" if any("```" in line for line in diff) else "```"
+        lines += ["<details open><summary>What would change</summary>", "", f"{fence}diff", *diff, fence, "",
+                  "</details>", ""]
     lines += ["> [!TIP]", "> Either apply the code through a pull request, or change the code to match what was "
               "done by hand. This issue closes itself once the unit plans clean.", "",
               f"<sub>Last seen {now} · [Drift run]({run_url})</sub>", ""]

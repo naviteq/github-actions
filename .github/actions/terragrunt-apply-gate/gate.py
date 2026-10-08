@@ -126,6 +126,43 @@ def totals_line(units: list[dict]) -> str:
     return " · ".join(f"**{SYMBOL[key]}{sums[key]}** {noun(key, sums[key])}" for key in COUNT_KEYS if sums[key])
 
 
+ISSUE_LIMIT = 60000
+SIGN = {"create": "+", "update": "~", "replace": "-/+", "delete": "-"}
+
+
+def _diff_block(found: list[dict], values: bool) -> str:
+    lines = []
+    for item in found:
+        lines.append(f"{SIGN[item['action']]} {item['address']}")
+        for sign, text in (item.get("lines") or []) if values else []:
+            lines.append(f"{sign if sign in '+-~' else ' '}     {text}")
+    fence = "````" if any("```" in line for line in lines) else "```"
+    return "\n".join([f"{fence}diff", *lines, fence])
+
+
+def changes_sections(units: list[dict], room: int, run_url: str) -> str:
+    """Per unit, a collapsible list of its sanitised changes, cut to the room an issue body has."""
+    body, cut = "", False
+    note = f"_Some changes are cut to fit; the full plan is in the [run]({run_url})._\n\n"
+    for unit in units:
+        found = unit.get("resources") or []
+        if not found:
+            continue
+        count = len(found)
+        for values in (True, False):
+            shown = "" if values or not any(item.get("lines") for item in found) else " (values cut to fit)"
+            section = "\n".join([f"<details><summary><code>{unit['unit']}</code>: {count} change"
+                                 f"{'s' if count != 1 else ''}{shown}</summary>", "",
+                                 _diff_block(found, values), "", "</details>", "", ""])
+            if len(body) + len(section) + len(note) <= room:
+                body += section
+                cut = cut or not values
+                break
+        else:
+            return body + note
+    return body + (note if cut else "")
+
+
 def _approve_block(verb: str, artifact_id: object, approvers: list[str]) -> list[str]:
     who = " ".join("@" + a for a in approvers) or "_nobody: no approvers are configured_"
     return ["> [!IMPORTANT]", f"> **To {verb}**, one of {who} comments exactly:", ">", "> ```",
@@ -151,6 +188,9 @@ def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, 
     if destroys:
         lines += ["> [!WARNING]", "> This apply destroys or replaces resources. Check the units marked ⚠️.", ""]
     lines += [*table(changing), ""]
+    sections = changes_sections(changing, ISSUE_LIMIT - len("\n".join(lines)) - 2000, run_url)
+    if sections:
+        lines += [sections]
     if metadata.get("deleted"):
         lines += ["> [!NOTE]", "> Deleted units are not destroyed by this apply: "
                   + ", ".join(f"`{u}`" for u in metadata["deleted"])
@@ -180,6 +220,9 @@ def destroy_body(metadata: dict, marker: dict, approvers: list[str], actor: str,
         lines += [total, ""]
     lines += ["> [!CAUTION]", "> Everything these units manage is deleted. This cannot be undone from here.", "",
               *table(going), ""]
+    sections = changes_sections(going, ISSUE_LIMIT - len("\n".join(lines)) - 2000, run_url)
+    if sections:
+        lines += [sections]
     if metadata.get("kept"):
         lines += ["> [!NOTE]", "> Kept, as `prevent_destroy` or a dependency of one: "
                   + ", ".join(f"`{u}`" for u in metadata["kept"]) + ".", ""]

@@ -29,8 +29,16 @@ inputs:
     description: Units a destroy run left out for prevent_destroy, one per line; reported as kept, not missing
     required: false
     default: ""
+  mask:
+    description: Attribute name globs whose values never render in diffs, comma-separated; empty uses the default list
+    required: false
+    default: ""
+  secret_units:
+    description: Unit path globs whose diffs show addresses only, comma-separated
+    required: false
+    default: ""
   resources_file:
-    description: File to write each unit's changed resource addresses and actions to, as JSON; empty writes none
+    description: File to write each unit's changed resource addresses, actions and sanitised diffs to, as JSON; empty writes none
     required: false
     default: ""
 
@@ -60,8 +68,11 @@ runs:
         DESTROY_LOG: ${{ inputs.destroy_log }}
         RESOURCES_FILE: ${{ inputs.resources_file }}
         KEPT: ${{ inputs.kept }}
+        MASK: ${{ inputs.mask }}
+        SECRET_UNITS: ${{ inputs.secret_units }}
       run: |
         set -euo pipefail
         python3 "${ACTION_PATH}/report.py" --working-directory "${WORKING_DIRECTORY}" \
           --engine "${ENGINE}" --units "${UNITS}" --deleted "${DELETED}" --destroy-log "${DESTROY_LOG}" \
-          --resources-file "${RESOURCES_FILE}" --kept "${KEPT}"
+          --resources-file "${RESOURCES_FILE}" --kept "${KEPT}" --secret-units "${SECRET_UNITS}" \
+          ${MASK:+--mask "${MASK}"}

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Merge the plan jobs' counts, hand the plans over to the apply, and render the PR comment and Slack summary.
 
-Every file this writes carries resource addresses and actions at most, never a value.
+Attribute values reach the comment and metadata.json only as the report sanitised them;
+the Slack summary carries counts alone.
 It lives beside its action, not in scripts/, because the public mirror copies actions
 only. → docs/terragrunt-plan.md
 
@@ -55,12 +56,15 @@ def join_manifests(plans_dir: Path) -> list[list[str]]:
     return rows
 
 
-def metadata(context: dict, rows: list[dict], manifest: list[list[str]], skipped: list[list[str]]) -> dict:
-    """What the apply checks a plan against before it touches anything."""
+def metadata(context: dict, rows: list[dict], manifest: list[list[str]], skipped: list[list[str]],
+             resources: dict[str, list[dict]] | None = None) -> dict:
+    """What the apply checks a plan against before it touches anything, and what the gate shows."""
     files = {row[0]: row[1] for row in manifest if len(row) >= 2}
+    resources = resources or {}
     units = [
         {"unit": row["unit"], "profile": row.get("profile", ""), "file": files.get(row["unit"], ""),
-         "changeset": row.get("changeset", ""), **{key: row.get(key, 0) for key in COUNT_KEYS}}
+         "changeset": row.get("changeset", ""), **{key: row.get(key, 0) for key in COUNT_KEYS},
+         "resources": resources.get(row["unit"], [])}
         for row in rows if not row.get("deleted") and not row.get("error") and not row.get("kept")
     ]
     return {
@@ -193,24 +197,42 @@ def comment(rows: list[dict], resources: dict[str, list[dict[str, str]]], skippe
         "Updated on every push") if part) + "</sub>\n"
     body = "\n".join(head) + "\n"
 
-    sections = []
+    note = f"_Some changes are cut to fit; the full plan is in the [run]({run_url})._\n\n"
+    cut = False
     for row in rows:
         # A deleted unit's destroy plan is counted from the log; it has no addresses.
         found = resources.get(row["unit"]) if changes(row) else None
         if not found:
             continue
-        count = len(found)
-        lines = [f"<details><summary>{_unit_status(row)} <code>{row['unit']}</code>: "
-                 f"{count} change{'s' if count != 1 else ''}</summary>", "", "```diff"]
-        lines += [f"{SIGN[r['action']]} {r['address']}" for r in found]
-        lines += ["```", "", "</details>", "", ""]
-        sections.append("\n".join(lines))
-    note = f"_Resource lists cut to fit; the full plan is in the [run]({run_url})._\n\n"
-    for section in sections:
-        if len(body) + len(section) + len(note) + len(footer) > limit:
+        full = section(row, found, values=True)
+        brief = section(row, found, values=False)
+        room = limit - len(body) - len(note) - len(footer)
+        if len(full) <= room:
+            body += full
+        elif len(brief) <= room:
+            body, cut = body + brief, True
+        else:
             return body + note + footer
-        body += section
-    return body + footer
+    return body + (note if cut else "") + footer
+
+
+def diff_block(found: list[dict], values: bool = True) -> str:
+    """Each resource's address and, unless left out, its sanitised attribute lines."""
+    lines = []
+    for item in found:
+        lines.append(f"{SIGN[item['action']]} {item['address']}")
+        for sign, text in (item.get("lines") or []) if values else []:
+            lines.append(f"{sign if sign in '+-~' else ' '}     {text}")
+    fence = "````" if any("```" in line for line in lines) else "```"
+    return "\n".join([f"{fence}diff", *lines, fence])
+
+
+def section(row: dict, found: list[dict], values: bool = True) -> str:
+    count = len(found)
+    shown = "" if values or not any(item.get("lines") for item in found) else " (values cut to fit)"
+    return "\n".join([f"<details><summary>{_unit_status(row)} <code>{row['unit']}</code>: "
+                      f"{count} change{'s' if count != 1 else ''}{shown}</summary>", "",
+                      diff_block(found, values), "", "</details>", "", ""])
 
 
 SLACK_COLOR = {"✅": "#2eb886", "📝": "#d4a72c", "⚠️": "#e8912d", "❌": "#e01e5a"}
@@ -282,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.plans_dir:
         Path(args.plans_dir).mkdir(parents=True, exist_ok=True)
         manifest = join_manifests(Path(args.plans_dir))
-        data = metadata(json.loads(args.context_json), rows, manifest, skipped)
+        data = metadata(json.loads(args.context_json), rows, manifest, skipped, resources)
         (Path(args.plans_dir) / "metadata.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         handed_over = True
     if args.comment_file:
