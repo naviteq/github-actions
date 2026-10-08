@@ -1,7 +1,7 @@
 ---
-# Plans every unit on a schedule and keeps one [drift] <unit> issue per unit whose
-# infrastructure no longer matches its code. → docs/terragrunt-drift.md
-name: Terragrunt drift
+# Plans the destruction of the units filter selects and opens the issue an approver
+# answers; terragrunt-apply then destroys them. → docs/terragrunt-destroy.md
+name: Terragrunt destroy request
 
 on:
   workflow_call:
@@ -37,7 +37,11 @@ on:
         type: string
         default: ""
       filter:
-        description: Terragrunt --filter expression narrowing the units checked; empty checks every unit
+        description: Terragrunt --filter expression selecting the units to destroy, e.g. ./live/dev/**
+        required: true
+        type: string
+      ref:
+        description: Commit or branch whose code describes the units; empty for the dispatched commit
         required: false
         type: string
         default: ""
@@ -57,7 +61,7 @@ on:
         type: string
         default: ""
       profiles:
-        description: YAML credential profiles, as in terragrunt-plan, naming the read-only roles
+        description: YAML credential profiles, as in terragrunt-plan, naming the roles that plan the destroy
         required: false
         type: string
         default: ""
@@ -81,16 +85,21 @@ on:
         required: false
         type: boolean
         default: true
-      label:
-        description: Label of the drift issues
+      approvers:
+        description: Comma-separated GitHub logins allowed to approve; empty reads vars.TERRAGRUNT_APPLY_APPROVERS
         required: false
         type: string
-        default: terragrunt-drift
-      open_issues:
-        description: Open, update and close drift issues; false only reports
+        default: ""
+      label:
+        description: Label prefix of the destroy issues
         required: false
-        type: boolean
-        default: true
+        type: string
+        default: terragrunt-destroy
+      artifact_retention_days:
+        description: How long the destroy plans' metadata is kept, and so how long the issue can be approved
+        required: false
+        type: number
+        default: 14
     secrets:
       naviteq_github_app_id:
         description: GitHub App id; with the key, mints a read-only token so private git sources resolve
@@ -105,24 +114,32 @@ on:
         description: Runestra registry client secret
         required: false
       aws_iam_role:
-        description: AWS role assumed through OIDC when aws_region is set; read-only is enough
+        description: AWS role assumed through OIDC when aws_region is set; it only plans, read-only is enough
         required: false
       terragrunt_extra_env:
         description: KEY=VALUE lines exported with masked values; with profiles, a job gets only the keys its profile lists
         required: false
     outputs:
-      drifted:
-        description: Units whose plan would change something, one per line
-        value: ${{ jobs.issues.outputs.drifted }}
-      has_drift:
-        description: true when any unit drifted
-        value: ${{ jobs.issues.outputs.has_drift }}
+      state:
+        description: pending when an issue was opened, no-changes when nothing is left to destroy
+        value: ${{ jobs.request.outputs.state }}
+      issue:
+        description: The issue opened, if any
+        value: ${{ jobs.request.outputs.issue }}
+      changes:
+        description: JSON list of each unit's destroy counts, and the units kept for prevent_destroy
+        value: ${{ jobs.plan.outputs.changes }}
 
 permissions: {}
 
+# One request at a time per repository and directory; a queued one waits, never cancels.
+concurrency:
+  group: terragrunt-destroy-request-${{ github.repository }}-${{ inputs.working_directory }}
+  cancel-in-progress: false
+
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@ca55fdf7691f4d70b3c5a2af381ce93d0b367f1c
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@af431472c97231e87ce34aa32eac902f78c10a45
     permissions:
       contents: read
       id-token: write
@@ -134,6 +151,8 @@ jobs:
       terragrunt_version: ${{ inputs.terragrunt_version }}
       opentofu_version: ${{ inputs.opentofu_version }}
       terraform_version: ${{ inputs.terraform_version }}
+      destroy: true
+      ref: ${{ inputs.ref }}
       filter: ${{ inputs.filter }}
       filter_affected: false
       parallelism: ${{ inputs.parallelism }}
@@ -141,43 +160,55 @@ jobs:
       aws_region: ${{ inputs.aws_region }}
       profiles: ${{ inputs.profiles }}
       env_vars: ${{ inputs.env_vars }}
-      # Nothing is kept for an apply: a drift plan is a report, not a change to approve.
-      plan_recipient: ""
       pr_comment: false
-      artifact_name: terragrunt-drift-${{ github.run_id }}-${{ github.run_attempt }}
+      artifact_retention_days: ${{ inputs.artifact_retention_days }}
       provider_cache: ${{ inputs.provider_cache }}
       provider_cache_registries: ${{ inputs.provider_cache_registries }}
       dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
     secrets: inherit
 
-  # Also after a failed plan job: units it did plan still get their issues reconciled.
-  issues:
-    name: Reconcile the drift issues
+  request:
+    name: Open the destroy issue
     needs: plan
-    if: ${{ !cancelled() && needs.plan.outputs.changes != '' }}
+    if: needs.plan.outputs.artifact != ''
     runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
     permissions:
       contents: read
+      actions: read
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}
     outputs:
-      drifted: ${{ steps.drift.outputs.drifted }}
-      has_drift: ${{ steps.drift.outputs.has_drift }}
+      state: ${{ steps.request.outputs.state }}
+      issue: ${{ steps.request.outputs.issue }}
     steps:
-      - name: Download the changed resource addresses
+      # The issue gates the artifact by id, the way the apply gate does.
+      - name: Find the artifact's id
+        id: artifact
+        env:
+          NAME: ${{ needs.plan.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?name=${NAME}" --jq '.artifacts[0].id // empty')"
+          if [ -z "${id}" ]; then
+            echo "::error title=No artifact::${NAME} was not uploaded by this run"
+            exit 1
+          fi
+          echo "id=${id}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the destroy plans' metadata
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          pattern: terragrunt-drift-${{ github.run_id }}-${{ github.run_attempt }}-counts-*
-          path: counts
-          merge-multiple: true
+          artifact-ids: ${{ steps.artifact.outputs.id }}
+          path: ${{ runner.temp }}/terragrunt-plans
 
-      - name: Reconcile the drift issues
-        id: drift
-        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@ca55fdf7691f4d70b3c5a2af381ce93d0b367f1c
+      - name: Open the issue that gates the destroy
+        id: request
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@af431472c97231e87ce34aa32eac902f78c10a45
         with:
-          changes: ${{ needs.plan.outputs.changes }}
-          counts_dir: counts
+          command: request
+          sha: ${{ github.sha }}
+          artifact_id: ${{ steps.artifact.outputs.id }}
+          metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
+          approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
           label: ${{ inputs.label }}
-          open_issues: ${{ inputs.open_issues }}
-          run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

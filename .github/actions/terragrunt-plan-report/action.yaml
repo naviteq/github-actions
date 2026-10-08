@@ -25,6 +25,10 @@ inputs:
     description: Log file of the destroy-plan run for the deleted units
     required: false
     default: ""
+  kept:
+    description: Units a destroy run left out for prevent_destroy, one per line; reported as kept, not missing
+    required: false
+    default: ""
   resources_file:
     description: File to write each unit's changed resource addresses and actions to, as JSON; empty writes none
     required: false
@@ -55,8 +59,9 @@ runs:
         DELETED: ${{ inputs.deleted }}
         DESTROY_LOG: ${{ inputs.destroy_log }}
         RESOURCES_FILE: ${{ inputs.resources_file }}
+        KEPT: ${{ inputs.kept }}
       run: |
         set -euo pipefail
         python3 "${ACTION_PATH}/report.py" --working-directory "${WORKING_DIRECTORY}" \
           --engine "${ENGINE}" --units "${UNITS}" --deleted "${DELETED}" --destroy-log "${DESTROY_LOG}" \
-          --resources-file "${RESOURCES_FILE}"
+          --resources-file "${RESOURCES_FILE}" --kept "${KEPT}"

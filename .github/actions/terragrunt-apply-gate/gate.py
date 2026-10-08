@@ -2,7 +2,8 @@
 """After a merge, find the pull request's saved plans and open the issue that gates their apply.
 
 `find` resolves the merged pull request and its plan artifact; `decide` checks the plan
-against the merged tree and opens the approval issue, or says why it cannot. It lives
+against the merged tree and opens the approval issue, or says why it cannot; `request`
+opens the issue that gates a requested destroy. It lives
 beside its action, not in scripts/, because the public mirror copies actions only.
 → docs/terragrunt-apply.md
 
@@ -122,6 +123,25 @@ def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, 
     return "\n".join(lines)
 
 
+def destroy_body(metadata: dict, marker: dict, approvers: list[str], actor: str, run_url: str) -> str:
+    """The destroy issue: what would go, what stays, who may approve, and the exact command."""
+    going = [u for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
+    lines = [f"<!-- {MARKER}: {json.dumps(marker, separators=(',', ':'))} -->",
+             f"### Destroy under `{marker['working_directory']}`", "",
+             f"Requested by @{actor}; planned at `{marker['commit'][:7]}` in [this run]({run_url}), "
+             f"artifact `{metadata['artifact']}`.", "", *table(going)]
+    if metadata.get("kept"):
+        lines += ["", "Kept, as `prevent_destroy` or a dependency of one: "
+                  + ", ".join(f"`{u}`" for u in metadata["kept"])]
+    if metadata.get("skipped"):
+        lines += ["", "Not planned: " + ", ".join(f"`{s['unit']}` ({s['reason']})" for s in metadata["skipped"])]
+    lines += ["", "The destroy re-plans every unit first and stops if anything differs from the plans above, "
+              "then destroys the units one by one, dependents first.", "",
+              f"To destroy, one of {' '.join('@' + a for a in approvers) or '(no approvers configured)'} "
+              "comments exactly:", "", "```", f"/approve destroy-{marker['artifact_id']}", "```", ""]
+    return "\n".join(lines)
+
+
 def blocked_body(reason: str, pr: int | None, pr_url: str, commit: str) -> str:
     where = f"[PR #{pr}]({pr_url})" if pr else f"commit `{commit[:7]}`"
     return "\n".join([f"### No apply for {where}", "", reason + ".", "",
@@ -226,6 +246,26 @@ def cmd_decide(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_request(args: argparse.Namespace) -> int:
+    metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
+    if metadata.get("schema") != 1 or not metadata.get("destroy"):
+        print("::error title=Not a destroy plan::the artifact's metadata.json does not describe destroy plans")
+        write_outputs(state="blocked", issue="")
+        return 1
+    if not metadata.get("has_changes"):
+        print("Nothing to destroy: every selected unit is already empty or kept.")
+        write_outputs(state="no-changes", issue="")
+        return 0
+    marker = {"action": "destroy", "artifact_id": int(args.artifact_id), "plan_run_id": metadata["plan_run_id"],
+              "pr": metadata.get("pr"), "head_sha": metadata["head_sha"], "commit": metadata["commit"],
+              "tree": metadata["tree"], "working_directory": metadata["working_directory"]}
+    run_url = f"{args.server_url}/{args.repo}/actions/runs/{metadata['plan_run_id']}"
+    body = destroy_body(metadata, marker, approvers_of(args.approvers), args.actor, run_url)
+    number = open_issue(args, f"Terragrunt destroy under {metadata['working_directory']}", body, "pending")
+    write_outputs(state="pending", issue=number)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -250,8 +290,16 @@ def main(argv: list[str] | None = None) -> int:
     decide.add_argument("--approvers", default="")
     decide.add_argument("--label", default=MARKER)
     decide.add_argument("--plan-state", default="")
+    request = sub.add_parser("request")
+    request.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
+    request.add_argument("--server-url", default=os.environ.get("GITHUB_SERVER_URL", "https://github.com"))
+    request.add_argument("--actor", default=os.environ.get("GITHUB_ACTOR", ""))
+    request.add_argument("--artifact-id", required=True)
+    request.add_argument("--metadata", required=True)
+    request.add_argument("--approvers", default="")
+    request.add_argument("--label", default="terragrunt-destroy")
     args = parser.parse_args(argv)
-    return cmd_find(args) if args.command == "find" else cmd_decide(args)
+    return {"find": cmd_find, "decide": cmd_decide, "request": cmd_request}[args.command](args)
 
 
 if __name__ == "__main__":

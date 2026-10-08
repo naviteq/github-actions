@@ -1,6 +1,6 @@
 ---
 # Applies exactly the plans a terragrunt-plan run saved, after an approval on the gate
-# issue or against an expectations policy. → docs/terragrunt-apply.md
+# issue or against an expectations policy; or runs an approved destroy. → docs/terragrunt-apply.md
 name: Terragrunt apply
 
 on:
@@ -108,8 +108,8 @@ on:
         default: true
     secrets:
       plan_age_key:
-        description: age private key matching the plan's plan_recipient; decrypts the saved plans
-        required: true
+        description: age private key matching the plan's plan_recipient; decrypts the saved plans, and a destroy needs none
+        required: false
       naviteq_github_app_id:
         description: GitHub App id; with the key, mints a read-only token so private git sources resolve
         required: false
@@ -158,6 +158,7 @@ jobs:
       legs: ${{ steps.profiles.outputs.legs }}
       units: ${{ steps.plans.outputs.units }}
       has_changes: ${{ steps.plans.outputs.has_changes }}
+      destroy: ${{ steps.plans.outputs.destroy }}
       commit: ${{ steps.source.outputs.commit }}
       artifact_id: ${{ steps.source.outputs.artifact_id }}
       run_id: ${{ steps.source.outputs.run_id }}
@@ -174,7 +175,7 @@ jobs:
       - name: Check the approval comment
         id: approval
         if: inputs.approval == 'issue'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@af431472c97231e87ce34aa32eac902f78c10a45
         with:
           command: approval
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
@@ -246,7 +247,7 @@ jobs:
 
       - name: Check the plans against the approval
         id: plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@af431472c97231e87ce34aa32eac902f78c10a45
         with:
           command: plans
           metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
@@ -257,7 +258,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@af431472c97231e87ce34aa32eac902f78c10a45
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.plans.outputs.units }}
@@ -268,13 +269,16 @@ jobs:
         env:
           ISSUE: ${{ steps.approval.outputs.issue }}
           LABEL: ${{ inputs.label }}
+          DESTROY: ${{ steps.plans.outputs.destroy }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/labels/${LABEL}:pending" > /dev/null
           gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/labels" -f "labels[]=${LABEL}:applying" > /dev/null
+          then="applying the saved plans"
+          [ "${DESTROY}" != "true" ] || then="destroying the units one by one"
           gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/comments" \
-            -f body="Approved. Re-planning every unit, then applying the saved plans: [run](${RUN_URL})." > /dev/null
+            -f body="Approved. Re-planning every unit, then ${then}: [run](${RUN_URL})." > /dev/null
 
   check:
     name: Check ${{ matrix.leg.name }}
@@ -326,7 +330,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@af431472c97231e87ce34aa32eac902f78c10a45
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -353,7 +357,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/registry-token@af431472c97231e87ce34aa32eac902f78c10a45
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -426,7 +430,7 @@ jobs:
 
       # Every unit before anything is applied, so a later unit cannot see an earlier apply.
       - name: Re-plan and compare with the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@af431472c97231e87ce34aa32eac902f78c10a45
         with:
           command: run
           phase: check
@@ -486,7 +490,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@af431472c97231e87ce34aa32eac902f78c10a45
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -513,7 +517,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/registry-token@af431472c97231e87ce34aa32eac902f78c10a45
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -586,6 +590,7 @@ jobs:
 
       # A pinned, checksummed release binary: a plan file carries state values in clear.
       - name: Install age
+        if: needs.verify.outputs.destroy != 'true'
         run: |
           set -euo pipefail
           case "${RUNNER_ARCH}" in
@@ -600,11 +605,16 @@ jobs:
           echo "${RUNNER_TEMP}/age" >> "$GITHUB_PATH"
 
       - name: Decrypt this profile's plans
+        if: needs.verify.outputs.destroy != 'true'
         env:
           AGE_KEY: ${{ secrets.plan_age_key }}
           UNITS: ${{ matrix.leg.units }}
         run: |
           set -euo pipefail
+          if [ -z "${AGE_KEY}" ]; then
+            echo "::error title=No plan key::the plan_age_key secret is empty, so the saved plans cannot be decrypted."
+            exit 1
+          fi
           key="${RUNNER_TEMP}/age.key"
           (umask 077; printf '%s\n' "${AGE_KEY}" > "${key}")
           dir="${RUNNER_TEMP}/terragrunt-plans"
@@ -615,8 +625,9 @@ jobs:
           done <<< "${UNITS}"
           rm -f "${key}"
 
-      - name: Apply the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+      # For a destroy, `destroy` per unit instead of the plan files. → docs/terragrunt-destroy.md
+      - name: Apply the saved plans, or destroy the units
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@af431472c97231e87ce34aa32eac902f78c10a45
         with:
           command: run
           phase: apply
@@ -626,8 +637,8 @@ jobs:
           plans_dir: ${{ runner.temp }}/terragrunt-plans
 
       - name: Prove a second plan changes nothing
-        if: inputs.verify_clean
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        if: inputs.verify_clean && needs.verify.outputs.destroy != 'true'
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@af431472c97231e87ce34aa32eac902f78c10a45
         with:
           command: run
           phase: clean
@@ -652,19 +663,22 @@ jobs:
           CHECK: ${{ needs.check.result }}
           APPLY: ${{ needs.apply.result }}
           HAS_CHANGES: ${{ needs.verify.outputs.has_changes }}
+          DESTROY: ${{ needs.verify.outputs.destroy }}
           REASON: ${{ needs.verify.outputs.reason }}
         run: |
           set -euo pipefail
+          verb=apply; done_text="Applied every saved plan."
+          if [ "${DESTROY}" = "true" ]; then verb=destroy; done_text="Destroyed every planned unit."; fi
           if [ "${VERIFY}" != "success" ]; then
             state=refused; text="Refused: ${REASON:-the approval or the plans did not check out}."
           elif [ "${HAS_CHANGES}" != "true" ]; then
-            state=applied; text="Nothing to apply: no saved plan changes anything."
+            state=applied; text="Nothing to ${verb}: no plan changes anything."
           elif [ "${CHECK}" != "success" ]; then
-            state=refused; text="Refused: a unit would now change differently than planned. Nothing was applied; re-plan it."
+            state=refused; text="Refused: a unit would now change differently than planned. Nothing was touched; re-plan it."
           elif [ "${APPLY}" != "success" ]; then
-            state=failed; text="The apply failed; see the run for which units were applied."
+            state=failed; text="The ${verb} failed; see the run for which units were done."
           else
-            state=applied; text="Applied every saved plan."
+            state=applied; text="${done_text}"
           fi
           {
             echo "state=${state}"

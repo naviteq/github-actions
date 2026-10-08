@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check an approval against the saved plans, then apply exactly those plans.
 
-`approval` validates an `/approve apply-<id>` comment on a gate issue; `plans` checks the
+`approval` validates an `/approve apply-<id>` (or `destroy-<id>`) comment on a gate issue; `plans` checks the
 downloaded metadata.json against that approval, or against an expectations policy; `run`
 re-plans each unit and compares changesets (`check`), applies the saved plan files
 (`apply`), proves a second plan is empty (`clean`), plans, checks and applies each
@@ -27,7 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 MARKER = re.compile(r"<!-- terragrunt-apply: (\{.*?\}) -->")
-APPROVE = re.compile(r"^\s*/approve\s+apply-(\d+)\s*$")
+APPROVE = re.compile(r"^\s*/approve\s+(apply|destroy)-(\d+)\s*$")
 COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
 
 
@@ -73,7 +73,7 @@ def check_approval(event: dict, approvers: list[str], gate_login: str, label: st
         raise Refused("this run was not started by a new issue comment")
     match = APPROVE.match(comment.get("body") or "")
     if not match:
-        raise Refused("the comment is not exactly `/approve apply-<artifact id>`")
+        raise Refused("the comment is not exactly `/approve apply-<artifact id>` or `/approve destroy-<artifact id>`")
     actor = (comment.get("user") or {}).get("login", "")
     if not approvers:
         raise Refused("no approvers are configured, so nobody can approve")
@@ -88,8 +88,11 @@ def check_approval(event: dict, approvers: list[str], gate_login: str, label: st
     if not found:
         raise Refused("the issue carries no gate marker")
     marker = json.loads(found.group(1))
-    if str(marker.get("artifact_id")) != match.group(1):
-        raise Refused(f"the comment approves artifact {match.group(1)}, the issue gates {marker.get('artifact_id')}")
+    verb, artifact_id = match.group(1), match.group(2)
+    if verb != marker.get("action", "apply"):
+        raise Refused(f"the comment approves an {verb}, the issue gates an {marker.get('action', 'apply')}")
+    if str(marker.get("artifact_id")) != artifact_id:
+        raise Refused(f"the comment approves artifact {artifact_id}, the issue gates {marker.get('artifact_id')}")
     return {**marker, "actor": actor, "issue": issue.get("number")}
 
 
@@ -101,6 +104,8 @@ def check_plans(metadata: dict, marker: dict | None, artifact: dict | None, comm
         raise Refused("the checked-out code differs from the code that was planned")
     if marker is None:
         return
+    if bool(metadata.get("destroy")) != (marker.get("action") == "destroy"):
+        raise Refused("the plans and the approved issue disagree on whether this is a destroy")
     if artifact is None or artifact.get("expired"):
         raise Refused("the plan artifact expired; re-plan the change")
     if (artifact.get("workflow_run") or {}).get("id") != marker["plan_run_id"]:
@@ -145,6 +150,8 @@ def destroy_violation(unit: dict, expect: dict) -> str:
 def check_expectations(metadata: dict, expect: dict) -> None:
     """An automatic apply's policy: which actions it may take, and optionally exact counts."""
     check_policy(expect)
+    if metadata.get("destroy"):
+        raise Refused("these are destroy plans, which an automatic apply never runs")
     if metadata.get("deleted"):
         raise Refused("the plan deletes units, which an automatic apply never does: "
                       + ", ".join(metadata["deleted"]))
@@ -172,12 +179,13 @@ def terragrunt(unit_dir: Path, *args: str) -> int:
     return code
 
 
-def run_check(root: Path, units: list[dict], engine: str) -> None:
-    """Re-plan every unit before anything is applied; any difference is drift."""
+def run_check(root: Path, units: list[dict], engine: str, destroy: bool = False) -> None:
+    """Re-plan every unit before anything is applied or destroyed; any difference is drift."""
     drifted = []
     for unit in units:
         unit_dir = root / unit["unit"]
-        if terragrunt(unit_dir, "plan", "-lock=false", "-input=false", "-out=tfplan-check") != 0:
+        mode = ["-destroy"] if destroy else []
+        if terragrunt(unit_dir, "plan", *mode, "-lock=false", "-input=false", "-out=tfplan-check") != 0:
             raise Refused(f"{unit['unit']} could not be planned again")
         plan_file = find_newest(unit_dir, "tfplan-check")
         if plan_file is None:
@@ -201,6 +209,14 @@ def run_apply(root: Path, units: list[dict], plans_dir: Path) -> None:
         if terragrunt(root / unit["unit"], "apply", "-input=false", str(plan_file.resolve())) != 0:
             raise Refused(f"{unit['unit']} failed to apply; the units after it were not touched")
         print(f"{unit['unit']}: applied")
+
+
+def run_destroy(root: Path, units: list[dict]) -> None:
+    """In the order planned, dependents first; `destroy`, not the plan file, so destroy hooks run."""
+    for unit in units:
+        if terragrunt(root / unit["unit"], "destroy", "-auto-approve", "-input=false") != 0:
+            raise Refused(f"{unit['unit']} failed to destroy; the units after it were not touched")
+        print(f"{unit['unit']}: destroyed")
 
 
 def run_clean(root: Path, units: list[dict]) -> None:
@@ -461,8 +477,9 @@ def main(argv: list[str] | None = None) -> int:
             if marker is None:
                 check_expectations(metadata, json.loads(args.expect_json or "{}"))
             units = [u["unit"] for u in metadata["units"] if any(u.get(k) for k in COUNT_KEYS)]
-            print(f"{len(units)} units to apply: {', '.join(units) or 'none'}")
-            write_outputs(has_changes=str(bool(units)).lower())
+            verb = "destroy" if metadata.get("destroy") else "apply"
+            print(f"{len(units)} units to {verb}: {', '.join(units) or 'none'}")
+            write_outputs(has_changes=str(bool(units)).lower(), destroy=str(bool(metadata.get("destroy"))).lower())
             if os.environ.get("GITHUB_OUTPUT"):
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
                     out.write("units<<APPLY_UNITS_EOF\n" + "".join(u + "\n" for u in units) + "APPLY_UNITS_EOF\n")
@@ -472,7 +489,9 @@ def main(argv: list[str] | None = None) -> int:
                  and (not wanted or u["unit"] in wanted)]
         root = Path(args.working_directory)
         if args.phase == "check":
-            run_check(root, units, args.engine)
+            run_check(root, units, args.engine, bool(metadata.get("destroy")))
+        elif args.phase == "apply" and metadata.get("destroy"):
+            run_destroy(root, units)
         elif args.phase == "apply":
             run_apply(root, units, Path(args.plans_dir))
         else:

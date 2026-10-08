@@ -88,6 +88,9 @@ outputs:
   has_changes:
     description: true when any unit would change anything
     value: ${{ steps.units.outputs.has_changes }}
+  destroy:
+    description: For plans, true when the plans are destroy plans; run apply then destroys their units
+    value: ${{ steps.units.outputs.destroy }}
   changes:
     description: For run fresh and destroy, JSON list of each reached unit's counts and outcome
     value: ${{ steps.units.outputs.changes }}

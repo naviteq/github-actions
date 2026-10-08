@@ -60,7 +60,7 @@ def metadata(context: dict, rows: list[dict], manifest: list[list[str]], skipped
     units = [
         {"unit": row["unit"], "profile": row.get("profile", ""), "file": files.get(row["unit"], ""),
          "changeset": row.get("changeset", ""), **{key: row.get(key, 0) for key in COUNT_KEYS}}
-        for row in rows if not row.get("deleted") and not row.get("error")
+        for row in rows if not row.get("deleted") and not row.get("error") and not row.get("kept")
     ]
     return {
         "schema": 1,
@@ -68,11 +68,14 @@ def metadata(context: dict, rows: list[dict], manifest: list[list[str]], skipped
         "has_changes": has_changes(rows),
         "units": units,
         "deleted": [row["unit"] for row in rows if row.get("deleted")],
+        "kept": [row["unit"] for row in rows if row.get("kept")],
         "skipped": [{"unit": s[0], "profile": s[1], "reason": s[2]} for s in skipped if len(s) >= 3],
     }
 
 
 def _count_cells(row: dict) -> str:
+    if row.get("kept"):
+        return "kept: prevent_destroy | | | | "
     if row.get("error"):
         return f"{row['error']} | | | | "
     return " | ".join(str(row.get(key, 0)) for key in COUNT_KEYS)

@@ -6,7 +6,7 @@ description: >
 
 inputs:
   command:
-    description: find or decide
+    description: find, decide, or request to open the issue that gates a destroy
     required: true
   sha:
     description: The merged commit
@@ -40,11 +40,11 @@ inputs:
     required: false
     default: ""
   artifact_id:
-    description: For decide, the plan artifact found
+    description: For decide and request, the plan artifact found
     required: false
     default: ""
   metadata:
-    description: For decide, path of the artifact's metadata.json; empty when none was found
+    description: For decide and request, path of the artifact's metadata.json; empty when none was found
     required: false
     default: ""
   tree:
@@ -60,11 +60,11 @@ inputs:
     required: false
     default: "."
   approvers:
-    description: For decide, comma-separated GitHub logins allowed to approve
+    description: For decide and request, comma-separated GitHub logins allowed to approve
     required: false
     default: ""
   label:
-    description: For decide, the label prefix of gate issues
+    description: For decide and request, the label prefix of gate issues
     required: false
     default: terragrunt-apply
 
@@ -130,5 +130,8 @@ runs:
               --artifact-id "${ARTIFACT_ID}" --metadata "${METADATA}" --tree "${TREE}" --changed "${CHANGED}" \
               --working-directory "${WORKING_DIRECTORY}" --approvers "${APPROVERS}" --label "${LABEL}" \
               --plan-state "${PLAN_STATE}" ;;
+          request)
+            python3 "${script}" request --artifact-id "${ARTIFACT_ID}" --metadata "${METADATA}" \
+              --approvers "${APPROVERS}" --label "${LABEL}" ;;
           *) echo "::error title=Unknown command::${COMMAND}"; exit 1 ;;
         esac

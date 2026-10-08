@@ -2,7 +2,8 @@
 """Count what each Terragrunt plan would do, without printing any planned value.
 
 Reads the tfplan every planned unit left in its .terragrunt-cache, and the destroy plans
-of deleted units from the run's log. → docs/terragrunt-plan.md
+of deleted units from the run's log. Units a destroy run kept for prevent_destroy have no
+plan and are reported as kept. → docs/terragrunt-plan.md
 
     python3 .github/actions/terragrunt-plan-report/report.py --working-directory terragrunt \\
         --engine tofu --units "$UNITS" --deleted "$DELETED" --destroy-log destroy.log
@@ -108,6 +109,9 @@ def table(rows: list[dict]) -> str:
     lines = ["| Unit | Add | Change | Replace | Destroy | Outputs |", "|---|---|---|---|---|---|"]
     for row in rows:
         unit = f"`{row['unit']}`" + (" (deleted)" if row.get("deleted") else "")
+        if row.get("kept"):
+            lines.append(f"| {unit} | kept: prevent_destroy | | | | |")
+            continue
         if row.get("error"):
             lines.append(f"| {unit} | {row['error']} | | | | |")
             continue
@@ -126,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--units", default="")
     parser.add_argument("--deleted", default="")
     parser.add_argument("--destroy-log", default="")
+    parser.add_argument("--kept", default="", help="Units a destroy run left out for prevent_destroy, one per line")
     parser.add_argument("--resources-file", default="", help="Write each unit's changed addresses and actions here")
     args = parser.parse_args(argv)
 
@@ -133,7 +138,11 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict] = []
     plans: list[str] = []
     detail: dict[str, list[dict[str, str]]] = {}
+    kept = set(_lines(args.kept))
     for unit in _lines(args.units):
+        if unit in kept:
+            rows.append({"unit": unit, "kept": True})
+            continue
         plan_file = find_plan(root / unit)
         if plan_file is None:
             rows.append({"unit": unit, "error": "no plan file"})

@@ -41,6 +41,16 @@ on:
         required: false
         type: string
         default: ""
+      destroy:
+        description: Plan the destruction of the units filter selects, for terragrunt-destroy; needs filter, not filter_affected
+        required: false
+        type: boolean
+        default: false
+      ref:
+        description: Commit or branch to check out and plan; empty for the commit that triggered the run
+        required: false
+        type: string
+        default: ""
       filter_affected:
         description: Plan the units changed against the pull request's base branch
         required: false
@@ -82,7 +92,7 @@ on:
         type: string
         default: ""
       artifact_name:
-        description: Name of the encrypted-plan artifact; defaults to terragrunt-plan-pr<number>-<head sha> on a pull request, terragrunt-plan-<sha> otherwise
+        description: Name of the encrypted-plan artifact; defaults to terragrunt-plan-pr<number>-<head sha> on a pull request, terragrunt-destroy-<run id> for destroy, terragrunt-plan-<sha> otherwise
         required: false
         type: string
         default: ""
@@ -176,6 +186,7 @@ jobs:
       skipped: ${{ steps.profiles.outputs.skipped }}
       artifact: ${{ steps.artifact.outputs.name }}
       tree: ${{ steps.tree.outputs.tree }}
+      commit: ${{ steps.tree.outputs.commit }}
     steps:
       - name: Reject contradictory inputs
         if: inputs.filter_affected && inputs.filter != ''
@@ -183,18 +194,27 @@ jobs:
           echo "::error title=Contradictory inputs::filter and filter_affected are both set; Terragrunt would union them. Pick one."
           exit 1
 
+      # A destroy names what it removes; a git range or an empty filter would pick for it.
+      - name: Require an explicit filter for a destroy
+        if: inputs.destroy && (inputs.filter_affected || inputs.filter == '')
+        run: |
+          echo "::error title=Destroy needs a filter::set filter to the units to destroy and filter_affected to false."
+          exit 1
+
       - name: Name the artifacts
         id: artifact
         env:
           # The apply finds a merged PR's plans by this name. → docs/terragrunt-plan.md
           NAME: >-
-            ${{ inputs.artifact_name || (github.event_name == 'pull_request'
+            ${{ inputs.artifact_name || (inputs.destroy && format('terragrunt-destroy-{0}', github.run_id))
+            || (github.event_name == 'pull_request'
             && format('terragrunt-plan-pr{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha)
             || format('terragrunt-plan-{0}', github.sha)) }}
         run: echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: ${{ inputs.filter_affected && '0' || '1' }}
 
       # The apply refuses a plan whose code differs from what was merged.
@@ -208,6 +228,7 @@ jobs:
           scope="${scope%/}"
           if [ -z "${scope}" ] || [ "${scope}" = "." ]; then ref="HEAD^{tree}"; else ref="HEAD:${scope}"; fi
           echo "tree=$(git rev-parse "${ref}")" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Generate a GitHub App token for the private git sources
         id: app-token
@@ -233,7 +254,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@bf950d3a5036e26bb885e09a23e42359d82e0004
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -261,7 +282,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/registry-token@bf950d3a5036e26bb885e09a23e42359d82e0004
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -308,7 +329,7 @@ jobs:
 
       - name: Select the units and show their run order
         id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@bf950d3a5036e26bb885e09a23e42359d82e0004
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -316,11 +337,11 @@ jobs:
           with_dependents: ${{ inputs.with_dependents }}
           verb: plan
           participle: planned
-          queue_as: plan
+          queue_as: ${{ inputs.destroy && 'destroy' || 'plan' }}
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@bf950d3a5036e26bb885e09a23e42359d82e0004
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.units.outputs.units }}
@@ -331,7 +352,7 @@ jobs:
       # which need state this job cannot read. → docs/terragrunt-plan.md
       - name: Warm the provider cache
         if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@bf950d3a5036e26bb885e09a23e42359d82e0004
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -368,6 +389,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ needs.select.outputs.commit }}
           # Deleted units are planned through the git range, which needs the base branch.
           fetch-depth: ${{ matrix.leg.deleted != '' && '0' || '1' }}
 
@@ -395,7 +417,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@bf950d3a5036e26bb885e09a23e42359d82e0004
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -422,7 +444,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/registry-token@bf950d3a5036e26bb885e09a23e42359d82e0004
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -493,13 +515,31 @@ jobs:
         env:
           UNITS: ${{ matrix.leg.units }}
           PARALLELISM: ${{ inputs.parallelism }}
+          DESTROY: ${{ inputs.destroy }}
         run: |
           set -euo pipefail
           args=(run --all --non-interactive --parallelism "${PARALLELISM}")
           while read -r unit; do
             [ -z "${unit}" ] || args+=(--filter "./${unit}")
           done <<< "${UNITS}"
-          terragrunt "${args[@]}" -- plan -lock=false -input=false -out=tfplan
+          mode=()
+          if [ "${DESTROY}" = "true" ]; then
+            # The destroy queue drops prevent_destroy units; the report names them. → docs/terragrunt-destroy.md
+            args+=(--report-file "${RUNNER_TEMP}/terragrunt-run-report.json" --report-format json)
+            mode=(-destroy)
+          fi
+          terragrunt "${args[@]}" -- plan "${mode[@]}" -lock=false -input=false -out=tfplan
+
+      - name: Name the units the destroy keeps
+        id: kept
+        if: inputs.destroy && steps.plan.outcome == 'success'
+        run: |
+          set -euo pipefail
+          {
+            echo "units<<KEPT_EOF"
+            jq -r '.[] | select(.Result == "excluded") | .Name' "${RUNNER_TEMP}/terragrunt-run-report.json"
+            echo "KEPT_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Plan the destruction of deleted units
         if: matrix.leg.deleted != ''
@@ -523,13 +563,14 @@ jobs:
       - name: Count the planned changes
         id: report
         if: ${{ !cancelled() }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@bf950d3a5036e26bb885e09a23e42359d82e0004
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
           units: ${{ matrix.leg.units }}
           deleted: ${{ matrix.leg.deleted }}
           destroy_log: ${{ matrix.leg.deleted != '' && format('{0}/terragrunt-destroy-plan.log', runner.temp) || '' }}
+          kept: ${{ steps.kept.outputs.units }}
           resources_file: ${{ runner.temp }}/terragrunt-plan-counts/${{ matrix.leg.name }}.resources.json
 
       - name: Keep the counts for the result job
@@ -552,8 +593,9 @@ jobs:
           if-no-files-found: error
 
       # A pinned, checksummed release binary: a plan file carries state values in clear.
+      # A destroy runs `destroy`, never a plan file, so its plans are not kept. → docs/terragrunt-destroy.md
       - name: Install age
-        if: success() && inputs.plan_recipient != '' && steps.report.outputs.plans != ''
+        if: success() && inputs.plan_recipient != '' && !inputs.destroy && steps.report.outputs.plans != ''
         run: |
           set -euo pipefail
           case "${RUNNER_ARCH}" in
@@ -569,7 +611,7 @@ jobs:
 
       - name: Encrypt the plans
         id: encrypt
-        if: success() && inputs.plan_recipient != '' && steps.report.outputs.plans != ''
+        if: success() && inputs.plan_recipient != '' && !inputs.destroy && steps.report.outputs.plans != ''
         env:
           PLANS: ${{ steps.report.outputs.plans }}
           RECIPIENT: ${{ inputs.plan_recipient }}
@@ -618,7 +660,7 @@ jobs:
           merge-multiple: true
 
       - name: Download the encrypted plans
-        if: inputs.plan_recipient != '' && needs.plan.result == 'success'
+        if: inputs.plan_recipient != '' && !inputs.destroy && needs.plan.result == 'success'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: ${{ env.ARTIFACT }}-plans-*
@@ -630,27 +672,30 @@ jobs:
         id: context
         env:
           PR: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || needs.select.outputs.commit }}
+          COMMIT: ${{ needs.select.outputs.commit }}
           TREE: ${{ needs.select.outputs.tree }}
           SCOPE: ${{ inputs.working_directory }}
+          DESTROY: ${{ inputs.destroy }}
         run: |
           set -euo pipefail
           jq -cn --arg repository "${GITHUB_REPOSITORY}" --arg pr "${PR}" --arg head_sha "${HEAD_SHA}" \
-            --arg commit "${GITHUB_SHA}" --arg tree "${TREE}" --arg working_directory "${SCOPE}" \
+            --arg commit "${COMMIT}" --arg tree "${TREE}" --arg working_directory "${SCOPE}" \
             --arg run_id "${GITHUB_RUN_ID}" --arg run_attempt "${GITHUB_RUN_ATTEMPT}" --arg artifact "${ARTIFACT}" \
-            --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson destroy "${DESTROY}" \
             '{repository: $repository, pr: ($pr | if . == "" then null else tonumber end), head_sha: $head_sha,
               commit: $commit, tree: $tree, working_directory: $working_directory, plan_run_id: ($run_id | tonumber),
-              plan_run_attempt: ($run_attempt | tonumber), artifact: $artifact, created_at: $created_at}' \
+              plan_run_attempt: ($run_attempt | tonumber), artifact: $artifact, created_at: $created_at,
+              destroy: $destroy}' \
             | sed 's/^/json=/' >> "$GITHUB_OUTPUT"
 
       - name: Merge the counts and hand the plans over
         id: result
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@b9e4e0c6820baf5aaa5132d9ce152a3a6dcf9f8f
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@bf950d3a5036e26bb885e09a23e42359d82e0004
         with:
           counts_dir: counts
           plans_dir: >-
-            ${{ inputs.plan_recipient != '' && contains(fromJSON('["success", "skipped"]'), needs.plan.result)
+            ${{ (inputs.plan_recipient != '' || inputs.destroy) && contains(fromJSON('["success", "skipped"]'), needs.plan.result)
             && 'plans' || '' }}
           units: ${{ needs.select.outputs.units }}
           skipped: ${{ needs.select.outputs.skipped }}
@@ -671,7 +716,7 @@ jobs:
       # Never on a fork's PR: its token cannot write, and its plan never reaches an apply.
       - name: Comment on the pull request
         if: >-
-          inputs.pr_comment && github.event_name == 'pull_request'
+          inputs.pr_comment && !inputs.destroy && github.event_name == 'pull_request'
           && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
