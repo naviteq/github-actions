@@ -41,7 +41,7 @@ on:
         required: true
         type: string
       ref:
-        description: Commit or branch whose code describes the units; empty for the dispatched commit
+        description: Branch or full commit SHA whose code describes the units (a short SHA is read as a branch); empty for the dispatched commit
         required: false
         type: string
         default: ""
@@ -139,7 +139,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@815112566a80a3ccc2d443213fa406e1fdb334be
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@7ecb48b102736141e303d6050a8ee0e00f5bca72
     permissions:
       contents: read
       id-token: write
@@ -204,7 +204,7 @@ jobs:
 
       - name: Open the issue that gates the destroy
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@ba08e97b4e6a44c836173f307957bdaf7a1e8a31
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@7ecb48b102736141e303d6050a8ee0e00f5bca72
         with:
           command: request
           sha: ${{ github.sha }}

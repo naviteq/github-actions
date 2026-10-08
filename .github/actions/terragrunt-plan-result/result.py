@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge the plan jobs' counts, hand the plans over to the apply, and render the PR comment.
+"""Merge the plan jobs' counts, hand the plans over to the apply, and render the PR comment and Slack summary.
 
 Every file this writes carries resource addresses and actions at most, never a value.
 It lives beside its action, not in scripts/, because the public mirror copies actions
@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 COMMENT_LIMIT = 60000
+SLACK_UNITS = 20
 COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
 SIGN = {"create": "+", "update": "~", "replace": "-/+", "delete": "-"}
 
@@ -118,6 +119,43 @@ def comment(rows: list[dict], resources: dict[str, list[dict[str, str]]], skippe
     return body
 
 
+def slack_payload(rows: list[dict], context: dict, run_url: str) -> dict:
+    """Counts per unit and links only: a Slack channel is read by more people than the repository."""
+    changing = [row for row in rows if any(row.get(key) for key in COUNT_KEYS) or row.get("error")]
+    failed = sum(1 for row in rows if row.get("error"))
+    pr = context.get("pr")
+    commit = str(context.get("commit") or "")[:7]
+    where = f"PR #{pr}" if pr else f"`{commit}`"
+    if not rows:
+        outcome = "no units were planned"
+    elif failed:
+        outcome = f"{failed} of {len(rows)} units failed to plan"
+    elif any(any(row.get(key) for key in COUNT_KEYS) for row in rows):
+        outcome = f"{sum(1 for row in changing if not row.get('error'))} of {len(rows)} units would change"
+    else:
+        outcome = f"no changes in {len(rows)} units"
+    head = f"Terragrunt plan for {context.get('repository', '')} {where}: {outcome}"
+    lines = []
+    for row in changing[:SLACK_UNITS]:
+        unit = f"`{row['unit']}`" + (" (deleted)" if row.get("deleted") else "")
+        if row.get("error"):
+            lines.append(f"{unit}: {row['error']}")
+        else:
+            lines.append(f"{unit}: +{row.get('add', 0)} ~{row.get('change', 0)} -/+{row.get('replace', 0)} "
+                         f"-{row.get('destroy', 0)}, outputs {row.get('outputs', 0)}")
+    if len(changing) > SLACK_UNITS:
+        lines.append(f"…and {len(changing) - SLACK_UNITS} more")
+    repo_url = run_url.split("/actions/")[0] if "/actions/" in run_url else ""
+    links = [f"<{repo_url}/pull/{pr}|PR #{pr}>"] if pr and repo_url else []
+    links += [f"<{run_url}|run>"] if run_url else []
+    blocks: list[dict] = [{"type": "section", "text": {"type": "mrkdwn", "text": f"*{head}*"}}]
+    if lines:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(lines)}})
+    if links:
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": " · ".join(links)}]})
+    return {"text": head, "blocks": blocks}
+
+
 def _lines(value: str) -> list[str]:
     return [line for line in value.splitlines() if line.strip()]
 
@@ -131,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--context-json", default="{}", help="Run facts to put in metadata.json")
     parser.add_argument("--run-url", default="")
     parser.add_argument("--comment-file", default="")
+    parser.add_argument("--slack-file", default="", help="Write the Slack message payload here, as JSON")
     args = parser.parse_args(argv)
 
     counts_dir = Path(args.counts_dir)
@@ -147,6 +186,9 @@ def main(argv: list[str] | None = None) -> int:
         handed_over = True
     if args.comment_file:
         Path(args.comment_file).write_text(comment(rows, resources, skipped, args.run_url), encoding="utf-8")
+    if args.slack_file:
+        payload = slack_payload(rows, json.loads(args.context_json), args.run_url)
+        Path(args.slack_file).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:

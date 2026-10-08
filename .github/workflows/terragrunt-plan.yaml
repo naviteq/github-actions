@@ -47,7 +47,7 @@ on:
         type: boolean
         default: false
       ref:
-        description: Commit or branch to check out and plan; empty for the commit that triggered the run
+        description: Branch or full commit SHA to check out and plan (a short SHA is read as a branch); empty for the commit that triggered the run
         required: false
         type: string
         default: ""
@@ -106,6 +106,11 @@ on:
         required: false
         type: boolean
         default: true
+      slack_notify:
+        description: Post the outcome and counts per unit to Slack through the slack_webhook secret; never on a fork's pull request
+        required: false
+        type: boolean
+        default: false
       provider_cache:
         description: Share providers between units through Terragrunt's provider cache, saved on the default branch
         required: false
@@ -139,6 +144,9 @@ on:
         required: false
       terragrunt_extra_env:
         description: KEY=VALUE lines exported with masked values, e.g. TF_TOKEN_<host>; with profiles, a plan job gets only the keys its profile lists
+        required: false
+      slack_webhook:
+        description: Slack incoming webhook URL, for slack_notify
         required: false
     outputs:
       units:
@@ -254,7 +262,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@ba08e97b4e6a44c836173f307957bdaf7a1e8a31
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@ec00232d605e245a58eeffb04ece172d8dd5737e
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -282,7 +290,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@ba08e97b4e6a44c836173f307957bdaf7a1e8a31
+        uses: naviteq/github-actions/.github/actions/registry-token@ec00232d605e245a58eeffb04ece172d8dd5737e
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -329,7 +337,7 @@ jobs:
 
       - name: Select the units and show their run order
         id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@ba08e97b4e6a44c836173f307957bdaf7a1e8a31
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@ec00232d605e245a58eeffb04ece172d8dd5737e
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -341,7 +349,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@ba08e97b4e6a44c836173f307957bdaf7a1e8a31
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@ec00232d605e245a58eeffb04ece172d8dd5737e
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.units.outputs.units }}
@@ -352,7 +360,7 @@ jobs:
       # which need state this job cannot read. → docs/terragrunt-plan.md
       - name: Warm the provider cache
         if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@ba08e97b4e6a44c836173f307957bdaf7a1e8a31
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@ec00232d605e245a58eeffb04ece172d8dd5737e
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -417,7 +425,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@ba08e97b4e6a44c836173f307957bdaf7a1e8a31
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@ec00232d605e245a58eeffb04ece172d8dd5737e
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -444,7 +452,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@ba08e97b4e6a44c836173f307957bdaf7a1e8a31
+        uses: naviteq/github-actions/.github/actions/registry-token@ec00232d605e245a58eeffb04ece172d8dd5737e
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -563,7 +571,7 @@ jobs:
       - name: Count the planned changes
         id: report
         if: ${{ !cancelled() }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@ba08e97b4e6a44c836173f307957bdaf7a1e8a31
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@ec00232d605e245a58eeffb04ece172d8dd5737e
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -646,6 +654,7 @@ jobs:
       pull-requests: write
     env:
       ARTIFACT: ${{ needs.select.outputs.artifact }}
+      HAS_SLACK_WEBHOOK: ${{ secrets.slack_webhook != '' }}
     outputs:
       changes: ${{ steps.result.outputs.changes }}
       has_changes: ${{ steps.result.outputs.has_changes }}
@@ -691,7 +700,7 @@ jobs:
 
       - name: Merge the counts and hand the plans over
         id: result
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@ba08e97b4e6a44c836173f307957bdaf7a1e8a31
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@ec00232d605e245a58eeffb04ece172d8dd5737e
         with:
           counts_dir: counts
           plans_dir: >-
@@ -702,6 +711,7 @@ jobs:
           context_json: ${{ steps.context.outputs.json }}
           run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           comment_file: ${{ runner.temp }}/terragrunt-plan-comment.md
+          slack_file: ${{ inputs.slack_notify && format('{0}/terragrunt-plan-slack.json', runner.temp) || '' }}
 
       - name: Upload the encrypted plans
         id: upload
@@ -736,3 +746,15 @@ jobs:
             } else {
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
+
+      # Counts and links only, never addresses or values. → docs/terragrunt-plan.md
+      - name: Post the summary to Slack
+        if: >-
+          inputs.slack_notify && env.HAS_SLACK_WEBHOOK == 'true'
+          && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4
+        with:
+          webhook: ${{ secrets.slack_webhook }}
+          webhook-type: incoming-webhook
+          payload-file-path: ${{ runner.temp }}/terragrunt-plan-slack.json

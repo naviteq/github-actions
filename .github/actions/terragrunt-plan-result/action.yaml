@@ -2,7 +2,7 @@
 name: Terragrunt plan result
 description: >
   Merge the plan jobs' counts in run order, join their encrypted-plan manifests with a
-  metadata.json the apply checks against, and render the pull-request comment.
+  metadata.json the apply checks against, and render the pull-request comment and the Slack summary.
 
 inputs:
   counts_dir:
@@ -32,6 +32,10 @@ inputs:
     description: File to write the pull-request comment to; empty writes none
     required: false
     default: ""
+  slack_file:
+    description: File to write the Slack message payload to, as JSON, with counts per unit and links only; empty writes none
+    required: false
+    default: ""
 
 outputs:
   changes:
@@ -59,8 +63,9 @@ runs:
         CONTEXT_JSON: ${{ inputs.context_json }}
         RUN_URL: ${{ inputs.run_url }}
         COMMENT_FILE: ${{ inputs.comment_file }}
+        SLACK_FILE: ${{ inputs.slack_file }}
       run: |
         set -euo pipefail
         python3 "${ACTION_PATH}/result.py" --counts-dir "${COUNTS_DIR}" --plans-dir "${PLANS_DIR}" \
           --units "${UNITS}" --skipped "${SKIPPED}" --context-json "${CONTEXT_JSON}" \
-          --run-url "${RUN_URL}" --comment-file "${COMMENT_FILE}"
+          --run-url "${RUN_URL}" --comment-file "${COMMENT_FILE}" --slack-file "${SLACK_FILE}"
