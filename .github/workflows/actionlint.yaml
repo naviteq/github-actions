@@ -30,7 +30,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Run actionlint with reviewdog
-        uses: reviewdog/action-actionlint@1758727be30241166609dad4c97588b6ad411f32 # v1.79.1
+        uses: reviewdog/action-actionlint@a8ac3eea598697a830f7d8e701fc9fcbfde88974 # v1.80.0
         with:
           reporter: github-pr-check
           fail_level: any
@@ -38,7 +38,7 @@ jobs:
           actionlint_flags: "-config-file .github/actionlint.yaml"
 
       - name: Ensure Node.js is available
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "24"
 
@@ -60,6 +60,6 @@ jobs:
 
       - name: Validate local actions
         if: ${{ always() }}
-        uses: naviteq/github-actions/.github/actions/action-lint@105258479793dbb1189b7334c4c4e60b916ab1fe
+        uses: naviteq/github-actions/.github/actions/action-lint@46e7e3c4408789c9a3c2c0082f0d35507fc65470
         with:
           actions: .github/actions/*/action.y*ml

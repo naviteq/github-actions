@@ -121,8 +121,10 @@ def main(argv: list[str] | None = None) -> int:
         args.working_directory if args.scope is None else args.scope,
     )
     command = [args.terragrunt, "list", "--long", "--dependencies", "--dag", "--non-interactive"]
-    if expression:
-        command += ["--filter", expression]
+    # One expression per line, each its own --filter: Terragrunt unions them.
+    for line in expression.splitlines():
+        if line.strip():
+            command += ["--filter", line.strip()]
     if args.queue_as:
         command += ["--queue-construct-as", args.queue_as]
     root = Path(args.working_directory)

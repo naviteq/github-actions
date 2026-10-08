@@ -80,6 +80,12 @@ on:
       issue:
         description: The issue opened, if any
         value: ${{ jobs.gate.outputs.issue }}
+      deleted:
+        description: A filter per unit the merge deleted, one per line, for terragrunt-destroy; empty when none
+        value: ${{ jobs.gate.outputs.deleted }}
+      deleted_ref:
+        description: The commit before the merge, where the deleted units still exist; terragrunt-destroy's ref
+        value: ${{ jobs.gate.outputs.deleted_ref }}
 
 permissions: {}
 
@@ -97,6 +103,8 @@ jobs:
     outputs:
       state: ${{ steps.decide.outputs.state }}
       issue: ${{ steps.decide.outputs.issue }}
+      deleted: ${{ steps.decide.outputs.deleted }}
+      deleted_ref: ${{ steps.decide.outputs.deleted_ref }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -113,12 +121,15 @@ jobs:
           if [ -z "${scope}" ] || [ "${scope}" = "." ]; then ref="HEAD^{tree}"; path="."; else ref="HEAD:${scope}"; path="${scope}"; fi
           changed=true
           if git rev-parse -q --verify HEAD^ > /dev/null && git diff --quiet HEAD^ HEAD -- "${path}"; then changed=false; fi
-          echo "tree=$(git rev-parse "${ref}")" >> "$GITHUB_OUTPUT"
-          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tree=$(git rev-parse "${ref}")"
+            echo "changed=${changed}"
+            echo "base=$(git rev-parse -q --verify HEAD^ || true)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Find the merged pull request and its plans
         id: find
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@105258479793dbb1189b7334c4c4e60b916ab1fe
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@c49078f4851be71fa76f2b9e3716f8cc1e559bcf
         with:
           command: find
           sha: ${{ github.sha }}
@@ -138,7 +149,7 @@ jobs:
 
       - name: Open the approval issue, or say why there is none
         id: decide
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@105258479793dbb1189b7334c4c4e60b916ab1fe
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@c49078f4851be71fa76f2b9e3716f8cc1e559bcf
         with:
           command: decide
           sha: ${{ github.sha }}
@@ -153,6 +164,7 @@ jobs:
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
           label: ${{ inputs.label }}
           plan_state: ${{ steps.find.outputs.plan_state }}
+          base_commit: ${{ steps.tree.outputs.base }}
 
   # The default branch is the only place a cache entry every pull request can read is saved.
   warm:
@@ -167,7 +179,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@105258479793dbb1189b7334c4c4e60b916ab1fe
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c49078f4851be71fa76f2b9e3716f8cc1e559bcf
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -176,7 +188,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@105258479793dbb1189b7334c4c4e60b916ab1fe
+        uses: naviteq/github-actions/.github/actions/registry-token@c49078f4851be71fa76f2b9e3716f8cc1e559bcf
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -190,7 +202,7 @@ jobs:
 
       - name: Warm the provider cache from the lock files
         if: steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@105258479793dbb1189b7334c4c4e60b916ab1fe
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@c49078f4851be71fa76f2b9e3716f8cc1e559bcf
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}

@@ -27,6 +27,10 @@ inputs:
     description: For decide, the plan_state find reported
     required: false
     default: ""
+  base_commit:
+    description: For decide, the merge's first parent, where the units it deleted still exist
+    required: false
+    default: ""
   pr:
     description: For decide, the merged pull request; empty for a direct push
     required: false
@@ -93,6 +97,12 @@ outputs:
   issue:
     description: The issue opened, if any
     value: ${{ steps.gate.outputs.issue }}
+  deleted:
+    description: For decide, a filter per unit the merge deleted, one per line; empty when none or the plans were refused
+    value: ${{ steps.gate.outputs.deleted }}
+  deleted_ref:
+    description: For decide, the commit where those units still exist
+    value: ${{ steps.gate.outputs.deleted_ref }}
 
 runs:
   using: composite
@@ -108,6 +118,7 @@ runs:
         PLAN_WORKFLOW: ${{ inputs.plan_workflow }}
         WAIT_MINUTES: ${{ inputs.wait_minutes }}
         PLAN_STATE: ${{ inputs.plan_state }}
+        BASE_COMMIT: ${{ inputs.base_commit }}
         PR: ${{ inputs.pr }}
         PR_URL: ${{ inputs.pr_url }}
         HEAD_SHA: ${{ inputs.head_sha }}
@@ -129,7 +140,7 @@ runs:
             python3 "${script}" decide --sha "${SHA}" --pr "${PR}" --pr-url "${PR_URL}" --head-sha "${HEAD_SHA}" \
               --artifact-id "${ARTIFACT_ID}" --metadata "${METADATA}" --tree "${TREE}" --changed "${CHANGED}" \
               --working-directory "${WORKING_DIRECTORY}" --approvers "${APPROVERS}" --label "${LABEL}" \
-              --plan-state "${PLAN_STATE}" ;;
+              --plan-state "${PLAN_STATE}" --base-commit "${BASE_COMMIT}" ;;
           request)
             python3 "${script}" request --artifact-id "${ARTIFACT_ID}" --metadata "${METADATA}" \
               --approvers "${APPROVERS}" --label "${LABEL}" ;;

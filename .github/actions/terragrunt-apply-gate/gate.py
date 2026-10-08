@@ -105,7 +105,8 @@ def table(units: list[dict]) -> list[str]:
     return lines
 
 
-def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, run_url: str) -> str:
+def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, run_url: str,
+               base_commit: str = "") -> str:
     """The approval issue: what would change, who may approve, and the exact command."""
     changing = [u for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
     lines = [f"<!-- {MARKER}: {json.dumps(marker, separators=(',', ':'))} -->",
@@ -113,8 +114,10 @@ def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, 
              f"Merged as `{marker['commit'][:7]}`; planned in [this run]({run_url}), "
              f"artifact `{metadata['artifact']}`.", "", *table(changing)]
     if metadata.get("deleted"):
-        lines += ["", "**Deleted units are not applied here.** Destroy them by hand: "
-                  + ", ".join(f"`{u}`" for u in metadata["deleted"])]
+        lines += ["", "**Deleted units are not destroyed by this apply:** "
+                  + ", ".join(f"`{u}`" for u in metadata["deleted"])
+                  + f". Request their destroy with `terragrunt-destroy` from `{base_commit[:7] or 'the commit before this merge'}`;"
+                  " a repository that chains it after this gate gets that issue on its own."]
     if metadata.get("skipped"):
         lines += ["", "Not planned: " + ", ".join(f"`{s['unit']}` ({s['reason']})" for s in metadata["skipped"])]
     lines += ["", "The apply re-plans every unit first and stops if anything differs from the plans above.", "",
@@ -153,7 +156,18 @@ def write_outputs(**values: object) -> None:
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
             for key, value in values.items():
-                out.write(f"{key}={value}\n")
+                if "\n" in str(value):
+                    out.write(f"{key}<<GATE_EOF\n{value}\nGATE_EOF\n")
+                else:
+                    out.write(f"{key}={value}\n")
+
+
+def deleted_outputs(metadata: dict, base_commit: str) -> dict[str, str]:
+    """Filters for the units the merge deleted, and the commit where they still exist."""
+    deleted = metadata.get("deleted") or []
+    if not deleted or not base_commit:
+        return {"deleted": "", "deleted_ref": ""}
+    return {"deleted": "\n".join(f"./{unit}" for unit in deleted), "deleted_ref": base_commit}
 
 
 def cmd_find(args: argparse.Namespace) -> int:
@@ -234,12 +248,13 @@ def cmd_decide(args: argparse.Namespace) -> int:
         comment_on_pr(args, pr, "Merged. The plan had no changes, so there is nothing to apply.")
         write_outputs(state="no-changes", issue="")
         return 0
+    write_outputs(**deleted_outputs(metadata, args.base_commit))
 
     marker = {"artifact_id": int(args.artifact_id), "plan_run_id": metadata["plan_run_id"], "pr": pr,
               "head_sha": args.head_sha, "commit": args.sha, "tree": args.tree,
               "working_directory": args.working_directory}
     run_url = f"{args.server_url}/{args.repo}/actions/runs/{metadata['plan_run_id']}"
-    body = issue_body(metadata, marker, approvers_of(args.approvers), args.pr_url, run_url)
+    body = issue_body(metadata, marker, approvers_of(args.approvers), args.pr_url, run_url, args.base_commit)
     number = open_issue(args, f"Terragrunt apply: PR #{pr}", body, "pending")
     comment_on_pr(args, pr, f"Merged. Applying its plans waits for approval in #{number}.")
     write_outputs(state="pending", issue=number)
@@ -261,7 +276,9 @@ def cmd_request(args: argparse.Namespace) -> int:
               "tree": metadata["tree"], "working_directory": metadata["working_directory"]}
     run_url = f"{args.server_url}/{args.repo}/actions/runs/{metadata['plan_run_id']}"
     body = destroy_body(metadata, marker, approvers_of(args.approvers), args.actor, run_url)
-    number = open_issue(args, f"Terragrunt destroy under {metadata['working_directory']}", body, "pending")
+    going = [u["unit"] for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
+    title = ", ".join(going[:3]) + (f" and {len(going) - 3} more" if len(going) > 3 else "")
+    number = open_issue(args, f"Terragrunt destroy: {title}", body, "pending")
     write_outputs(state="pending", issue=number)
     return 0
 
@@ -290,6 +307,7 @@ def main(argv: list[str] | None = None) -> int:
     decide.add_argument("--approvers", default="")
     decide.add_argument("--label", default=MARKER)
     decide.add_argument("--plan-state", default="")
+    decide.add_argument("--base-commit", default="", help="The merge's first parent, where deleted units still exist")
     request = sub.add_parser("request")
     request.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     request.add_argument("--server-url", default=os.environ.get("GITHUB_SERVER_URL", "https://github.com"))

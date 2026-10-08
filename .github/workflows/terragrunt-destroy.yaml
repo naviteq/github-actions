@@ -37,7 +37,7 @@ on:
         type: string
         default: ""
       filter:
-        description: Terragrunt --filter expression selecting the units to destroy, e.g. ./live/dev/**
+        description: Terragrunt --filter expression selecting the units to destroy, e.g. ./live/dev/**; several, one per line, for their union
         required: true
         type: string
       ref:
@@ -139,7 +139,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@08f6e175b2a6840f2cbf55c7e9426b37c4893e24
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@c49078f4851be71fa76f2b9e3716f8cc1e559bcf
     permissions:
       contents: read
       id-token: write
@@ -204,7 +204,7 @@ jobs:
 
       - name: Open the issue that gates the destroy
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@105258479793dbb1189b7334c4c4e60b916ab1fe
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@c49078f4851be71fa76f2b9e3716f8cc1e559bcf
         with:
           command: request
           sha: ${{ github.sha }}
