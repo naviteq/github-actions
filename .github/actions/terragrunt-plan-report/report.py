@@ -13,6 +13,7 @@ leave the plan job, so masking happens here and nowhere else. → docs/terragrun
 from __future__ import annotations
 
 import argparse
+import difflib
 import fnmatch
 import hashlib
 import json
@@ -20,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 PLAN_LINE = re.compile(
@@ -89,16 +91,24 @@ MASKED = "(masked)"
 UNKNOWN = "(known after apply)"
 VALUE_LIMIT = 160
 LINES_PER_RESOURCE = 40
+INDENT = 4
 ABSENT = object()
+HEADLINE = {"create": "will be created", "update": "will be updated in-place", "replace": "must be replaced",
+            "delete": "will be destroyed"}
+# The plan always shows these on an update, so a reader can tell which object it is.
+IDENTIFYING = ("id", "name")
 
 
-def flatten(value: object, parts: tuple = ()) -> list[tuple[tuple, object]]:
-    """Leaf paths of a plan value; an empty map or list is a leaf of its own."""
-    if isinstance(value, dict) and value:
-        return [leaf for key, item in value.items() for leaf in flatten(item, parts + (key,))]
-    if isinstance(value, list) and value:
-        return [leaf for index, item in enumerate(value) for leaf in flatten(item, parts + (index,))]
-    return [(parts, value)] if parts else []
+@dataclass
+class Change:
+    """What one resource or output change knows about its values, beside the values."""
+    before_sensitive: object = None
+    after_sensitive: object = None
+    unknown: object = None
+    replace_paths: set = field(default_factory=set)
+    resource_type: str = ""
+    patterns: list = field(default_factory=list)
+    creating: bool = False
 
 
 def marked(marks: object, parts: tuple) -> bool:
@@ -114,6 +124,17 @@ def marked(marks: object, parts: tuple) -> bool:
         else:
             return False
     return node is True
+
+
+def node_at(marks: object, parts: tuple) -> object:
+    for part in parts:
+        if isinstance(marks, dict):
+            marks = marks.get(part)
+        elif isinstance(marks, list) and isinstance(part, int) and part < len(marks):
+            marks = marks[part]
+        else:
+            return None
+    return marks
 
 
 def path_text(parts: tuple) -> str:
@@ -141,21 +162,9 @@ def normalise(value: object) -> object:
     return value
 
 
-def show(value: object) -> str:
-    value = normalise(value)
-    text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) \
-        if not isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+def literal(value: object) -> str:
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return text if len(text) <= VALUE_LIMIT else text[:VALUE_LIMIT - 1] + "…"
-
-
-def describe(value: object, parts: tuple, sensitive: object, unknown: object, hidden: bool) -> str:
-    if marked(sensitive, parts):
-        return SENSITIVE
-    if hidden:
-        return MASKED
-    if marked(unknown, parts):
-        return UNKNOWN
-    return show(value)
 
 
 def empty(value: object) -> bool:
@@ -163,51 +172,171 @@ def empty(value: object) -> bool:
     return value is ABSENT or value is None or value == [] or value == {}
 
 
-def resource_lines(change: dict, resource_type: str, patterns: list[str]) -> list[list[str]]:
-    """[sign, text] per changed attribute of one resource, the way `show` reads, without secrets."""
-    actions = change.get("actions", [])
-    if actions == ["delete"]:
-        return []
-    creating = actions == ["create"]
-    before = {} if creating else (change.get("before") or {})
-    after = change.get("after") or {}
-    before_sensitive, after_sensitive = change.get("before_sensitive"), change.get("after_sensitive")
-    unknown = change.get("after_unknown")
-    replace_paths = {tuple(path) for path in change.get("replace_paths") or []}
-    old = dict(flatten(before))
-    new = dict(flatten(after))
-    unknown_paths = {parts for parts, value in flatten(unknown) if value is True} if isinstance(unknown, dict) else set()
-    lines: list[list[str]] = []
-    for parts in sorted(set(old) | set(new) | unknown_paths, key=path_text):
-        was, now = old.get(parts, ABSENT), new.get(parts, ABSENT)
-        pending = marked(unknown, parts)
-        if not pending and empty(now) and (creating or empty(was)):
-            continue
-        if not creating and not pending and normalise(was) == normalise(now):
-            continue
-        hidden = masked_name(parts, resource_type, patterns)
-        name = path_text(parts)
-        forces = "  # forces replacement" if any(parts[:len(r)] == r for r in replace_paths) else ""
-        if creating or was is ABSENT or was is None:
-            lines.append(["+", f"{name} = {describe(now, parts, after_sensitive, unknown, hidden)}{forces}"])
-        elif (now is ABSENT or now is None) and not pending:
-            lines.append(["-", f"{name} = {describe(was, parts, before_sensitive, None, hidden)}{forces}"])
-        else:
-            lines.append(["~", f"{name} = {describe(was, parts, before_sensitive, None, hidden)} → "
-                               f"{describe(now, parts, after_sensitive, unknown, hidden)}{forces}"])
-    if len(lines) > LINES_PER_RESOURCE:
-        lines = lines[:LINES_PER_RESOURCE] + [[" ", f"… {len(lines) - LINES_PER_RESOURCE} more attributes in the run"]]
+def missing(value: object) -> bool:
+    return value is ABSENT or value is None
+
+
+def noun(word: str, count: int) -> str:
+    return word if count == 1 else word + "s"
+
+
+def line(sign: str, depth: int, text: str) -> list[str]:
+    """One line laid out as the plan prints it, with its sign moved to the first column."""
+    return [sign, " " * (INDENT * (depth + 1) - len(sign)) + text]
+
+
+def shown(ch: Change, parts: tuple, was: object, now: object) -> bool:
+    if marked(ch.unknown, parts):
+        return True
+    was, now = normalise(was), normalise(now)
+    if empty(now) and (ch.creating or empty(was)):
+        return False
+    return ch.creating or was != now
+
+
+def leaf_value(ch: Change, parts: tuple, value: object, after: bool) -> str:
+    if marked(ch.after_sensitive if after else ch.before_sensitive, parts):
+        return SENSITIVE
+    if masked_name(parts, ch.resource_type, ch.patterns):
+        return MASKED
+    if after and marked(ch.unknown, parts):
+        return UNKNOWN
+    return literal(normalise(value))
+
+
+def attribute(ch: Change, label: str, before: tuple, after: tuple, was: object, now: object,
+              depth: int) -> list[list[str]]:
+    """The lines of one changed attribute: a value, or a map, list or JSON document opened up."""
+    pending = marked(ch.unknown, after)
+    sign = "+" if ch.creating or missing(was) else ("-" if missing(now) and not pending else "~")
+    forces = " # forces replacement" if after in ch.replace_paths else ""
+    head = f"{label} = " if label else ""
+    tail = "" if label else ","
+    old, new = normalise(was), normalise(now)
+    kinds = {type(value) for value in (old, new) if not missing(value)}
+    opaque = (pending or masked_name(after, ch.resource_type, ch.patterns)
+              or marked(ch.before_sensitive, before) or marked(ch.after_sensitive, after))
+    if not opaque and kinds in ({dict}, {list}):
+        json_text = any(isinstance(value, str) and not isinstance(normalise(value), str) for value in (was, now))
+        opener, closer = ("{", "}") if kinds == {dict} else ("[", "]")
+        if json_text:
+            opener, closer = f"jsonencode({opener}", f"{closer})"
+        body = children(ch, before, after, old if not missing(old) else ABSENT, new if not missing(new) else ABSENT,
+                        depth + 1, quote=kinds == {dict} and bool(label) and not json_text)
+        return [line(sign, depth, f"{head}{opener}{forces}"), *body,
+                line(" ", depth, closer + (" -> null" if sign == "-" and label else "") + tail)]
+    if sign == "+":
+        text = leaf_value(ch, after, now, True)
+    elif sign == "-":
+        text = leaf_value(ch, before, was, False) + (" -> null" if label else "")
+    else:
+        old_text, new_text = leaf_value(ch, before, was, False), leaf_value(ch, after, now, True)
+        text = old_text if old_text == new_text and old_text in (SENSITIVE, MASKED) else f"{old_text} -> {new_text}"
+    return [line(sign, depth, f"{head}{text}{tail}{forces}")]
+
+
+def children(ch: Change, before: tuple, after: tuple, was: object, now: object, depth: int,
+             quote: bool = False, root: bool = False) -> list[list[str]]:
+    """The changed members of a map or list, aligned on `=`, and a count of the unchanged ones."""
+    if isinstance(was, list) or isinstance(now, list):
+        return elements(ch, before, after, was if isinstance(was, list) else [], now if isinstance(now, list) else [],
+                        depth)
+    old = was if isinstance(was, dict) else {}
+    new = now if isinstance(now, dict) else {}
+    pending = node_at(ch.unknown, after)
+    keys = set(old) | set(new) | ({key for key, value in pending.items() if value} if isinstance(pending, dict) else set())
+    members, identifying, hidden = [], [], 0
+    for key in sorted(keys):
+        was_item, now_item = old.get(key, ABSENT), new.get(key, ABSENT)
+        if shown(ch, after + (key,), was_item, now_item):
+            members.append(key)
+        elif root and key in IDENTIFYING and not ch.creating and isinstance(now_item, (str, int, float)) \
+                and not masked_name((key,), ch.resource_type, ch.patterns) and not marked(ch.after_sensitive, (key,)):
+            identifying.append(key)
+        elif not empty(was_item) or not empty(now_item):
+            hidden += 1
+    labels = {key: json.dumps(key) if quote else key for key in [*identifying, *members]}
+    width = max((len(label) for label in labels.values()), default=0)
+    lines = [line(" ", depth, f"{labels[key].ljust(width)} = {literal(new[key])}") for key in identifying]
+    for key in members:
+        lines += attribute(ch, labels[key].ljust(width), before + (key,), after + (key,),
+                           old.get(key, ABSENT), new.get(key, ABSENT), depth)
+    if hidden and not ch.creating:
+        lines.append(line(" ", depth, f"# ({hidden} unchanged {noun('element' if quote else 'attribute', hidden)} hidden)"))
     return lines
 
 
+def elements(ch: Change, before: tuple, after: tuple, was: list, now: list, depth: int) -> list[list[str]]:
+    """A list's added, removed and changed elements, matched the way a text diff matches lines."""
+    pending = node_at(ch.unknown, after)
+    if isinstance(pending, list) and len(pending) > len(now):
+        now = now + [None] * (len(pending) - len(now))
+    keyed = difflib.SequenceMatcher(None, [literal(normalise(v)) for v in was], [literal(normalise(v)) for v in now],
+                                    autojunk=False)
+    lines, hidden = [], 0
+    for tag, i1, i2, j1, j2 in keyed.get_opcodes():
+        if tag == "equal":
+            hidden += i2 - i1
+            continue
+        paired = tag == "replace" and i2 - i1 == j2 - j1 and all(
+            isinstance(normalise(was[i]), dict) and isinstance(normalise(now[j]), dict)
+            for i, j in zip(range(i1, i2), range(j1, j2)))
+        if paired:
+            for i, j in zip(range(i1, i2), range(j1, j2)):
+                lines += attribute(ch, "", before + (i,), after + (j,), was[i], now[j], depth)
+            continue
+        for i in range(i1, i2):
+            lines += attribute(ch, "", before + (i,), after + (i,), was[i], ABSENT, depth)
+        for j in range(j1, j2):
+            lines += attribute(ch, "", before + (j,), after + (j,), ABSENT, now[j], depth)
+    if hidden and not ch.creating:
+        lines.append(line(" ", depth, f"# ({hidden} unchanged {noun('element', hidden)} hidden)"))
+    return lines
+
+
+def resource_lines(resource: dict, patterns: list[str]) -> list[list[str]]:
+    """[sign, text] per line of one resource's change, the way the plan prints it, without secrets."""
+    change = resource.get("change", {})
+    actions = change.get("actions", [])
+    action = action_of(actions)
+    if not action:
+        return []
+    ch = Change(change.get("before_sensitive"), change.get("after_sensitive"), change.get("after_unknown"),
+                {tuple(path) for path in change.get("replace_paths") or []}, resource.get("type", ""), patterns,
+                creating=action == "create")
+    sign = {"create": "+", "update": "~", "delete": "-"}.get(action) or ("+/-" if actions[0] == "create" else "-/+")
+    keyword = "data" if resource.get("mode") == "data" else "resource"
+    head = [["#", f" {resource.get('address', '')} {HEADLINE[action]}"],
+            line(sign, 0, f'{keyword} "{resource.get("type", "")}" "{resource.get("name", "")}" {{')]
+    before = {} if action == "create" else (change.get("before") or {})
+    if action == "delete":
+        # A destroyed object's values say nothing a reviewer acts on, so only its identity shows.
+        kept = Change(resource_type=ch.resource_type, patterns=patterns, before_sensitive=ch.before_sensitive,
+                      after_sensitive=ch.before_sensitive)
+        body = children(kept, (), (), before, before, 1, root=True)
+        body = [entry for entry in body if not entry[1].lstrip().startswith("#")]
+        hidden = sum(1 for value in before.values() if not empty(value)) - len(body)
+        if hidden > 0:
+            body.append(line(" ", 1, f"# ({hidden} {noun('attribute', hidden)} hidden)"))
+    else:
+        body = children(ch, (), (), before, change.get("after") or {}, 1, root=True)
+    if len(body) > LINES_PER_RESOURCE:
+        body = body[:LINES_PER_RESOURCE] + [line(" ", 1, f"# … {len(body) - LINES_PER_RESOURCE} more lines in the run")]
+    return [*head, *body, line(" ", 0, "}")]
+
+
 def output_lines(name: str, change: dict, patterns: list[str]) -> list[list[str]]:
-    """An output diffs like an attribute named after it, so a map output shows only the keys that change."""
+    """An output reads like a top-level attribute, so a map output shows only the keys that change."""
+    action = action_of(change.get("actions", []))
     if change.get("before_sensitive") or change.get("after_sensitive"):
-        return [["~", f"{name} = {SENSITIVE}"]]
-    wrapped = {"actions": change.get("actions", []),
-               "before": {name: change.get("before")}, "after": {name: change.get("after")},
-               "after_unknown": {name: change.get("after_unknown")} if change.get("after_unknown") else None}
-    return resource_lines(wrapped, "output", patterns) or [["~", f"{name} = {show(change.get('after'))}"]]
+        return [line({"create": "+", "delete": "-"}.get(action or "", "~"), 0, f"{name} = {SENSITIVE}")]
+    ch = Change(unknown={name: change.get("after_unknown")} if change.get("after_unknown") else None,
+                resource_type="output", patterns=patterns, creating=action == "create")
+    was = ABSENT if action == "create" else change.get("before")
+    now = ABSENT if action == "delete" else change.get("after")
+    if not shown(ch, (name,), was, now):
+        return [line("~", 0, f"{name} = {literal(now)}")]
+    return attribute(ch, name, (name,), (name,), was, now, 0)
 
 
 def diffs(plan: dict, patterns: list[str]) -> dict[str, list[list[str]]]:
@@ -218,7 +347,7 @@ def diffs(plan: dict, patterns: list[str]) -> dict[str, list[list[str]]]:
             found[f"output.{name}"] = output_lines(name, change, patterns)
     for change in plan.get("resource_changes") or []:
         if action_of(change.get("change", {}).get("actions", [])):
-            found[change.get("address", "")] = resource_lines(change.get("change", {}), change.get("type", ""), patterns)
+            found[change.get("address", "")] = resource_lines(change, patterns)
     return found
 
 

@@ -127,15 +127,25 @@ def totals_line(units: list[dict]) -> str:
 
 
 ISSUE_LIMIT = 60000
-SIGN = {"create": "+", "update": "~", "replace": "-/+", "delete": "-"}
+SIGN = {"create": "+", "update": "!", "replace": "-/+", "delete": "-"}
+
+
+def diff_lines(found: list[dict], values: bool = True) -> list[str]:
+    """Each change as the plan prints it, sign first so GitHub colours it, and `!` for `~`."""
+    lines: list[str] = []
+    for item in found:
+        shown = item.get("lines") if values else None
+        if not shown:
+            lines.append(f"{SIGN[item['action']]} {item['address']}")
+            continue
+        if shown[0][0] == "#" and lines:
+            lines.append("")
+        lines += [("!" if sign == "~" else sign) + text for sign, text in shown]
+    return lines
 
 
 def _diff_block(found: list[dict], values: bool) -> str:
-    lines = []
-    for item in found:
-        lines.append(f"{SIGN[item['action']]} {item['address']}")
-        for sign, text in (item.get("lines") or []) if values else []:
-            lines.append(f"{sign if sign in '+-~' else ' '}     {text}")
+    lines = diff_lines(found, values)
     fence = "````" if any("```" in line for line in lines) else "```"
     return "\n".join([f"{fence}diff", *lines, fence])
 

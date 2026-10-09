@@ -21,7 +21,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
-SIGN = {"create": "+", "update": "~", "replace": "-/+", "delete": "-"}
+SIGN = {"create": "+", "update": "!", "replace": "-/+", "delete": "-"}
+
+
+def diff_lines(found: list[dict], values: bool = True) -> list[str]:
+    """Each change as the plan prints it, sign first so GitHub colours it, and `!` for `~`."""
+    lines: list[str] = []
+    for item in found:
+        shown = item.get("lines") if values else None
+        if not shown:
+            lines.append(f"{SIGN[item['action']]} {item['address']}")
+            continue
+        if shown[0][0] == "#" and lines:
+            lines.append("")
+        lines += [("!" if sign == "~" else sign) + text for sign, text in shown]
+    return lines
 
 
 def gh(*args: str, payload: dict | None = None) -> object:
@@ -79,12 +93,9 @@ def body(row: dict, resources: list[dict[str, str]], run_url: str, now: str) -> 
     if row.get("destroy") or row.get("replace"):
         lines += ["> [!WARNING]", "> Applying the code as it is would destroy or replace resources.", ""]
     if resources:
-        diff = []
-        for item in resources:
-            diff.append(f"{SIGN[item['action']]} {item['address']}")
-            diff += [f"{sign if sign in '+-~' else ' '}     {text}" for sign, text in item.get("lines") or []]
+        diff = diff_lines(resources)
         if sum(len(line) + 1 for line in diff) > ISSUE_LIMIT:
-            diff = [f"{SIGN[item['action']]} {item['address']}" for item in resources]
+            diff = diff_lines(resources, values=False)
         fence = "````" if any("```" in line for line in diff) else "```"
         lines += ["<details open><summary>What would change</summary>", "", f"{fence}diff", *diff, fence, "",
                   "</details>", ""]
