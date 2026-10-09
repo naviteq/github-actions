@@ -76,6 +76,18 @@ on:
         required: false
         # renovate: datasource=github-releases depName=ekristen/aws-nuke
         default: 3.68.3
+      max_attempts:
+        description: >-
+          aws-nuke runs at most this many times. A run is repeated only when every
+          error it ended on is a dependency AWS is still releasing. 1 disables retries.
+        type: number
+        required: false
+        default: 3
+      retry_delay_seconds:
+        description: Wait between aws-nuke attempts, long enough for Lambda to release its VPC network interfaces.
+        type: number
+        required: false
+        default: 600
       artifact_retention_days:
         description: Apply-log artifact retention in days. Must be >= 90 for audit purposes.
         type: number
@@ -97,7 +109,7 @@ jobs:
       contents: read
       id-token: write
       issues: write
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Honor pause switch
         id: pause
@@ -423,7 +435,7 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@cdf66f83bb478c6b909b279b28fb5bc74f2b4bdb
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@a0cf0ab85a106f90b7fa7ab1735fe91783a81554
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -545,7 +557,7 @@ jobs:
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@cdf66f83bb478c6b909b279b28fb5bc74f2b4bdb
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@a0cf0ab85a106f90b7fa7ab1735fe91783a81554
         with:
           version: ${{ inputs.aws_nuke_version }}
 
@@ -558,6 +570,8 @@ jobs:
         env:
           NUKE_CONFIG: ${{ inputs.nuke_config_path }}
           QUIET: ${{ inputs.quiet }}
+          MAX_ATTEMPTS: ${{ inputs.max_attempts }}
+          RETRY_DELAY_SECONDS: ${{ inputs.retry_delay_seconds }}
         shell: bash
         run: |
           set -uo pipefail
@@ -566,9 +580,6 @@ jobs:
           set +e
           trap 'echo "::endgroup::"' EXIT
 
-          echo "::group::Run aws-nuke with --no-dry-run (destructive)"
-          # stdbuf line-buffers so a long destructive run does not look stuck in
-          # the log; tee keeps the full apply log for the artifact upload.
           args=(run
             --config "${NUKE_CONFIG}"
             --no-dry-run
@@ -580,18 +591,46 @@ jobs:
           if [[ "${QUIET}" == "true" ]]; then
             args+=(--quiet)
           fi
-          stdbuf -oL -eL aws-nuke "${args[@]}" \
-            2>&1 | tee nuke-apply.log
-          rc=${PIPESTATUS[0]}
-          echo "::endgroup::"
+
+          # True when every error aws-nuke gave up on is AWS still releasing a
+          # dependency, which a later pass clears. → see docs/aws-nuke.md
+          only_transient_errors() {
+            local errors
+            errors="$(awk '/^There are resources in failed state/ { dump = 1; next }
+              dump && item { print; item = 0; next }
+              dump && / - failed$/ { item = 1 }' "$1")"
+            [[ -n "${errors}" ]] || return 1
+            ! grep -qvE "(^|api error )DependencyViolation: |^OperationNotPermitted: You are not allowed to manage 'ela-attach' attachments" <<<"${errors}"
+          }
+
+          : > nuke-apply.log
+          attempt=1
+          while :; do
+            echo "::group::Run aws-nuke with --no-dry-run (destructive), attempt ${attempt}/${MAX_ATTEMPTS}"
+            # stdbuf line-buffers so a long destructive run does not look stuck in
+            # the log; tee keeps each attempt for the retry check and the artifact.
+            stdbuf -oL -eL aws-nuke "${args[@]}" \
+              2>&1 | tee nuke-attempt.log
+            rc=${PIPESTATUS[0]}
+            cat nuke-attempt.log >> nuke-apply.log
+            echo "::endgroup::"
+
+            if [[ "${rc}" -eq 0 || "${attempt}" -ge "${MAX_ATTEMPTS}" ]] \
+                || ! only_transient_errors nuke-attempt.log; then
+              break
+            fi
+            echo "::notice::aws-nuke attempt ${attempt} left only dependency errors; retrying in ${RETRY_DELAY_SECONDS}s"
+            sleep "${RETRY_DELAY_SECONDS}"
+            attempt=$((attempt + 1))
+          done
 
           echo "::group::Record aws-nuke exit code and failure reason"
           echo "nuke_exit_code=${rc}" >> "$GITHUB_OUTPUT"
-          # aws-nuke prints why it stopped last, after its logrus output.
-          # → see docs/aws-nuke.md
+          # aws-nuke prints why it stopped last, after its logrus output; the
+          # SDK's `status code: …` trailer names no cause. → see docs/aws-nuke.md
           reason=""
           if [[ "${rc}" -ne 0 ]]; then
-            reason="$(grep -vE '^(time=|[[:space:]]*$)' nuke-apply.log | tail -n1 | tr -d '\r' | cut -c1-900)"
+            reason="$(grep -vE '^(time=|[[:space:]]*$|[[:space:]]*status code: )' nuke-attempt.log | tail -n1 | tr -d '\r' | cut -c1-900)"
           fi
           echo "nuke_failure_reason=${reason}" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
