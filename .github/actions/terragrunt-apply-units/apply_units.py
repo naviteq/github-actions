@@ -183,6 +183,34 @@ def check_cost(metadata: dict, limit: float) -> None:
         raise Refused(f"the plan adds {total:,.2f} per month, more than max_monthly_cost_delta {limit:,.2f}")
 
 
+def second_approver_reason(metadata: dict, threshold: float) -> str:
+    """Why this apply needs a second approver; empty when one is enough. Unknown cost counts as over."""
+    changing = [u for u in metadata.get("units", []) if any(u.get(k) for k in COUNT_KEYS)]
+    if metadata.get("destroy") or not changing:
+        return ""
+    unpriced = [u["unit"] for u in changing if not (u.get("cost") or {}).get("estimate")]
+    if unpriced:
+        return "these units have no cost estimate: " + ", ".join(unpriced)
+    total = round(sum(float(u["cost"]["delta"]) for u in changing), 2)
+    if total > threshold:
+        return f"it adds {total:,.2f} per month, more than the two-approver threshold of {threshold:,.2f}"
+    return ""
+
+
+def approvals(comments: list[dict], marker: dict, approvers: list[str]) -> list[str]:
+    """Distinct allowed approvers whose unedited comment is exactly this issue's approve command."""
+    wanted = f"{marker.get('action', 'apply')}-{marker.get('artifact_id')}"
+    seen: list[str] = []
+    for comment in comments:
+        match = APPROVE.match(comment.get("body") or "")
+        login = ((comment.get("user") or {}).get("login") or "").lower()
+        edited = comment.get("updated_at") not in (None, comment.get("created_at"))
+        if match and f"{match.group(1)}-{match.group(2)}" == wanted and login in approvers and not edited \
+                and login not in seen:
+            seen.append(login)
+    return seen
+
+
 def find_newest(unit_dir: Path, name: str) -> Path | None:
     found = sorted(unit_dir.glob(f".terragrunt-cache/**/{name}"), key=lambda p: p.stat().st_mtime)
     return found[-1] if found else None
@@ -442,6 +470,9 @@ def main(argv: list[str] | None = None) -> int:
     plans.add_argument("--marker-json", default="")
     plans.add_argument("--artifact-json", default="")
     plans.add_argument("--expect-json", default="")
+    plans.add_argument("--second-approver-cost", default="", help="Monthly cost delta above which two approve")
+    plans.add_argument("--comments-file", default="", help="The gate issue's comments, as the GitHub API lists them")
+    plans.add_argument("--approvers", default="")
     run = sub.add_parser("run")
     run.add_argument("--phase", choices=["check", "apply", "clean", "fresh", "destroy"], required=True)
     run.add_argument("--metadata", default="")
@@ -494,6 +525,20 @@ def main(argv: list[str] | None = None) -> int:
             check_plans(metadata, marker, artifact, args.commit_tree)
             if marker is None:
                 check_expectations(metadata, json.loads(args.expect_json or "{}"))
+            elif args.second_approver_cost.strip():
+                why = second_approver_reason(metadata, float(args.second_approver_cost))
+                comments = json.loads(Path(args.comments_file).read_text(encoding="utf-8")) if args.comments_file else []
+                seen = approvals(comments, marker, approvers_of(args.approvers))
+                if why and len(seen) < 2:
+                    # Not a refusal: the issue stays pending until a second approver comments.
+                    who = ", ".join("@" + login for login in seen) or "nobody yet"
+                    reason = f"this apply needs two approvers because {why}; approved so far by {who}"
+                    print(f"::notice title=Waiting for a second approver::{reason}")
+                    write_outputs(waiting="true", reason=reason, has_changes="false",
+                                  destroy=str(bool(metadata.get("destroy"))).lower())
+                    return 0
+                if why:
+                    print(f"Two approvers needed and given: {', '.join('@' + login for login in seen)}")
             units = [u["unit"] for u in metadata["units"] if any(u.get(k) for k in COUNT_KEYS)]
             verb = "destroy" if metadata.get("destroy") else "apply"
             print(f"{len(units)} units to {verb}: {', '.join(units) or 'none'}")
