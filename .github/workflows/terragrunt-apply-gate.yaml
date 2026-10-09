@@ -1,0 +1,216 @@
+---
+# On a push to the default branch: find the merged pull request's saved plans and open
+# the issue that gates their apply; also warm the provider cache. → docs/terragrunt-apply.md
+name: Terragrunt apply gate
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      working_directory:
+        description: Directory the units live under, relative to the repository root; as in the plan
+        required: false
+        type: string
+        default: "."
+      approvers:
+        description: Comma-separated GitHub logins allowed to approve; empty reads vars.TERRAGRUNT_APPLY_APPROVERS
+        required: false
+        type: string
+        default: ""
+      label:
+        description: Label prefix of the gate issues
+        required: false
+        type: string
+        default: terragrunt-apply
+      artifact_prefix:
+        description: Prefix of the plan artifacts, as the plan names them before -pr<number>-<head sha>
+        required: false
+        type: string
+        default: terragrunt-plan
+      plan_workflow:
+        description: File name of this repository's workflow that calls the plan on pull requests
+        required: false
+        type: string
+        default: terragrunt-plan.yaml
+      wait_minutes:
+        description: How long to wait for the merged pull request's plan when it is still running
+        required: false
+        type: number
+        default: 30
+      engine:
+        description: Engine that fetches providers into the cache, tofu or terraform
+        required: false
+        type: string
+        default: tofu
+      terragrunt_version:
+        description: Terragrunt version; read from the repository's .terragrunt-version when empty
+        required: false
+        type: string
+        default: ""
+      opentofu_version:
+        description: OpenTofu version; read from the repository's .opentofu-version when empty
+        required: false
+        type: string
+        default: ""
+      terraform_version:
+        description: Terraform version for engine terraform; read from the repository's .terraform-version when empty
+        required: false
+        type: string
+        default: ""
+      provider_cache:
+        description: Warm and save the provider cache the plan and apply restore
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      runestra_client_id:
+        description: Runestra registry client id, for providers from the private registry
+        required: false
+      runestra_client_secret:
+        description: Runestra registry client secret
+        required: false
+    outputs:
+      state:
+        description: nothing, no-changes, pending or blocked
+        value: ${{ jobs.gate.outputs.state }}
+      issue:
+        description: The issue opened, if any
+        value: ${{ jobs.gate.outputs.issue }}
+      deleted:
+        description: A filter per unit the merge deleted, one per line, for terragrunt-destroy; empty when none
+        value: ${{ jobs.gate.outputs.deleted }}
+      deleted_ref:
+        description: The commit before the merge, where the deleted units still exist; terragrunt-destroy's ref
+        value: ${{ jobs.gate.outputs.deleted_ref }}
+
+permissions: {}
+
+jobs:
+  gate:
+    name: Gate the apply
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      state: ${{ steps.decide.outputs.state }}
+      issue: ${{ steps.decide.outputs.issue }}
+      deleted: ${{ steps.decide.outputs.deleted }}
+      deleted_ref: ${{ steps.decide.outputs.deleted_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+
+      - name: Record the merged tree and whether it moved
+        id: tree
+        env:
+          SCOPE: ${{ inputs.working_directory }}
+        run: |
+          set -euo pipefail
+          scope="${SCOPE#./}"
+          scope="${scope%/}"
+          if [ -z "${scope}" ] || [ "${scope}" = "." ]; then ref="HEAD^{tree}"; path="."; else ref="HEAD:${scope}"; path="${scope}"; fi
+          changed=true
+          if git rev-parse -q --verify HEAD^ > /dev/null && git diff --quiet HEAD^ HEAD -- "${path}"; then changed=false; fi
+          {
+            echo "tree=$(git rev-parse "${ref}")"
+            echo "changed=${changed}"
+            echo "base=$(git rev-parse -q --verify HEAD^ || true)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Find the merged pull request and its plans
+        id: find
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        with:
+          command: find
+          sha: ${{ github.sha }}
+          prefix: ${{ inputs.artifact_prefix }}
+          # A pull request merged before its plan finished is not a pull request without a plan.
+          plan_workflow: ${{ inputs.plan_workflow }}
+          wait_minutes: ${{ inputs.wait_minutes }}
+
+      - name: Download the plans' metadata
+        if: steps.find.outputs.artifact_id != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ steps.find.outputs.artifact_id }}
+          run-id: ${{ steps.find.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/terragrunt-plans
+
+      - name: Open the approval issue, or say why there is none
+        id: decide
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        with:
+          command: decide
+          sha: ${{ github.sha }}
+          pr: ${{ steps.find.outputs.pr }}
+          pr_url: ${{ steps.find.outputs.pr_url }}
+          head_sha: ${{ steps.find.outputs.head_sha }}
+          artifact_id: ${{ steps.find.outputs.artifact_id }}
+          metadata: ${{ steps.find.outputs.artifact_id != '' && format('{0}/terragrunt-plans/metadata.json', runner.temp) || '' }}
+          tree: ${{ steps.tree.outputs.tree }}
+          changed: ${{ steps.tree.outputs.changed }}
+          working_directory: ${{ inputs.working_directory }}
+          approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
+          label: ${{ inputs.label }}
+          plan_state: ${{ steps.find.outputs.plan_state }}
+          base_commit: ${{ steps.tree.outputs.base }}
+
+  # The default branch is the only place a cache entry every pull request can read is saved.
+  warm:
+    name: Warm the provider cache
+    if: inputs.provider_cache
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+    env:
+      HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Terragrunt and the engine
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        with:
+          engine: ${{ inputs.engine }}
+          terragrunt_version: ${{ inputs.terragrunt_version }}
+          opentofu_version: ${{ inputs.opentofu_version }}
+          terraform_version: ${{ inputs.terraform_version }}
+
+      - name: Exchange the registry client credentials for a token
+        if: env.HAS_REGISTRY_CLIENT == 'true'
+        uses: naviteq/github-actions/.github/actions/registry-token@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        with:
+          client_id: ${{ secrets.runestra_client_id }}
+          client_secret: ${{ secrets.runestra_client_secret }}
+
+      - name: Restore the provider cache
+        id: provider-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/terragrunt-providers
+          key: terragrunt-providers-${{ runner.os }}-${{ runner.arch }}-${{ inputs.engine }}-${{ hashFiles(format('{0}/**/.terraform.lock.hcl', inputs.working_directory)) }}
+
+      - name: Warm the provider cache from the lock files
+        if: steps.provider-cache.outputs.cache-hit != 'true'
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          engine: ${{ inputs.engine }}
+          cache_dir: ${{ runner.temp }}/terragrunt-providers
+
+      - name: Save the provider cache
+        if: steps.provider-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/terragrunt-providers
+          key: ${{ steps.provider-cache.outputs.cache-primary-key }}

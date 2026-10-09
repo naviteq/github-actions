@@ -1,0 +1,214 @@
+---
+# Plans the destruction of the units filter selects and opens the issue an approver
+# answers; terragrunt-apply then destroys them. → docs/terragrunt-destroy.md
+name: Terragrunt destroy request
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      working_directory:
+        description: Directory the units live under, relative to the repository root
+        required: false
+        type: string
+        default: "."
+      engine:
+        description: Engine Terragrunt drives, tofu or terraform
+        required: false
+        type: string
+        default: tofu
+      terragrunt_version:
+        description: Terragrunt version; read from the repository's .terragrunt-version when empty
+        required: false
+        type: string
+        default: ""
+      opentofu_version:
+        description: OpenTofu version; read from the repository's .opentofu-version when empty
+        required: false
+        type: string
+        default: ""
+      terraform_version:
+        description: Terraform version for engine terraform; read from the repository's .terraform-version when empty
+        required: false
+        type: string
+        default: ""
+      filter:
+        description: Terragrunt --filter expression selecting the units to destroy, e.g. ./live/dev/**; several, one per line, for their union
+        required: true
+        type: string
+      ref:
+        description: Branch or full commit SHA whose code describes the units (a short SHA is read as a branch); empty for the dispatched commit
+        required: false
+        type: string
+        default: ""
+      parallelism:
+        description: How many units Terragrunt plans at once
+        required: false
+        type: number
+        default: 4
+      github_environment:
+        description: GitHub Environment the plan jobs run in, for a role whose trust policy matches on it; empty for none
+        required: false
+        type: string
+        default: ""
+      aws_region:
+        description: Assume the aws_iam_role secret in this region; the default for a profile that names no region
+        required: false
+        type: string
+        default: ""
+      profiles:
+        description: YAML credential profiles, as in terragrunt-plan, naming the roles that plan the destroy
+        required: false
+        type: string
+        default: ""
+      env_vars:
+        description: Non-secret KEY=VALUE lines exported before planning
+        required: false
+        type: string
+        default: ""
+      provider_cache:
+        description: Restore the provider cache the default branch saved
+        required: false
+        type: boolean
+        default: true
+      provider_cache_registries:
+        description: Extra provider registry hostnames to cache, comma-separated, besides the two public ones
+        required: false
+        type: string
+        default: ""
+      dependency_outputs_from_state:
+        description: Read the outputs of a dependency outside the run straight from its S3 state, without init; turn off for OpenTofu state encryption
+        required: false
+        type: boolean
+        default: true
+      approvers:
+        description: Comma-separated GitHub logins allowed to approve; empty reads vars.TERRAGRUNT_APPLY_APPROVERS
+        required: false
+        type: string
+        default: ""
+      label:
+        description: Label prefix of the destroy issues
+        required: false
+        type: string
+        default: terragrunt-destroy
+      artifact_retention_days:
+        description: How long the destroy plans' metadata is kept, and so how long the issue can be approved
+        required: false
+        type: number
+        default: 14
+    secrets:
+      naviteq_github_app_id:
+        description: GitHub App id; with the key, mints a read-only token so private git sources resolve
+        required: false
+      naviteq_github_app_key:
+        description: Private key of that GitHub App
+        required: false
+      runestra_client_id:
+        description: Runestra registry client id, exchanged for a registry token
+        required: false
+      runestra_client_secret:
+        description: Runestra registry client secret
+        required: false
+      aws_iam_role:
+        description: AWS role assumed through OIDC when aws_region is set; it only plans, read-only is enough
+        required: false
+      terragrunt_extra_env:
+        description: KEY=VALUE lines exported with masked values; with profiles, a job gets only the keys its profile lists
+        required: false
+    outputs:
+      state:
+        description: pending when an issue was opened, no-changes when nothing is left to destroy
+        value: ${{ jobs.request.outputs.state }}
+      issue:
+        description: The issue opened, if any
+        value: ${{ jobs.request.outputs.issue }}
+      changes:
+        description: JSON list of each unit's destroy counts, and the units kept for prevent_destroy
+        value: ${{ jobs.plan.outputs.changes }}
+
+permissions: {}
+
+# One request at a time per repository and directory; a queued one waits, never cancels.
+concurrency:
+  group: terragrunt-destroy-request-${{ github.repository }}-${{ inputs.working_directory }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@d435c6587d8f6e8eb054fc0d3029d48ac59783cd
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    with:
+      runner: ${{ inputs.runner }}
+      working_directory: ${{ inputs.working_directory }}
+      engine: ${{ inputs.engine }}
+      terragrunt_version: ${{ inputs.terragrunt_version }}
+      opentofu_version: ${{ inputs.opentofu_version }}
+      terraform_version: ${{ inputs.terraform_version }}
+      destroy: true
+      ref: ${{ inputs.ref }}
+      filter: ${{ inputs.filter }}
+      filter_affected: false
+      parallelism: ${{ inputs.parallelism }}
+      github_environment: ${{ inputs.github_environment }}
+      aws_region: ${{ inputs.aws_region }}
+      profiles: ${{ inputs.profiles }}
+      env_vars: ${{ inputs.env_vars }}
+      pr_comment: false
+      artifact_retention_days: ${{ inputs.artifact_retention_days }}
+      provider_cache: ${{ inputs.provider_cache }}
+      provider_cache_registries: ${{ inputs.provider_cache_registries }}
+      dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
+    secrets: inherit
+
+  request:
+    name: Open the destroy issue
+    needs: plan
+    if: needs.plan.outputs.artifact != ''
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      state: ${{ steps.request.outputs.state }}
+      issue: ${{ steps.request.outputs.issue }}
+    steps:
+      # The issue gates the artifact by id, the way the apply gate does.
+      - name: Find the artifact's id
+        id: artifact
+        env:
+          NAME: ${{ needs.plan.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?name=${NAME}" --jq '.artifacts[0].id // empty')"
+          if [ -z "${id}" ]; then
+            echo "::error title=No artifact::${NAME} was not uploaded by this run"
+            exit 1
+          fi
+          echo "id=${id}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the destroy plans' metadata
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          artifact-ids: ${{ steps.artifact.outputs.id }}
+          path: ${{ runner.temp }}/terragrunt-plans
+
+      - name: Open the issue that gates the destroy
+        id: request
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        with:
+          command: request
+          sha: ${{ github.sha }}
+          artifact_id: ${{ steps.artifact.outputs.id }}
+          metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
+          approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
+          label: ${{ inputs.label }}

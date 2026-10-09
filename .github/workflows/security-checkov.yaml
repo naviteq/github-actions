@@ -128,7 +128,7 @@ jobs:
 
       - name: Download scan input artifact
         if: ${{ inputs.download_artifact != '' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ${{ inputs.download_artifact }}
           path: ${{ inputs.download_path }}
@@ -368,7 +368,7 @@ jobs:
 
       - name: Run Checkov (full scan)
         if: ${{ inputs.full_scan }}
-        uses: bridgecrewio/checkov-action@7b1bd992e2c40a3404e3511944aeb8d014703d9a # v12.3129.0
+        uses: bridgecrewio/checkov-action@c13aafd679d3814a25067d10fcaf98c4f7594931 # v12.3131.0
         with:
           directory: ${{ env.CHECKOV_DIRECTORY }}
           framework: ${{ env.CHECKOV_FRAMEWORK }}
@@ -383,7 +383,7 @@ jobs:
 
       - name: Run Checkov (changed files)
         if: ${{ !inputs.full_scan && steps.resolved.outputs.has_changes == 'true' }}
-        uses: bridgecrewio/checkov-action@7b1bd992e2c40a3404e3511944aeb8d014703d9a # v12.3129.0
+        uses: bridgecrewio/checkov-action@c13aafd679d3814a25067d10fcaf98c4f7594931 # v12.3131.0
         with:
           directory: ${{ env.CHECKOV_DIRECTORY }}
           file: ${{ steps.resolved.outputs.files }}
@@ -439,7 +439,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         if: ${{ always() && inputs.upload_sarif && hashFiles('results.sarif') != '' }}
         with:
           sarif_file: results.sarif
@@ -449,7 +449,7 @@ jobs:
         # The report is an audit copy, not the verdict: a full artifact quota
         # must not fail a scan that passed.
         continue-on-error: true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ inputs.report_artifact_name }}
           path: |

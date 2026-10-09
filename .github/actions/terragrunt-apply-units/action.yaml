@@ -1,0 +1,144 @@
+---
+name: Terragrunt apply units
+description: >
+  Validate an approval against the saved Terragrunt plans, then re-plan each unit to rule
+  out drift, apply exactly the saved plan files, or prove a second plan is empty; or, with
+  no saved plans, apply or destroy each unit in dependency order.
+
+inputs:
+  command:
+    description: approval, plans or run
+    required: true
+  phase:
+    description: For run, check, apply, clean, fresh to plan, check and apply each unit with no saved plan, or destroy to plan, check and destroy each unit, dependents first
+    required: false
+    default: ""
+  approvers:
+    description: For approval, comma-separated GitHub logins allowed to approve
+    required: false
+    default: ""
+  gate_login:
+    description: For approval, the login that opens gate issues
+    required: false
+    default: github-actions[bot]
+  label:
+    description: For approval, the label prefix the gate uses
+    required: false
+    default: terragrunt-apply
+  metadata:
+    description: For plans and run, path of the downloaded metadata.json; fresh needs none
+    required: false
+    default: ""
+  commit_tree:
+    description: For plans, the tree of working_directory in the checked-out commit
+    required: false
+    default: ""
+  marker_json:
+    description: For plans, the approved gate marker; empty for an expectations apply
+    required: false
+    default: ""
+  artifact_json:
+    description: For plans, the artifact as the GitHub API describes it
+    required: false
+    default: ""
+  expect_json:
+    description: For plans without a marker, and for run fresh and destroy, the expectations policy as JSON
+    required: false
+    default: ""
+  units:
+    description: For run, this job's units, one per line
+    required: false
+    default: ""
+  working_directory:
+    description: For run, the directory the units are relative to
+    required: false
+    default: "."
+  plans_dir:
+    description: For run apply, the directory of decrypted plan files
+    required: false
+    default: ""
+  engine:
+    description: For run check, fresh and destroy, the engine binary that reads plans
+    required: false
+    default: tofu
+  parallelism:
+    description: For run fresh and destroy, how many units of one dependency level run at once
+    required: false
+    default: "4"
+
+outputs:
+  marker:
+    description: The approved gate marker, as JSON
+    value: ${{ steps.units.outputs.marker }}
+  artifact_id:
+    description: The approved plan artifact
+    value: ${{ steps.units.outputs.artifact_id }}
+  plan_run_id:
+    description: The run that made the approved plans
+    value: ${{ steps.units.outputs.plan_run_id }}
+  commit:
+    description: The merged commit the plans belong to
+    value: ${{ steps.units.outputs.commit }}
+  issue:
+    description: The gate issue
+    value: ${{ steps.units.outputs.issue }}
+  units:
+    description: Units whose plans change something, in run order, one per line
+    value: ${{ steps.units.outputs.units }}
+  has_changes:
+    description: true when any unit would change anything
+    value: ${{ steps.units.outputs.has_changes }}
+  destroy:
+    description: For plans, true when the plans are destroy plans; run apply then destroys their units
+    value: ${{ steps.units.outputs.destroy }}
+  changes:
+    description: For run fresh and destroy, JSON list of each reached unit's counts and outcome
+    value: ${{ steps.units.outputs.changes }}
+  applied:
+    description: For run fresh, the units applied, one per line
+    value: ${{ steps.units.outputs.applied }}
+  destroyed:
+    description: For run destroy, the units destroyed, one per line
+    value: ${{ steps.units.outputs.destroyed }}
+  reason:
+    description: Why the apply was refused; empty when it was not
+    value: ${{ steps.units.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run the apply step
+      id: units
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        COMMAND: ${{ inputs.command }}
+        PHASE: ${{ inputs.phase }}
+        APPROVERS: ${{ inputs.approvers }}
+        GATE_LOGIN: ${{ inputs.gate_login }}
+        LABEL: ${{ inputs.label }}
+        METADATA: ${{ inputs.metadata }}
+        COMMIT_TREE: ${{ inputs.commit_tree }}
+        MARKER_JSON: ${{ inputs.marker_json }}
+        ARTIFACT_JSON: ${{ inputs.artifact_json }}
+        EXPECT_JSON: ${{ inputs.expect_json }}
+        UNITS: ${{ inputs.units }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        PLANS_DIR: ${{ inputs.plans_dir }}
+        ENGINE: ${{ inputs.engine }}
+        PARALLELISM: ${{ inputs.parallelism }}
+      run: |
+        set -euo pipefail
+        script="${ACTION_PATH}/apply_units.py"
+        case "${COMMAND}" in
+          approval)
+            python3 "${script}" approval --approvers "${APPROVERS}" --gate-login "${GATE_LOGIN}" --label "${LABEL}" ;;
+          plans)
+            python3 "${script}" plans --metadata "${METADATA}" --commit-tree "${COMMIT_TREE}" \
+              --marker-json "${MARKER_JSON}" --artifact-json "${ARTIFACT_JSON}" --expect-json "${EXPECT_JSON}" ;;
+          run)
+            python3 "${script}" run --phase "${PHASE}" --metadata "${METADATA}" --units "${UNITS}" \
+              --working-directory "${WORKING_DIRECTORY}" --plans-dir "${PLANS_DIR}" --engine "${ENGINE}" \
+              --expect-json "${EXPECT_JSON}" --parallelism "${PARALLELISM}" ;;
+          *) echo "::error title=Unknown command::${COMMAND}"; exit 1 ;;
+        esac
