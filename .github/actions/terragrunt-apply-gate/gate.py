@@ -133,14 +133,17 @@ SIGN = {"create": "+", "update": "!", "replace": "-/+", "delete": "-"}
 def diff_lines(found: list[dict], values: bool = True) -> list[str]:
     """Each change as the plan prints it, sign first so GitHub colours it, and `!` for `~`."""
     lines: list[str] = []
+    block = False
     for item in found:
         shown = item.get("lines") if values else None
         if not shown:
             lines.append(f"{SIGN[item['action']]} {item['address']}")
+            block = False
             continue
-        if shown[0][0] == "#" and lines:
+        if lines and (block or shown[0][0] == "#"):
             lines.append("")
         lines += [("!" if sign == "~" else sign) + text for sign, text in shown]
+        block = shown[0][0] == "#"
     return lines
 
 
