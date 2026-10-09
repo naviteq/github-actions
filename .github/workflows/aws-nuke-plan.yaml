@@ -267,7 +267,7 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@9c7d21f552664bbf481c1dcce42aff066dfda068
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@a0cf0ab85a106f90b7fa7ab1735fe91783a81554
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -351,7 +351,7 @@ jobs:
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@9c7d21f552664bbf481c1dcce42aff066dfda068
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@a0cf0ab85a106f90b7fa7ab1735fe91783a81554
         with:
           version: ${{ inputs.aws_nuke_version }}
 
@@ -454,7 +454,7 @@ jobs:
       - name: Upload plan artifact
         id: upload
         if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: aws-nuke-plan-${{ github.run_id }}
           path: |

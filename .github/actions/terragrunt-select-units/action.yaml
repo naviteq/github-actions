@@ -10,7 +10,7 @@ inputs:
     required: false
     default: "."
   filter:
-    description: Terragrunt --filter expression; ignored when filter_affected is true
+    description: Terragrunt --filter expression, or several, one per line, for their union; ignored when filter_affected is true
     required: false
     default: ""
   filter_affected:

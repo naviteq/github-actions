@@ -1,0 +1,33 @@
+---
+name: Terragrunt warm providers
+description: >
+  Fill a provider cache with every provider version the units' committed lock files pin,
+  without parsing the units, so no state, credentials or dependency outputs are needed.
+
+inputs:
+  working_directory:
+    description: Directory whose lock files are read, relative to the repository root
+    required: false
+    default: "."
+  engine:
+    description: Engine binary that fetches the providers, tofu or terraform
+    required: false
+    default: tofu
+  cache_dir:
+    description: Provider cache directory to fill, laid out as a plugin_cache_dir
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Warm the provider cache from the lock files
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        ENGINE: ${{ inputs.engine }}
+        CACHE_DIR: ${{ inputs.cache_dir }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/warm_providers.py" --working-directory "${WORKING_DIRECTORY}" \
+          --engine "${ENGINE}" --cache-dir "${CACHE_DIR}"

@@ -1,0 +1,50 @@
+---
+name: Terragrunt plan cost
+description: >
+  Estimate each planned unit's monthly cost before and after the plan with Infracost, keeping
+  only the totals, the delta and the biggest movers. Needs INFRACOST_API_KEY in the step's
+  environment; the plan JSON never leaves the runner.
+
+inputs:
+  plans:
+    description: unit<TAB>plan file lines, as terragrunt-plan-report outputs them
+    required: true
+  engine:
+    description: Engine binary that reads the plans, tofu or terraform
+    required: false
+    default: tofu
+  out_file:
+    description: File to write each unit's estimate to, as JSON
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # A pinned, checksummed release binary: infracost/actions is not on the org allowlist.
+    - name: Install Infracost
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "${RUNNER_ARCH}" in
+          X64) arch=amd64 sum=d0d081cd39b07b2ca5c315830bfc4bcdfb0183b04c19cb18835c154482a2c97b ;;
+          ARM64) arch=arm64 sum=acd693c7d001fef44787bc5de65fffcb25bf5445885fd1da98a7b31281e32b43 ;;
+          *) echo "::error title=Unsupported architecture::${RUNNER_ARCH}"; exit 1 ;;
+        esac
+        archive="${RUNNER_TEMP}/infracost.tar.gz"
+        curl -fsSL -o "${archive}" "https://github.com/infracost/infracost/releases/download/v0.10.46/infracost-linux-${arch}.tar.gz"
+        echo "${sum}  ${archive}" | sha256sum -c -
+        mkdir -p "${RUNNER_TEMP}/infracost"
+        tar -xzf "${archive}" -C "${RUNNER_TEMP}/infracost"
+        mv "${RUNNER_TEMP}/infracost/infracost-linux-${arch}" "${RUNNER_TEMP}/infracost/infracost"
+
+    - name: Estimate the units' monthly cost
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        PLANS: ${{ inputs.plans }}
+        ENGINE: ${{ inputs.engine }}
+        OUT_FILE: ${{ inputs.out_file }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/cost.py" --plans "${PLANS}" --engine "${ENGINE}" \
+          --infracost "${RUNNER_TEMP}/infracost/infracost" --out "${OUT_FILE}"
