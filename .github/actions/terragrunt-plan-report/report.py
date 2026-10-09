@@ -167,6 +167,11 @@ def literal(value: object) -> str:
     return text if len(text) <= VALUE_LIMIT else text[:VALUE_LIMIT - 1] + "…"
 
 
+def identity(value: object) -> str:
+    """The whole value as text, to match list elements on; literal cuts it, so long ones would collide."""
+    return json.dumps(normalise(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def empty(value: object) -> bool:
     """Nothing worth a line: absent, null, or an empty list or map."""
     return value is ABSENT or value is None or value == [] or value == {}
@@ -271,8 +276,7 @@ def elements(ch: Change, before: tuple, after: tuple, was: list, now: list, dept
     pending = node_at(ch.unknown, after)
     if isinstance(pending, list) and len(pending) > len(now):
         now = now + [None] * (len(pending) - len(now))
-    keyed = difflib.SequenceMatcher(None, [literal(normalise(v)) for v in was], [literal(normalise(v)) for v in now],
-                                    autojunk=False)
+    keyed = difflib.SequenceMatcher(None, [identity(v) for v in was], [identity(v) for v in now], autojunk=False)
     lines, hidden = [], 0
     for tag, i1, i2, j1, j2 in keyed.get_opcodes():
         if tag == "equal":

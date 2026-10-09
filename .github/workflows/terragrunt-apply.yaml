@@ -113,6 +113,9 @@ on:
       naviteq_github_app_id:
         description: GitHub App id; with the key, mints a read-only token so private git sources resolve
         required: false
+      naviteq_github_client_id:
+        description: GitHub App client ID. Preferred over naviteq_github_app_id, which is the deprecated fallback.
+        required: false
       naviteq_github_app_key:
         description: Private key of that GitHub App
         required: false
@@ -175,7 +178,7 @@ jobs:
       - name: Check the approval comment
         id: approval
         if: inputs.approval == 'issue'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           command: approval
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
@@ -247,7 +250,7 @@ jobs:
 
       - name: Check the plans against the approval
         id: plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           command: plans
           metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
@@ -258,7 +261,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.plans.outputs.units }}
@@ -296,7 +299,7 @@ jobs:
       matrix:
         leg: ${{ fromJSON(needs.verify.outputs.legs) }}
     env:
-      HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
+      HAS_GITHUB_APP: ${{ secrets.naviteq_github_client_id != '' || secrets.naviteq_github_app_id != '' }}
       HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
       TG_NO_CAS: "1"
       # Skips the init that breaks under the provider cache. → see docs/terragrunt-plan.md
@@ -312,7 +315,7 @@ jobs:
         if: env.HAS_GITHUB_APP == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.naviteq_github_app_id }}
+          client-id: ${{ secrets.naviteq_github_client_id || secrets.naviteq_github_app_id }}
           private-key: ${{ secrets.naviteq_github_app_key }}
           owner: ${{ github.repository_owner }}
           repositories: |
@@ -331,7 +334,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -358,7 +361,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/registry-token@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -431,7 +434,7 @@ jobs:
 
       # Every unit before anything is applied, so a later unit cannot see an earlier apply.
       - name: Re-plan and compare with the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           command: run
           phase: check
@@ -456,7 +459,7 @@ jobs:
       matrix:
         leg: ${{ fromJSON(needs.verify.outputs.legs) }}
     env:
-      HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
+      HAS_GITHUB_APP: ${{ secrets.naviteq_github_client_id != '' || secrets.naviteq_github_app_id != '' }}
       HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
       TG_NO_CAS: "1"
       # Skips the init that breaks under the provider cache. → see docs/terragrunt-plan.md
@@ -472,7 +475,7 @@ jobs:
         if: env.HAS_GITHUB_APP == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.naviteq_github_app_id }}
+          client-id: ${{ secrets.naviteq_github_client_id || secrets.naviteq_github_app_id }}
           private-key: ${{ secrets.naviteq_github_app_key }}
           owner: ${{ github.repository_owner }}
           repositories: |
@@ -491,7 +494,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -518,7 +521,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/registry-token@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -628,7 +631,7 @@ jobs:
 
       # For a destroy, `destroy` per unit instead of the plan files. → docs/terragrunt-destroy.md
       - name: Apply the saved plans, or destroy the units
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           command: run
           phase: apply
@@ -639,7 +642,7 @@ jobs:
 
       - name: Prove a second plan changes nothing
         if: inputs.verify_clean && needs.verify.outputs.destroy != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           command: run
           phase: clean

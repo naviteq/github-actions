@@ -62,9 +62,18 @@ def from_worktree(unit: str, prefix: str) -> str:
     return path[len(prefix):] if prefix and path.startswith(prefix) else path
 
 
+def local_path(unit: str, root: Path, prefix: str) -> str:
+    """A listed unit as a path under the working directory, however Terragrunt printed it."""
+    path = from_worktree(unit, prefix)
+    # A git range may print units from the repository root even when run in a subdirectory.
+    if prefix and path.startswith(prefix) and not (root / path).is_dir():
+        return path[len(prefix):]
+    return path
+
+
 def split_existing(units: list[str], root: Path, prefix: str = "") -> tuple[list[str], list[str]]:
     """Units present in this revision, and the ones a git range found deleted."""
-    seen = list(dict.fromkeys(from_worktree(unit, prefix) for unit in units))
+    seen = list(dict.fromkeys(local_path(unit, root, prefix) for unit in units))
     existing = [unit for unit in seen if (root / unit).is_dir()]
     deleted = [unit for unit in seen if not (root / unit).is_dir()]
     return existing, deleted

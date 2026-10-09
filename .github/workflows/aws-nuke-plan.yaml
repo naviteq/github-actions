@@ -75,7 +75,7 @@ on:
           `/approve nuke-<run-id>` comment so the consumer's existing apply trampoline
           (`issue_comment`) fires without a human reviewer. Production accounts
           (`RUNESTRA_PROD_ACCOUNTS`) and `NUKE_FREEZE` take precedence and cannot be bypassed.
-          Requires `github_app_id` / `github_app_key` secrets — a comment posted with the
+          Requires `github_client_id` (or the deprecated `github_app_id`) and `github_app_key` secrets — a comment posted with the
           default `GITHUB_TOKEN` will not trigger downstream `issue_comment` workflows.
         type: boolean
         required: false
@@ -86,14 +86,17 @@ on:
         required: true
       github_app_id:
         description: >-
-          Optional. GitHub App client ID used to post the `/approve nuke-<run-id>` comment so the
-          consumer's apply trampoline picks it up. Required when `auto_approve: true` — comments
+          Optional, deprecated in favour of `github_client_id`. GitHub App ID used to post the
+          `/approve nuke-<run-id>` comment so the consumer's apply trampoline picks it up. Required when `auto_approve: true` — comments
           posted with the default `GITHUB_TOKEN` do not trigger downstream `issue_comment` workflows.
+        required: false
+      github_client_id:
+        description: GitHub App client ID. Preferred over github_app_id, which is the deprecated fallback.
         required: false
       github_app_key:
         description: >-
-          Optional. Private key for the GitHub App identified by `github_app_id`. Same requirement
-          conditions as `github_app_id` — both must be set together for auto-approve to actually
+          Optional. Private key for the GitHub App identified by `github_client_id` or `github_app_id`.
+          Same requirement conditions as the App identifier — both must be set together for auto-approve to actually
           fire the apply trampoline.
         required: false
     outputs:
@@ -192,7 +195,7 @@ jobs:
           AUTO_APPROVE_ACCOUNTS: ${{ vars.NUKE_AUTO_APPROVE_ACCOUNTS }}
           PROD_ACCOUNTS: ${{ vars.RUNESTRA_PROD_ACCOUNTS }}
           PROD_GUARD_ENFORCED: ${{ steps.prod_guard.outputs.enforced }}
-          APP_ID_SET: ${{ secrets.github_app_id != '' }}
+          APP_ID_SET: ${{ secrets.github_client_id != '' || secrets.github_app_id != '' }}
           APP_KEY_SET: ${{ secrets.github_app_key != '' }}
         shell: bash
         run: |
@@ -241,7 +244,7 @@ jobs:
               if [[ "${APP_ID_SET}" != "true" || "${APP_KEY_SET}" != "true" ]]; then
                 # Hard-fail, never degrade quietly: without an App token
                 # auto-approve is a silent no-op. See docs/aws-nuke.md.
-                echo "::error::auto_approve=true requires both github_app_id and github_app_key secrets. Comments posted by GITHUB_TOKEN do not trigger downstream issue_comment workflows." >&2
+                echo "::error::auto_approve=true requires github_client_id (or the deprecated github_app_id) and github_app_key secrets. Comments posted by GITHUB_TOKEN do not trigger downstream issue_comment workflows." >&2
                 exit 1
               fi
               allowed="true"
@@ -267,7 +270,7 @@ jobs:
 
       - name: Install AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-aws-cli@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/setup-aws-cli@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -351,7 +354,7 @@ jobs:
 
       - name: Install aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/aws-nuke-install@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/aws-nuke-install@f953e1f28c2d91ce460f22fd3f3e7069e3fb6f42
         with:
           version: ${{ inputs.aws_nuke_version }}
 
@@ -870,7 +873,7 @@ jobs:
         if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' && steps.auto_approve.outputs.auto_approve_allowed == 'true' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          app-id: ${{ secrets.github_app_id }}
+          client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
           private-key: ${{ secrets.github_app_key }}
 
       - name: Post auto-approve comment on audit issue
