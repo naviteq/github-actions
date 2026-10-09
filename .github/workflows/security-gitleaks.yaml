@@ -99,12 +99,15 @@ jobs:
           set -uo pipefail
           echo "::group::Run Gitleaks (full=${FULL_SCAN}, range=${BASE_REF}..${HEAD_REF})"
           if [[ "${FULL_SCAN}" == "true" ]]; then
-            gitleaks git --verbose \
-              --report-format json --report-path gitleaks-report.json || true
+            gitleaks git --verbose --redact --exit-code 0 \
+              --report-format json --report-path gitleaks-report.json
           else
-            gitleaks git --verbose \
+            # gitleaks logs an unresolvable range, scans nothing and exits 0.
+            git rev-parse --verify "${BASE_REF}^{commit}"
+            git rev-parse --verify "${HEAD_REF}^{commit}"
+            gitleaks git --verbose --redact --exit-code 0 \
               --log-opts="--no-merges ${BASE_REF}..${HEAD_REF}" \
-              --report-format json --report-path gitleaks-report.json || true
+              --report-format json --report-path gitleaks-report.json
           fi
           echo "::endgroup::"
 

@@ -150,6 +150,9 @@ on:
       naviteq_github_app_id:
         description: GitHub App id; with the key, mints a read-only token so private git sources resolve
         required: false
+      naviteq_github_client_id:
+        description: GitHub App client ID. Preferred over naviteq_github_app_id, which is the deprecated fallback.
+        required: false
       naviteq_github_app_key:
         description: Private key of that GitHub App
         required: false
@@ -203,7 +206,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
+      HAS_GITHUB_APP: ${{ secrets.naviteq_github_client_id != '' || secrets.naviteq_github_app_id != '' }}
       HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
       # CAS resolves git refs over SSH and never sees the insteadOf rewrite. → docs/validate-oke.md
       TG_NO_CAS: "1"
@@ -266,7 +269,7 @@ jobs:
         if: env.HAS_GITHUB_APP == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.naviteq_github_app_id }}
+          client-id: ${{ secrets.naviteq_github_client_id || secrets.naviteq_github_app_id }}
           private-key: ${{ secrets.naviteq_github_app_key }}
           owner: ${{ github.repository_owner }}
           repositories: |
@@ -285,7 +288,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@22cc1ac24691df1017e825d98b134ebba02d180b
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -313,7 +316,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/registry-token@22cc1ac24691df1017e825d98b134ebba02d180b
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -360,7 +363,7 @@ jobs:
 
       - name: Select the units and show their run order
         id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@22cc1ac24691df1017e825d98b134ebba02d180b
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -372,7 +375,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@22cc1ac24691df1017e825d98b134ebba02d180b
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.units.outputs.units }}
@@ -383,7 +386,7 @@ jobs:
       # which need state this job cannot read. → docs/terragrunt-plan.md
       - name: Warm the provider cache
         if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@22cc1ac24691df1017e825d98b134ebba02d180b
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -410,7 +413,7 @@ jobs:
       matrix:
         leg: ${{ fromJSON(needs.select.outputs.legs) }}
     env:
-      HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
+      HAS_GITHUB_APP: ${{ secrets.naviteq_github_client_id != '' || secrets.naviteq_github_app_id != '' }}
       HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
       TG_NO_CAS: "1"
       # Skips the init that breaks under the provider cache. → see docs/terragrunt-plan.md
@@ -430,7 +433,7 @@ jobs:
         if: env.HAS_GITHUB_APP == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.naviteq_github_app_id }}
+          client-id: ${{ secrets.naviteq_github_client_id || secrets.naviteq_github_app_id }}
           private-key: ${{ secrets.naviteq_github_app_key }}
           owner: ${{ github.repository_owner }}
           repositories: |
@@ -449,7 +452,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@22cc1ac24691df1017e825d98b134ebba02d180b
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -476,7 +479,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/registry-token@22cc1ac24691df1017e825d98b134ebba02d180b
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -595,7 +598,7 @@ jobs:
       - name: Count the planned changes
         id: report
         if: ${{ !cancelled() }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@22cc1ac24691df1017e825d98b134ebba02d180b
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -613,7 +616,7 @@ jobs:
           success() && inputs.cost_estimate && !inputs.destroy && env.HAS_INFRACOST == 'true'
           && steps.report.outputs.plans != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-cost@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-cost@22cc1ac24691df1017e825d98b134ebba02d180b
         env:
           INFRACOST_API_KEY: ${{ secrets.infracost_api_key }}
         with:
@@ -740,7 +743,7 @@ jobs:
 
       - name: Merge the counts and hand the plans over
         id: result
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@c0af29819c08f7e5c33101f76fbd820f0de49c68
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@22cc1ac24691df1017e825d98b134ebba02d180b
         with:
           counts_dir: counts
           plans_dir: >-
