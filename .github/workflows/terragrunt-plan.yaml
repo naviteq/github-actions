@@ -121,6 +121,11 @@ on:
         required: false
         type: string
         default: ""
+      cost_estimate:
+        description: Estimate each unit's monthly cost with Infracost when the infracost_api_key secret is set
+        required: false
+        type: boolean
+        default: true
       report_no_changes:
         description: Also comment and post to Slack when nothing changes and nothing failed; by default such a run is silent
         required: false
@@ -162,6 +167,9 @@ on:
         required: false
       slack_webhook:
         description: Slack incoming webhook URL, for slack_notify
+        required: false
+      infracost_api_key:
+        description: Infracost API key for cost_estimate; without it no estimate is made and nothing fails
         required: false
     outputs:
       units:
@@ -277,7 +285,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@50701cf4bc360c526d731232321f77c050623bd2
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@2be27f4699c078f847eac3d5738b487aa417826b
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -305,7 +313,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@50701cf4bc360c526d731232321f77c050623bd2
+        uses: naviteq/github-actions/.github/actions/registry-token@2be27f4699c078f847eac3d5738b487aa417826b
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -352,7 +360,7 @@ jobs:
 
       - name: Select the units and show their run order
         id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@50701cf4bc360c526d731232321f77c050623bd2
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@2be27f4699c078f847eac3d5738b487aa417826b
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -364,7 +372,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@50701cf4bc360c526d731232321f77c050623bd2
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@2be27f4699c078f847eac3d5738b487aa417826b
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.units.outputs.units }}
@@ -375,7 +383,7 @@ jobs:
       # which need state this job cannot read. → docs/terragrunt-plan.md
       - name: Warm the provider cache
         if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@50701cf4bc360c526d731232321f77c050623bd2
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@2be27f4699c078f847eac3d5738b487aa417826b
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -409,6 +417,7 @@ jobs:
       TG_DEPENDENCY_FETCH_OUTPUT_FROM_STATE: ${{ inputs.dependency_outputs_from_state }}
       LEG: ${{ matrix.leg.name }}
       ARTIFACT: ${{ needs.select.outputs.artifact }}
+      HAS_INFRACOST: ${{ secrets.infracost_api_key != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -440,7 +449,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@50701cf4bc360c526d731232321f77c050623bd2
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@2be27f4699c078f847eac3d5738b487aa417826b
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -467,7 +476,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@50701cf4bc360c526d731232321f77c050623bd2
+        uses: naviteq/github-actions/.github/actions/registry-token@2be27f4699c078f847eac3d5738b487aa417826b
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -586,7 +595,7 @@ jobs:
       - name: Count the planned changes
         id: report
         if: ${{ !cancelled() }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@50701cf4bc360c526d731232321f77c050623bd2
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@2be27f4699c078f847eac3d5738b487aa417826b
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -597,6 +606,20 @@ jobs:
           mask: ${{ inputs.diff_mask }}
           secret_units: ${{ inputs.diff_secret_units }}
           resources_file: ${{ runner.temp }}/terragrunt-plan-counts/${{ matrix.leg.name }}.resources.json
+
+      # Only price attributes leave the runner; a failed estimate never fails the plan. → docs/terragrunt-plan.md
+      - name: Estimate the monthly cost
+        if: >-
+          success() && inputs.cost_estimate && !inputs.destroy && env.HAS_INFRACOST == 'true'
+          && steps.report.outputs.plans != ''
+        continue-on-error: true
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-cost@2be27f4699c078f847eac3d5738b487aa417826b
+        env:
+          INFRACOST_API_KEY: ${{ secrets.infracost_api_key }}
+        with:
+          plans: ${{ steps.report.outputs.plans }}
+          engine: ${{ inputs.engine }}
+          out_file: ${{ runner.temp }}/terragrunt-plan-counts/${{ matrix.leg.name }}.costs.json
 
       - name: Keep the counts for the result job
         if: ${{ !cancelled() && steps.report.outputs.changes != '' }}
@@ -717,7 +740,7 @@ jobs:
 
       - name: Merge the counts and hand the plans over
         id: result
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@50701cf4bc360c526d731232321f77c050623bd2
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@2be27f4699c078f847eac3d5738b487aa417826b
         with:
           counts_dir: counts
           plans_dir: >-

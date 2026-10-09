@@ -112,12 +112,44 @@ def _cell(unit: dict, key: str) -> str:
     return f"{SYMBOL[key]}{value}" if value else "·"
 
 
+def _money(value: float, currency: str = "USD", signed: bool = False) -> str:
+    sign = ("+" if value > 0 else "-" if value < 0 else "±") if signed else ("-" if value < 0 else "")
+    amount = f"{abs(value):,.2f}"
+    return f"{sign}${amount}" if currency == "USD" else f"{sign}{amount} {currency}"
+
+
+def _cost_cell(unit: dict) -> str:
+    cost = unit.get("cost")
+    if not isinstance(cost, dict):
+        return ""
+    if not cost.get("estimate"):
+        return "_no estimate_"
+    return _money(cost["delta"], cost.get("currency", "USD"), signed=True) if cost["delta"] else "·"
+
+
+def cost_line(units: list[dict]) -> str:
+    """💰 total monthly delta of the estimated units; empty when the plan made no estimate."""
+    costs = [u["cost"] for u in units if isinstance(u.get("cost"), dict)]
+    priced = [c for c in costs if c.get("estimate")]
+    if not costs:
+        return ""
+    if not priced:
+        return "💰 No cost estimate for these units."
+    total = round(sum(c["delta"] for c in priced), 2)
+    missing = len(costs) - len(priced)
+    return (f"💰 **{_money(total, priced[0].get('currency', 'USD'), signed=True)}** per month"
+            + (f" · no estimate for {missing} unit{'s' if missing != 1 else ''}" if missing else ""))
+
+
 def table(units: list[dict]) -> list[str]:
-    lines = ["| | Unit | Profile | Add | Change | Replace | Destroy | Outputs |", "|:-:|---|---|:-:|:-:|:-:|:-:|:-:|"]
+    priced = any(isinstance(u.get("cost"), dict) for u in units)
+    lines = ["| | Unit | Profile | Add | Change | Replace | Destroy | Outputs |" + (" Cost/month |" if priced else ""),
+             "|:-:|---|---|:-:|:-:|:-:|:-:|:-:|" + ("--:|" if priced else "")]
     for unit in units:
         mark = "⚠️" if unit.get("destroy") or unit.get("replace") else "📝"
         lines.append(f"| {mark} | `{unit['unit']}` | {unit.get('profile', '')} | "
-                     + " | ".join(_cell(unit, key) for key in COUNT_KEYS) + " |")
+                     + " | ".join(_cell(unit, key) for key in COUNT_KEYS) + " |"
+                     + (f" {_cost_cell(unit)} |" if priced else ""))
     return lines
 
 
@@ -198,6 +230,9 @@ def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, 
     total = totals_line(changing)
     if total:
         lines += [total, ""]
+    money_line = cost_line(changing)
+    if money_line:
+        lines += [money_line, ""]
     if destroys:
         lines += ["> [!WARNING]", "> This apply destroys or replaces resources. Check the units marked ⚠️.", ""]
     lines += [*table(changing), ""]

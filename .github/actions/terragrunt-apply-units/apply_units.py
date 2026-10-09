@@ -117,7 +117,7 @@ def check_plans(metadata: dict, marker: dict | None, artifact: dict | None, comm
 
 def check_policy(expect: dict) -> None:
     """Typos in a policy fail before anything is planned."""
-    known = {"allow_replace", "allow_destroy", "units", "require_changes"}
+    known = {"allow_replace", "allow_destroy", "units", "require_changes", "max_monthly_cost_delta"}
     unknown = sorted(set(expect) - known)
     if unknown:
         raise Refused(f"expect has unknown keys: {', '.join(unknown)}")
@@ -165,6 +165,22 @@ def check_expectations(metadata: dict, expect: dict) -> None:
             raise Refused(f"expected unit {name} was not planned")
     if expect.get("require_changes") and not metadata.get("has_changes"):
         raise Refused("the plan changes nothing and require_changes is on")
+    if "max_monthly_cost_delta" in expect:
+        check_cost(metadata, float(expect["max_monthly_cost_delta"]))
+
+
+def check_cost(metadata: dict, limit: float) -> None:
+    """The estimated monthly cost may grow by at most limit; an unknown cost is not a small one."""
+    changing = [u for u in metadata.get("units", []) if any(u.get(k) for k in COUNT_KEYS)]
+    priced = [u for u in changing if (u.get("cost") or {}).get("estimate")]
+    unknown = [u["unit"] for u in changing if not (u.get("cost") or {}).get("estimate")]
+    if not any(isinstance(u.get("cost"), dict) for u in changing) and changing:
+        raise Refused("max_monthly_cost_delta is set but the plan has no cost estimate; give the plan an Infracost key")
+    if unknown:
+        raise Refused("max_monthly_cost_delta is set but these units could not be estimated: " + ", ".join(unknown))
+    total = round(sum(float(u["cost"]["delta"]) for u in priced), 2)
+    if total > limit:
+        raise Refused(f"the plan adds {total:,.2f} per month, more than max_monthly_cost_delta {limit:,.2f}")
 
 
 def find_newest(unit_dir: Path, name: str) -> Path | None:
@@ -360,6 +376,8 @@ def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: s
     Like `run --all destroy`, a destroy keeps every prevent_destroy unit and everything it depends on.
     """
     check_policy(expect)
+    if "max_monthly_cost_delta" in expect:
+        raise Refused("max_monthly_cost_delta needs saved plans with a cost estimate; the fresh and destroy phases have none")
     worker = PHASES[phase][0]
     listing = subprocess.run(["terragrunt", "list", "--long", "--dependencies", "--queue-construct-as", PHASES[phase][2]],
                              cwd=root.resolve(), capture_output=True, text=True, check=True).stdout

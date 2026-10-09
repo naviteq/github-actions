@@ -50,6 +50,56 @@ def merge_counts(counts_dir: Path, units: list[str]) -> list[dict]:
     return sorted(rows, key=lambda row: position.get(row["unit"], len(position)))
 
 
+def merge_costs(counts_dir: Path) -> dict[str, dict]:
+    """Each unit's Infracost estimate, when the plan made one."""
+    found: dict[str, dict] = {}
+    for path in sorted(counts_dir.glob("*.costs.json")):
+        found.update(json.loads(path.read_text(encoding="utf-8")))
+    return found
+
+
+def money(value: float, currency: str = "USD", signed: bool = False) -> str:
+    sign = ("+" if value > 0 else "-" if value < 0 else "±") if signed else ("-" if value < 0 else "")
+    amount = f"{abs(value):,.2f}"
+    return f"{sign}${amount}" if currency == "USD" else f"{sign}{amount} {currency}"
+
+
+def cost_total(rows: list[dict]) -> tuple[float, str, int, int] | None:
+    """Total monthly delta, currency, units with and without an estimate; None when nothing was estimated."""
+    costs = [row["cost"] for row in rows if isinstance(row.get("cost"), dict)]
+    priced = [cost for cost in costs if cost.get("estimate")]
+    if not costs:
+        return None
+    currency = priced[0].get("currency", "USD") if priced else "USD"
+    return round(sum(cost["delta"] for cost in priced), 2), currency, len(priced), len(costs) - len(priced)
+
+
+def cost_cell(row: dict) -> str:
+    cost = row.get("cost")
+    if not isinstance(cost, dict):
+        return ""
+    if not cost.get("estimate"):
+        return "_no estimate_"
+    return money(cost["delta"], cost.get("currency", "USD"), signed=True) if cost["delta"] else "·"
+
+
+def cost_section(rows: list[dict]) -> list[str]:
+    """Before → after per estimated unit, and the resources that move the most."""
+    lines = []
+    for row in rows:
+        cost = row.get("cost")
+        if not isinstance(cost, dict) or not cost.get("estimate") or not cost.get("delta"):
+            continue
+        currency = cost.get("currency", "USD")
+        lines.append(f"- `{row['unit']}`: {money(cost['before'], currency)} → {money(cost['after'], currency)} "
+                     f"per month (**{money(cost['delta'], currency, signed=True)}**)")
+        lines += [f"  - `{m['address']}` {money(m['delta'], currency, signed=True)}" for m in cost.get("top") or []]
+    if not lines:
+        return []
+    return ["<details><summary>💰 Where the cost changes</summary>", "", *lines, "",
+            "Estimated by Infracost from list prices; usage-based costs are not included.", "", "</details>", ""]
+
+
 def merge_resources(counts_dir: Path) -> dict[str, list[dict[str, str]]]:
     found: dict[str, list[dict[str, str]]] = {}
     for path in sorted(counts_dir.glob("*.resources.json")):
@@ -81,7 +131,7 @@ def metadata(context: dict, rows: list[dict], manifest: list[list[str]], skipped
     units = [
         {"unit": row["unit"], "profile": row.get("profile", ""), "file": files.get(row["unit"], ""),
          "changeset": row.get("changeset", ""), **{key: row.get(key, 0) for key in COUNT_KEYS},
-         "resources": resources.get(row["unit"], [])}
+         "resources": resources.get(row["unit"], []), **({"cost": row["cost"]} if "cost" in row else {})}
         for row in rows if not row.get("deleted") and not row.get("error") and not row.get("kept")
     ]
     return {
@@ -166,8 +216,9 @@ def _unit_status(row: dict) -> str:
 
 
 def table(rows: list[dict]) -> list[str]:
-    lines = ["| | Unit | Profile | Add | Change | Replace | Destroy | Outputs |",
-             "|:-:|---|---|:-:|:-:|:-:|:-:|:-:|"]
+    priced = cost_total(rows) is not None
+    lines = ["| | Unit | Profile | Add | Change | Replace | Destroy | Outputs |" + (" Cost/month |" if priced else ""),
+             "|:-:|---|---|:-:|:-:|:-:|:-:|:-:|" + ("--:|" if priced else "")]
     for row in rows:
         unit = f"`{row['unit']}`" + (" _(deleted)_" if row.get("deleted") else "")
         if row.get("kept"):
@@ -176,7 +227,8 @@ def table(rows: list[dict]) -> list[str]:
             cells = f"**{row['error']}** | | | |"
         else:
             cells = " | ".join(_cell(row, key) for key in COUNT_KEYS)
-        lines.append(f"| {_unit_status(row)} | {unit} | {row.get('profile', '')} | {cells} |")
+        lines.append(f"| {_unit_status(row)} | {unit} | {row.get('profile', '')} | {cells} |"
+                     + (f" {cost_cell(row)} |" if priced else ""))
     return lines
 
 
@@ -189,6 +241,11 @@ def comment(rows: list[dict], resources: dict[str, list[dict[str, str]]], skippe
     line = totals_line(rows)
     if line:
         head += [line, ""]
+    total = cost_total(rows)
+    if total and (total[2] or total[3]):
+        delta, currency, priced, unpriced = total
+        text = f"💰 **{money(delta, currency, signed=True)}** per month" if priced else "💰 No cost estimate"
+        head += [text + (f" · no estimate for {units(unpriced)}" if unpriced and priced else "") + "", ""]
     failed = [row for row in rows if row.get("error")]
     if failed:
         head += ["> [!CAUTION]", "> These units failed to plan, so their changes are unknown: "
@@ -201,6 +258,7 @@ def comment(rows: list[dict], resources: dict[str, list[dict[str, str]]], skippe
         head += ["> [!WARNING]", f"> This plan {what}. Check the units marked ⚠️ before merging.", ""]
     if rows:
         head += [*table(rows), ""]
+    head += cost_section(rows)
     deleted = [row["unit"] for row in rows if row.get("deleted")]
     if deleted:
         head += ["> [!NOTE]", "> Deleted units are never applied. After the merge their destroy is a separate "
@@ -266,6 +324,9 @@ def slack_payload(rows: list[dict], context: dict, run_url: str) -> dict:
     if any(sums.values()):
         fields.append({"type": "mrkdwn", "text": "*Totals*\n" + "  ".join(
             f"{SYMBOL[key]}{sums[key]} {noun(key, sums[key])}" for key in COUNT_KEYS if sums[key])})
+    total = cost_total(rows)
+    if total and total[2]:
+        fields.append({"type": "mrkdwn", "text": f"*Monthly cost*\n{money(total[0], total[1], signed=True)}"})
     listed = [row for row in rows if changes(row) or row.get("error")]
     lines = []
     for row in listed[:SLACK_UNITS]:
@@ -311,6 +372,10 @@ def main(argv: list[str] | None = None) -> int:
     counts_dir = Path(args.counts_dir)
     rows = merge_counts(counts_dir, _lines(args.units)) if counts_dir.is_dir() else []
     resources = merge_resources(counts_dir) if counts_dir.is_dir() else {}
+    for unit, cost in (merge_costs(counts_dir) if counts_dir.is_dir() else {}).items():
+        for row in rows:
+            if row["unit"] == unit:
+                row["cost"] = cost
     skipped = [line.split("\t") for line in _lines(args.skipped)]
     handed_over = False
     # Also with nothing planned: the gate must tell "nothing to apply" from "never planned".
