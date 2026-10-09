@@ -14,7 +14,7 @@ inputs:
     required: false
     default: ""
   approvers:
-    description: For approval, comma-separated GitHub logins allowed to approve
+    description: For approval, and plans with a second approver, comma-separated GitHub logins allowed to approve
     required: false
     default: ""
   gate_login:
@@ -43,6 +43,14 @@ inputs:
     default: ""
   expect_json:
     description: For plans without a marker, and for run fresh and destroy, the expectations policy as JSON
+    required: false
+    default: ""
+  second_approver_cost:
+    description: For plans with an approval, the monthly cost delta above which two approvers must approve; empty never asks
+    required: false
+    default: ""
+  comments_file:
+    description: For plans with an approval, the gate issue's comments as the GitHub API lists them, in JSON
     required: false
     default: ""
   units:
@@ -100,6 +108,9 @@ outputs:
   destroyed:
     description: For run destroy, the units destroyed, one per line
     value: ${{ steps.units.outputs.destroyed }}
+  waiting:
+    description: For plans, true when the approval stands but a second approver must still approve
+    value: ${{ steps.units.outputs.waiting }}
   reason:
     description: Why the apply was refused; empty when it was not
     value: ${{ steps.units.outputs.reason }}
@@ -122,6 +133,8 @@ runs:
         MARKER_JSON: ${{ inputs.marker_json }}
         ARTIFACT_JSON: ${{ inputs.artifact_json }}
         EXPECT_JSON: ${{ inputs.expect_json }}
+        SECOND_APPROVER_COST: ${{ inputs.second_approver_cost }}
+        COMMENTS_FILE: ${{ inputs.comments_file }}
         UNITS: ${{ inputs.units }}
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
         PLANS_DIR: ${{ inputs.plans_dir }}
@@ -135,7 +148,9 @@ runs:
             python3 "${script}" approval --approvers "${APPROVERS}" --gate-login "${GATE_LOGIN}" --label "${LABEL}" ;;
           plans)
             python3 "${script}" plans --metadata "${METADATA}" --commit-tree "${COMMIT_TREE}" \
-              --marker-json "${MARKER_JSON}" --artifact-json "${ARTIFACT_JSON}" --expect-json "${EXPECT_JSON}" ;;
+              --marker-json "${MARKER_JSON}" --artifact-json "${ARTIFACT_JSON}" --expect-json "${EXPECT_JSON}" \
+              --second-approver-cost "${SECOND_APPROVER_COST}" --comments-file "${COMMENTS_FILE}" \
+              --approvers "${APPROVERS}" ;;
           run)
             python3 "${script}" run --phase "${PHASE}" --metadata "${METADATA}" --units "${UNITS}" \
               --working-directory "${WORKING_DIRECTORY}" --plans-dir "${PLANS_DIR}" --engine "${ENGINE}" \

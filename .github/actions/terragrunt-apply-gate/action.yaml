@@ -63,6 +63,10 @@ inputs:
     description: For decide, the directory the units live under
     required: false
     default: "."
+  second_approver_cost:
+    description: For decide, the monthly cost delta above which the issue asks two approvers; empty never asks
+    required: false
+    default: ""
   approvers:
     description: For decide and request, comma-separated GitHub logins allowed to approve
     required: false
@@ -128,6 +132,7 @@ runs:
         CHANGED: ${{ inputs.changed }}
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
         APPROVERS: ${{ inputs.approvers }}
+        SECOND_APPROVER_COST: ${{ inputs.second_approver_cost }}
         LABEL: ${{ inputs.label }}
       run: |
         set -euo pipefail
@@ -140,7 +145,8 @@ runs:
             python3 "${script}" decide --sha "${SHA}" --pr "${PR}" --pr-url "${PR_URL}" --head-sha "${HEAD_SHA}" \
               --artifact-id "${ARTIFACT_ID}" --metadata "${METADATA}" --tree "${TREE}" --changed "${CHANGED}" \
               --working-directory "${WORKING_DIRECTORY}" --approvers "${APPROVERS}" --label "${LABEL}" \
-              --plan-state "${PLAN_STATE}" --base-commit "${BASE_COMMIT}" ;;
+              --plan-state "${PLAN_STATE}" --base-commit "${BASE_COMMIT}" \
+              --second-approver-cost "${SECOND_APPROVER_COST}" ;;
           request)
             python3 "${script}" request --artifact-id "${ARTIFACT_ID}" --metadata "${METADATA}" \
               --approvers "${APPROVERS}" --label "${LABEL}" ;;

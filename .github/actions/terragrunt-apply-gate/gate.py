@@ -208,10 +208,32 @@ def changes_sections(units: list[dict], room: int, run_url: str) -> str:
     return body + (note if cut else "")
 
 
-def _approve_block(verb: str, artifact_id: object, approvers: list[str]) -> list[str]:
+def _approve_block(verb: str, artifact_id: object, approvers: list[str], two_because: str = "") -> list[str]:
     who = " ".join("@" + a for a in approvers) or "_nobody: no approvers are configured_"
+    if two_because:
+        return ["> [!IMPORTANT]", f"> **To {verb}, two different approvers** of {who} each comment exactly:", ">",
+                "> ```", f"> /approve {verb}-{artifact_id}", "> ```", ">",
+                f"> Two are needed because {two_because}. The first approval waits for the second."]
     return ["> [!IMPORTANT]", f"> **To {verb}**, one of {who} comments exactly:", ">", "> ```",
             f"> /approve {verb}-{artifact_id}", "> ```"]
+
+
+def second_approver_reason(metadata: dict, threshold: float | None) -> str:
+    """Why this apply needs a second approver; empty when one is enough. Unknown cost counts as over."""
+    if threshold is None:
+        return ""
+    changing = [u for u in metadata.get("units", []) if any(u.get(k) for k in COUNT_KEYS)]
+    if metadata.get("destroy") or not changing:
+        return ""
+    unpriced = [u["unit"] for u in changing if not (u.get("cost") or {}).get("estimate")]
+    if unpriced:
+        return "these units have no cost estimate: " + ", ".join(f"`{u}`" for u in unpriced)
+    total = round(sum(float(u["cost"]["delta"]) for u in changing), 2)
+    if total > threshold:
+        currency = changing[0]["cost"].get("currency", "USD")
+        return (f"it adds {_money(total, currency, signed=True)} per month, more than the "
+                f"{_money(threshold, currency)} threshold")
+    return ""
 
 
 def _facts(*parts: str) -> str:
@@ -219,14 +241,15 @@ def _facts(*parts: str) -> str:
 
 
 def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, run_url: str,
-               base_commit: str = "") -> str:
+               base_commit: str = "", second_approver_cost: float | None = None) -> str:
     """The approval issue: what would change, who may approve, and the exact command."""
     changing = [u for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
     destroys = sum(int(u.get("destroy") or 0) + int(u.get("replace") or 0) for u in changing)
     lines = [f"<!-- {MARKER}: {json.dumps(marker, separators=(',', ':'))} -->",
              f"## 🚦 Apply waiting for approval: [PR #{marker['pr']}]({pr_url})", "",
              _facts(f"Merged as `{marker['commit'][:7]}`", f"[Plan run]({run_url})", f"artifact `{metadata['artifact']}`"),
-             "", *_approve_block("apply", marker["artifact_id"], approvers), ""]
+             "", *_approve_block("apply", marker["artifact_id"], approvers,
+                                 second_approver_reason(metadata, second_approver_cost)), ""]
     total = totals_line(changing)
     if total:
         lines += [total, ""]
@@ -327,8 +350,8 @@ def cmd_find(args: argparse.Namespace) -> int:
     return 0
 
 
-def open_issue(args: argparse.Namespace, title: str, body: str, state: str) -> int:
-    labels = [args.label, f"{args.label}:{state}"]
+def open_issue(args: argparse.Namespace, title: str, body: str, state: str, extra: tuple[str, ...] = ()) -> int:
+    labels = [args.label, f"{args.label}:{state}", *(f"{args.label}:{label}" for label in extra)]
     issue = gh(f"repos/{args.repo}/issues", "--method", "POST",
                payload={"title": title, "body": body, "labels": labels})
     number = issue["number"]  # type: ignore[index]
@@ -399,8 +422,10 @@ def cmd_decide(args: argparse.Namespace) -> int:
               "head_sha": args.head_sha, "commit": args.sha, "tree": args.tree,
               "working_directory": args.working_directory}
     run_url = f"{args.server_url}/{args.repo}/actions/runs/{metadata['plan_run_id']}"
-    body = issue_body(metadata, marker, approvers_of(args.approvers), args.pr_url, run_url, args.base_commit)
-    number = open_issue(args, f"Terragrunt apply: PR #{pr}", body, "pending")
+    threshold = float(args.second_approver_cost) if args.second_approver_cost.strip() else None
+    body = issue_body(metadata, marker, approvers_of(args.approvers), args.pr_url, run_url, args.base_commit, threshold)
+    two = ("two-approvers",) if second_approver_reason(metadata, threshold) else ()
+    number = open_issue(args, f"Terragrunt apply: PR #{pr}", body, "pending", two)
     comment_on_pr(args, pr, f"🚦 Merged. Applying its plans waits for approval in #{number}.")
     write_outputs(state="pending", issue=number)
     return 0
@@ -452,6 +477,7 @@ def main(argv: list[str] | None = None) -> int:
     decide.add_argument("--approvers", default="")
     decide.add_argument("--label", default=MARKER)
     decide.add_argument("--plan-state", default="")
+    decide.add_argument("--second-approver-cost", default="", help="Monthly cost delta above which two approve")
     decide.add_argument("--base-commit", default="", help="The merge's first parent, where deleted units still exist")
     request = sub.add_parser("request")
     request.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
