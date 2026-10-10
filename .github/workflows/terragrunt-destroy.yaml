@@ -142,7 +142,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@b4476ff2fdc4ce68c3e59e11cd35bc38e80bbaf3
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@8d36a41a729d9fb726de543aa738de2765dae0d3
     permissions:
       contents: read
       id-token: write
