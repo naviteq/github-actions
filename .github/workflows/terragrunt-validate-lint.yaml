@@ -178,7 +178,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@899e30fa8d36357ab554ade22171bf9b4ea61b67
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@1187cac91a7f611fc439fdc507daa48f1ea27b9e
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -205,7 +205,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@899e30fa8d36357ab554ade22171bf9b4ea61b67
+        uses: naviteq/github-actions/.github/actions/registry-token@1187cac91a7f611fc439fdc507daa48f1ea27b9e
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -247,8 +247,15 @@ jobs:
         with:
           tflint_version: ${{ inputs.tflint_version != '' && inputs.tflint_version || 'latest' }}
           tflint_version_file: ${{ inputs.tflint_version == '' && '.tflint-version' || '' }}
-          cache: true
-          tflint_config_path: ${{ inputs.working_directory }}/**/.tflint.hcl
+          cache: false
+
+      # The action's own cache key has no architecture, and the runner pool mixes amd64 and arm64.
+      - name: Cache the tflint plugins
+        if: inputs.tflint
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.tflint.d/plugins
+          key: tflint-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('{0}/**/.tflint.hcl', inputs.working_directory)) }}
 
       # --recursive reads .tflint.hcl from each module directory, not from here,
       # unless the path is absolute. → docs/terragrunt-validate-lint.md
@@ -282,7 +289,7 @@ jobs:
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@899e30fa8d36357ab554ade22171bf9b4ea61b67
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@1187cac91a7f611fc439fdc507daa48f1ea27b9e
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
