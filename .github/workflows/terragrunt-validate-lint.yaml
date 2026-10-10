@@ -80,6 +80,9 @@ on:
       naviteq_github_app_id:
         description: GitHub App id; with the key, mints a read-only token so private git sources resolve
         required: false
+      naviteq_github_client_id:
+        description: GitHub App client ID. Preferred over naviteq_github_app_id, which is the deprecated fallback.
+        required: false
       naviteq_github_app_key:
         description: Private key of that GitHub App
         required: false
@@ -128,7 +131,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      HAS_GITHUB_APP: ${{ secrets.naviteq_github_app_id != '' }}
+      HAS_GITHUB_APP: ${{ secrets.naviteq_github_client_id != '' || secrets.naviteq_github_app_id != '' }}
       HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
       # CAS resolves git refs over SSH and never sees the insteadOf rewrite. → docs/validate-oke.md
       TG_NO_CAS: "1"
@@ -156,7 +159,7 @@ jobs:
         if: env.HAS_GITHUB_APP == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.naviteq_github_app_id }}
+          client-id: ${{ secrets.naviteq_github_client_id || secrets.naviteq_github_app_id }}
           private-key: ${{ secrets.naviteq_github_app_key }}
           owner: ${{ github.repository_owner }}
           repositories: |
@@ -175,7 +178,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@e718d9840a84b2330f69ea46d8cdd54ec07c1d11
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@bd3a835e2af5d45854ced6b131a42f86a32f2a90
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -202,7 +205,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@e718d9840a84b2330f69ea46d8cdd54ec07c1d11
+        uses: naviteq/github-actions/.github/actions/registry-token@bd3a835e2af5d45854ced6b131a42f86a32f2a90
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -279,7 +282,7 @@ jobs:
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@e718d9840a84b2330f69ea46d8cdd54ec07c1d11
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@bd3a835e2af5d45854ced6b131a42f86a32f2a90
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}

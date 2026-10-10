@@ -61,6 +61,9 @@ on:
     secrets:
       github_app_id:
         required: false
+      github_client_id:
+        description: GitHub App client ID. Preferred over github_app_id, which is the deprecated fallback.
+        required: false
       github_app_key:
         required: false
       ocir_username:
@@ -112,7 +115,7 @@ jobs:
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         id: app-token
         with:
-          client-id: ${{ secrets.github_app_id }}
+          client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
           private-key: ${{ secrets.github_app_key }}
 
       - name: Checkout repository
@@ -142,7 +145,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@e718d9840a84b2330f69ea46d8cdd54ec07c1d11
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@bd3a835e2af5d45854ced6b131a42f86a32f2a90
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ocir_registry }}

@@ -148,8 +148,11 @@ on:
           oci-nuke release, and — when auto_approve is on — the one that posts
           the approval comment. → see docs/oci-nuke.md
         required: false
+      github_client_id:
+        description: GitHub App client ID. Preferred over github_app_id, which is the deprecated fallback.
+        required: false
       github_app_key:
-        description: Private key for the App identified by github_app_id. Always required, for the same two reasons.
+        description: Private key for the App identified by github_client_id or github_app_id. Always required, for the same two reasons.
         required: false
     outputs:
       issue_number:
@@ -296,7 +299,7 @@ jobs:
           AUTO_APPROVE_COMPARTMENTS: ${{ vars.NUKE_AUTO_APPROVE_COMPARTMENTS }}
           PROD_COMPARTMENTS: ${{ vars.RUNESTRA_PROD_COMPARTMENTS }}
           PROD_GUARD_ENFORCED: ${{ steps.prod_guard.outputs.enforced }}
-          APP_ID_SET: ${{ secrets.github_app_id != '' }}
+          APP_ID_SET: ${{ secrets.github_client_id != '' || secrets.github_app_id != '' }}
           APP_KEY_SET: ${{ secrets.github_app_key != '' }}
         shell: bash
         run: |
@@ -344,7 +347,7 @@ jobs:
               if [[ "${APP_ID_SET}" != "true" || "${APP_KEY_SET}" != "true" ]]; then
                 # Hard-fail rather than degrade: without an App token the bot's
                 # comment fires nothing and auto-approve is a silent no-op.
-                echo "::error::auto_approve=true requires both github_app_id and github_app_key secrets." >&2
+                echo "::error::auto_approve=true requires github_client_id (or the deprecated github_app_id) and github_app_key secrets." >&2
                 exit 1
               fi
               allowed="true"
@@ -371,7 +374,7 @@ jobs:
       - name: Require the App credentials that read the oci-nuke release
         if: ${{ steps.pause.outputs.skip != 'true' }}
         env:
-          APP_ID_SET: ${{ secrets.github_app_id != '' }}
+          APP_ID_SET: ${{ secrets.github_client_id != '' || secrets.github_app_id != '' }}
           APP_KEY_SET: ${{ secrets.github_app_key != '' }}
         shell: bash
         run: |
@@ -381,7 +384,7 @@ jobs:
           # Named here because the releases API answers 404 without a readable
           # token, which reads as a missing release. → see docs/oci-nuke.md
           if [[ "${APP_ID_SET}" != "true" || "${APP_KEY_SET}" != "true" ]]; then
-            echo "::error::github_app_id and github_app_key are required: naviteq-ltd/oci-nuke is private, its release assets are not anonymously readable, and this repository's GITHUB_TOKEN cannot read another repository." >&2
+            echo "::error::github_client_id (or the deprecated github_app_id) and github_app_key are required: naviteq-ltd/oci-nuke is private, its release assets are not anonymously readable, and this repository's GITHUB_TOKEN cannot read another repository." >&2
             exit 1
           fi
 
@@ -390,7 +393,7 @@ jobs:
         if: ${{ steps.pause.outputs.skip != 'true' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          app-id: ${{ secrets.github_app_id }}
+          client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
           private-key: ${{ secrets.github_app_key }}
           owner: naviteq-ltd
           repositories: oci-nuke
@@ -947,7 +950,7 @@ jobs:
         if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' && steps.auto_approve.outputs.auto_approve_allowed == 'true' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          app-id: ${{ secrets.github_app_id }}
+          client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
           private-key: ${{ secrets.github_app_key }}
 
       - name: Post the auto-approve comment
