@@ -135,7 +135,7 @@ permissions: {}
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@c7e18d59ad5ae940fddea9027764b53137d92546
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@21cef89fbe6b6bc75511794b0143cb5a3a6141a2
     permissions:
       contents: read
       id-token: write
@@ -189,7 +189,7 @@ jobs:
 
       - name: Reconcile the drift issues
         id: drift
-        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@899e30fa8d36357ab554ade22171bf9b4ea61b67
+        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@f2f1b43c7e518c511e1eb71fa24c8614028cb2e7
         with:
           changes: ${{ needs.plan.outputs.changes }}
           counts_dir: counts
