@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
+# Outputs are not drift: a plan that only moves an output value changes no real infrastructure.
+DRIFT_KEYS = ("add", "change", "replace", "destroy")
 SIGN = {"create": "+", "update": "!", "replace": "-/+", "delete": "-"}
 
 
@@ -59,14 +61,14 @@ def title_of(unit: str) -> str:
 
 
 def classify(rows: list[dict]) -> dict[str, list[dict]]:
-    """drifted, clean and failed units of this run; deleted rows are not drift."""
+    """drifted, clean and failed units of this run; deleted rows and output-only plans are not drift."""
     found: dict[str, list[dict]] = {"drifted": [], "clean": [], "failed": []}
     for row in rows:
         if row.get("deleted"):
             continue
         if row.get("error"):
             found["failed"].append(row)
-        elif any(row.get(key) for key in COUNT_KEYS):
+        elif any(row.get(key) for key in DRIFT_KEYS):
             found["drifted"].append(row)
         else:
             found["clean"].append(row)

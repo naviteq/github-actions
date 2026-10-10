@@ -35,8 +35,8 @@ on:
       require_refs_trailer:
         description: >
           Whether a PR whose branch names a ticket must carry a matching
-          `Refs: KEY-123` line in its body. Squash-merge copies the body into
-          the commit, which is where the link lives once the scope drops it.
+          `Refs: KEY-123` line in its body, so the PR names the ticket once the
+          scope no longer carries it.
         required: false
         type: boolean
         default: true
@@ -121,7 +121,7 @@ jobs:
             echo "::endgroup::"
             exit 0
           fi
-          echo "::error title=PR body must carry the Refs trailer::The branch names ${ticket}, but the body has no 'Refs: ${ticket}' line. Squash-merge copies the body into the commit — without it the ticket link is lost, because the scope no longer carries it."
+          echo "::error title=PR body must carry the Refs trailer::The branch names ${ticket}, but the body has no 'Refs: ${ticket}' line. The scope no longer carries the ticket, so the description has to name it; add 'Refs: ${ticket}' as its last line."
           echo "::endgroup::"
           exit 1
 
