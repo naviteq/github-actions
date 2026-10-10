@@ -135,7 +135,7 @@ permissions: {}
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@f2f1b43c7e518c511e1eb71fa24c8614028cb2e7
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@21cef89fbe6b6bc75511794b0143cb5a3a6141a2
     permissions:
       contents: read
       id-token: write
