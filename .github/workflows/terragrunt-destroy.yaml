@@ -142,7 +142,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@bd3a835e2af5d45854ced6b131a42f86a32f2a90
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@1dd59292f9748de7c9ed09df620267d94c200934
     permissions:
       contents: read
       id-token: write
@@ -207,7 +207,7 @@ jobs:
 
       - name: Open the issue that gates the destroy
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@bd3a835e2af5d45854ced6b131a42f86a32f2a90
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@1dd59292f9748de7c9ed09df620267d94c200934
         with:
           command: request
           sha: ${{ github.sha }}
