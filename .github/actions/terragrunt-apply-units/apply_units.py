@@ -250,6 +250,9 @@ def run_apply(root: Path, units: list[dict], plans_dir: Path) -> None:
         plan_file = plans_dir / unit["file"].removesuffix(".age")
         if not plan_file.is_file():
             raise Refused(f"{unit['unit']} has no decrypted plan at {plan_file}")
+        # A saved plan never refreshes, so files written at plan time (an archive_file zip) are missing on this runner.
+        if terragrunt(root / unit["unit"], "plan", "-refresh-only", "-lock=false", "-input=false") != 0:
+            raise Refused(f"{unit['unit']} could not be refreshed before its apply; the units after it were not touched")
         if terragrunt(root / unit["unit"], "apply", "-input=false", str(plan_file.resolve())) != 0:
             raise Refused(f"{unit['unit']} failed to apply; the units after it were not touched")
         print(f"{unit['unit']}: applied")
