@@ -178,7 +178,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@6ab317ae40d45254779322fcde6ced79103cf056
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@8c3b1160e92b9a77d79761976b65373c4d85aa60
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -205,7 +205,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@6ab317ae40d45254779322fcde6ced79103cf056
+        uses: naviteq/github-actions/.github/actions/registry-token@8c3b1160e92b9a77d79761976b65373c4d85aa60
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -289,7 +289,7 @@ jobs:
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@6ab317ae40d45254779322fcde6ced79103cf056
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@8c3b1160e92b9a77d79761976b65373c4d85aa60
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
