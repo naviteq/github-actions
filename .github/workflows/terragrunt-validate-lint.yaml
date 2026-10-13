@@ -162,7 +162,7 @@ jobs:
       # → docs/terragrunt-plan.md#config-file
       - name: Read the config file
         id: config
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@0e5ef4e77d2725780b97a6a0069c913936b5b75c
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@3d4fa53941714fef56bddd228c827cfbed350566
         with:
           config_file: ${{ inputs.config_file }}
           mode: plan
@@ -192,7 +192,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@0e5ef4e77d2725780b97a6a0069c913936b5b75c
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@3d4fa53941714fef56bddd228c827cfbed350566
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -219,7 +219,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@0e5ef4e77d2725780b97a6a0069c913936b5b75c
+        uses: naviteq/github-actions/.github/actions/registry-token@3d4fa53941714fef56bddd228c827cfbed350566
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -276,7 +276,7 @@ jobs:
 
       - name: Ensure tflint
         if: inputs.tflint
-        uses: naviteq/github-actions/.github/actions/ensure-tool@0e5ef4e77d2725780b97a6a0069c913936b5b75c
+        uses: naviteq/github-actions/.github/actions/ensure-tool@3d4fa53941714fef56bddd228c827cfbed350566
         with:
           tool: tflint
           version: ${{ steps.tflint-version.outputs.version }}
@@ -334,7 +334,7 @@ jobs:
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@0e5ef4e77d2725780b97a6a0069c913936b5b75c
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@3d4fa53941714fef56bddd228c827cfbed350566
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
