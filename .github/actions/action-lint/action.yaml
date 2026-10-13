@@ -11,12 +11,14 @@ inputs:
 runs:
   using: composite
   steps:
+    # No release binary exists, so it is built at a pinned commit. → see docs/actionlint.md
     - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
       with:
-        go-version: "stable"
+        go-version: "1.27.2"
+        cache: false
 
     - name: Install composite-action-lint
-      run: go install github.com/bettermarks/composite-action-lint/cmd/composite-action-lint@latest
+      run: go install github.com/bettermarks/composite-action-lint/cmd/composite-action-lint@v0.0.0-20251022075048-673212ed410d
       shell: sh
 
     - name: Check composite actions

@@ -91,6 +91,10 @@ on:
     secrets:
       registry_password:
         required: false
+    outputs:
+      outcome:
+        description: Gate verdict on HIGH and CRITICAL findings, success or failure. Reported even when soft_fail keeps the job green.
+        value: ${{ jobs.trivy.outputs.outcome }}
 
 permissions: {}
 
@@ -102,6 +106,8 @@ jobs:
       actions: read
       contents: read
       security-events: write
+    outputs:
+      outcome: ${{ steps.gate.outputs.outcome }}
     env:
       REGISTRY_PASSWORD: ${{ secrets.registry_password }}
       # Not TRIVY_SCANNERS: that name is Trivy's own env var and would leak into the scan.
@@ -126,7 +132,8 @@ jobs:
           username: ${{ inputs.registry_username }}
           password: ${{ env.REGISTRY_PASSWORD }}
 
-      - name: Run Trivy scan (JSON)
+      # The only scan: SARIF and the text gate below are converted from this JSON, not rescanned.
+      - name: Run Trivy scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: ${{ inputs.scan_type }}
@@ -144,42 +151,51 @@ jobs:
           skip-dirs: ${{ inputs.skip_dirs }}
           hide-progress: true
 
-      - name: Run Trivy scan (SARIF)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: ${{ inputs.scan_type }}
-          image-ref: ${{ inputs.scan_type == 'image' && inputs.image_ref || '' }}
-          scan-ref: ${{ inputs.scan_ref }}
-          format: sarif
-          output: trivy-report.sarif
-          severity: HIGH,CRITICAL
-          exit-code: "0"
-          ignore-unfixed: false
-          vuln-type: ${{ inputs.scan_type == 'image' && 'os,library' || '' }}
-          scanners: ${{ env.RESOLVED_SCANNERS }}
-          trivy-config: ${{ inputs.trivy_config }}
-          trivyignores: ${{ inputs.ignorefile }}
-          skip-dirs: ${{ inputs.skip_dirs }}
-          # Without this the SARIF upload carries every severity, not the gated set.
-          limit-severities-for-sarif: true
-          hide-progress: true
+      - name: Convert Trivy report (SARIF)
+        shell: bash
+        env:
+          # Same config as the scan, for its table settings; trivy.yaml is Trivy's own default.
+          TRIVY_CONFIG: ${{ inputs.trivy_config || 'trivy.yaml' }}
+        run: |
+          set -euo pipefail
+          # The JSON already has the ignorefile applied; /dev/null stops convert re-reading ./.trivyignore.
+          trivy convert --quiet --format sarif --severity HIGH,CRITICAL \
+            --ignorefile /dev/null --output trivy-report.sarif trivy-report.json
+          # convert roots the SARIF at the JSON file; re-root it at the scanned path as a direct scan does.
+          if jq -e '.runs[0].originalUriBaseIds.ROOTPATH' trivy-report.sarif >/dev/null; then
+            root="file://$(realpath -sm "$(jq -r '.ArtifactName' trivy-report.json)")/"
+            jq --arg root "${root}" '.runs[].originalUriBaseIds.ROOTPATH.uri = $root' trivy-report.sarif > trivy-report.sarif.tmp
+            mv trivy-report.sarif.tmp trivy-report.sarif
+          fi
 
-      - name: Run Trivy scan (text summary)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: ${{ inputs.scan_type }}
-          image-ref: ${{ inputs.scan_type == 'image' && inputs.image_ref || '' }}
-          scan-ref: ${{ inputs.scan_ref }}
-          output: trivy.txt
-          severity: HIGH,CRITICAL
-          exit-code: ${{ inputs.soft_fail && '0' || '1' }}
-          ignore-unfixed: false
-          vuln-type: ${{ inputs.scan_type == 'image' && 'os,library' || '' }}
-          scanners: ${{ env.RESOLVED_SCANNERS }}
-          trivy-config: ${{ inputs.trivy_config }}
-          trivyignores: ${{ inputs.ignorefile }}
-          skip-dirs: ${{ inputs.skip_dirs }}
-          hide-progress: true
+      - name: Gate on findings (text summary)
+        id: gate
+        shell: bash
+        env:
+          # Same config as the scan, for its table settings; trivy.yaml is Trivy's own default.
+          TRIVY_CONFIG: ${{ inputs.trivy_config || 'trivy.yaml' }}
+          SOFT_FAIL: ${{ inputs.soft_fail }}
+        run: |
+          set -uo pipefail
+          # Findings exit 2, so a Trivy error (exit 1) still fails the job under soft_fail.
+          rc=0
+          trivy convert --quiet --format table --severity HIGH,CRITICAL \
+            --ignorefile /dev/null --exit-code 2 --output trivy.txt trivy-report.json || rc=$?
+          case "${rc}" in
+            0)
+              echo "outcome=success" >> "$GITHUB_OUTPUT"
+              ;;
+            2)
+              echo "outcome=failure" >> "$GITHUB_OUTPUT"
+              if [[ "${SOFT_FAIL}" != "true" ]]; then
+                echo "::error::HIGH or CRITICAL findings; see the job summary"
+                exit 1
+              fi
+              ;;
+            *)
+              exit "${rc}"
+              ;;
+          esac
 
       - name: Upload SARIF to GitHub Security
         if: ${{ always() && hashFiles('trivy-report.sarif') != '' && inputs.upload_sarif }}

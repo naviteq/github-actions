@@ -1,73 +1,49 @@
 ---
 name: Setup OCI CLI
-description: Install the OCI CLI on the runner (latest or specific version)
+description: >
+  Install the OCI CLI at an exact version, or keep it when the runner already has that version.
+  No setup-python: the runner's own python3, through uv when it is there.
 
 inputs:
   version:
     description: >-
-      oci-cli version to install (e.g. 3.51.0). Use "latest" to always install
-      the most recent release.
+      Exact oci-cli version (e.g. 3.94.2). "latest" still works but is resolved to the newest
+      PyPI release with a warning, so the run says which version it got.
     required: false
-    default: latest
+    default: "3.94.2"
 
 outputs:
   version:
-    description: Installed oci-cli version string (e.g. 3.51.0)
+    description: Installed oci-cli version string (e.g. 3.94.2)
     value: ${{ steps.verify.outputs.version }}
 
 runs:
   using: composite
   steps:
-    # Not the runner's system Python, so its pip is never PEP-668-blocked. Pinned:
-    # "3.x" reached 3.15, which has no aarch64 wheels for crc32c and python-pkcs11 yet.
-    - name: Set up Python
-      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-      with:
-        python-version: "3.14"
-
-    # PyPI over Oracle's install.sh: a pinned `pip install` is checksum-verified by pip itself.
-    - name: Install oci-cli via pip
+    # → see docs/setup-oci-cli.md
+    - name: Resolve the oci-cli version
+      id: resolve
       shell: bash
       env:
-        OCI_CLI_VERSION: ${{ inputs.version }}
+        REQUESTED: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        trap 'echo "::endgroup::"' EXIT
-        echo "::group::Install oci-cli ${OCI_CLI_VERSION}"
-        if [[ "${OCI_CLI_VERSION}" == "latest" ]]; then
-          pip install --upgrade oci-cli
-        else
-          pip install "oci-cli==${OCI_CLI_VERSION}"
+        version="${REQUESTED// /}"
+        if [ "${version,,}" = "latest" ]; then
+          version="$(curl -fsSL --retry 5 --retry-all-errors https://pypi.org/pypi/oci-cli/json | jq -r '.info.version')"
+          echo "::warning title=setup-oci-cli::version latest resolved to ${version} from PyPI; pin an exact version so the run is reproducible"
         fi
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+    - name: Ensure oci-cli ${{ steps.resolve.outputs.version }}
+      uses: naviteq/github-actions/.github/actions/ensure-tool@40c63d1c8e81c19777aacecb7b7a3fc45ac28193
+      with:
+        tool: oci-cli
+        version: ${{ steps.resolve.outputs.version }}
 
     - name: Verify oci-cli installation
       id: verify
       shell: bash
       run: |
         set -euo pipefail
-        trap 'echo "::endgroup::"' EXIT
-        echo "::group::Verify oci-cli installation"
-        oci --version
-        INSTALLED_VERSION="$(oci --version)"
-        echo "version=${INSTALLED_VERSION}" >> "$GITHUB_OUTPUT"
-
-    - name: Write step summary
-      if: ${{ always() }}
-      shell: bash
-      env:
-        OCI_CLI_VERSION: ${{ inputs.version }}
-      run: |
-        set -uo pipefail
-        echo "::group::Write oci-cli install summary"
-        INSTALLED_VERSION="$(oci --version 2>&1)" || INSTALLED_VERSION="unknown"
-        {
-          echo "## Setup OCI CLI"
-          echo ""
-          echo "| Field | Value |"
-          echo "| ----- | ----- |"
-          echo "| Requested version | \`${OCI_CLI_VERSION}\` |"
-          echo "| Installed version | \`${INSTALLED_VERSION}\` |"
-          echo "| OS | \`${RUNNER_OS}\` |"
-          echo "| Architecture | \`${RUNNER_ARCH}\` |"
-        } >> "$GITHUB_STEP_SUMMARY"
-        echo "::endgroup::"
+        echo "version=$(oci --version)" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,84 @@
+---
+name: Setup Checkov
+description: >
+  Keep the checkov already on PATH when it is exactly the requested version, otherwise
+  install that version as the runner user into $RUNNER_TEMP, never with sudo. Fails
+  when checkov on PATH does not report the requested version afterwards.
+
+inputs:
+  version:
+    description: Exact checkov version, X.Y.Z. Ranges and latest are rejected
+    required: true
+
+outputs:
+  source:
+    description: baked when the checkov on PATH already matched, installed when this action installed it
+    value: ${{ steps.ensure.outputs.source }}
+  resolved:
+    description: Version checkov on PATH reports after the decision
+    value: ${{ steps.ensure.outputs.resolved }}
+  path:
+    description: Absolute path of the checkov PATH resolves to
+    value: ${{ steps.ensure.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    # Same contract as ensure-tool (probe, install on miss, assert) → see docs/security-scan.md
+    - name: Ensure checkov ${{ inputs.version }}
+      id: ensure
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        trap 'echo "::endgroup::"' EXIT
+
+        echo "::group::Probe checkov on PATH"
+        if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error title=Checkov version not exact::'${VERSION}' is not X.Y.Z; ranges and latest are rejected."
+          exit 1
+        fi
+        probe() {
+          command -v checkov >/dev/null 2>&1 || return 0
+          checkov --version 2>/dev/null | grep -Eo '^[0-9]+\.[0-9]+\.[0-9]+$' | tail -n 1 || true
+        }
+        found="$(probe)"
+        echo "checkov: requested ${VERSION}, found ${found:-nothing}"
+        echo "::endgroup::"
+
+        if [[ "${found}" == "${VERSION}" ]]; then
+          source=baked
+        else
+          echo "::group::Install checkov ${VERSION}"
+          bin="${RUNNER_TEMP}/bin"
+          mkdir -p "${bin}"
+          if command -v uv >/dev/null 2>&1; then
+            UV_TOOL_DIR="${RUNNER_TEMP}/uv-tools" UV_TOOL_BIN_DIR="${bin}" \
+              uv tool install --force "checkov==${VERSION}"
+          else
+            venv="${RUNNER_TEMP}/checkov-${VERSION}"
+            python3 -m venv --clear "${venv}"
+            "${venv}/bin/python" -m pip install --disable-pip-version-check --retries 5 "checkov==${VERSION}"
+            ln -sf "${venv}/bin/checkov" "${bin}/checkov"
+          fi
+          export PATH="${bin}:${PATH}"
+          echo "${bin}" >> "${GITHUB_PATH}"
+          source=installed
+          echo "::endgroup::"
+        fi
+
+        echo "::group::Assert the resolved version"
+        resolved="$(probe)"
+        line="tool=checkov requested=${VERSION} resolved=${resolved:-none} source=${source}"
+        echo "${line}"
+        echo "\`${line}\`" >> "${GITHUB_STEP_SUMMARY}"
+        {
+          echo "source=${source}"
+          echo "resolved=${resolved}"
+          echo "path=$(command -v checkov || true)"
+        } >> "${GITHUB_OUTPUT}"
+        if [[ "${resolved}" != "${VERSION}" ]]; then
+          echo "::error title=Checkov version mismatch::requested ${VERSION}, PATH resolves ${resolved:-nothing}."
+          exit 1
+        fi
