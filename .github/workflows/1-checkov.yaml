@@ -15,7 +15,6 @@ jobs:
     name: Checkov Scan (all)
     uses: ./.github/workflows/security-checkov.yaml
     with:
-      config_file: .github/.checkov.yml
       runner: ${{ vars.DEFAULT_ORG_RUNNER }}
     permissions:
       security-events: write
