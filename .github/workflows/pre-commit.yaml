@@ -54,7 +54,7 @@ on:
         required: false
         type: string
         # renovate: datasource=pypi depName=pre-commit
-        default: 4.6.2
+        default: 4.7.0
     outputs:
       outcome:
         description: Outcome from the pre-commit job
@@ -85,7 +85,7 @@ jobs:
       # No setup-python: a baked pre-commit runs on the image's own Python. → docs/pre-commit.md
       - name: Ensure pre-commit ${{ inputs.pre_commit_version }}
         id: ensure
-        uses: naviteq/github-actions/.github/actions/ensure-tool@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
+        uses: naviteq/github-actions/.github/actions/ensure-tool@e49717b3fbc4a89133e9f38ac157fa74aa0318ee
         with:
           tool: pre-commit
           version: ${{ inputs.pre_commit_version }}
