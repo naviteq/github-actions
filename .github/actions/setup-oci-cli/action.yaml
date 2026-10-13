@@ -18,12 +18,12 @@ outputs:
 runs:
   using: composite
   steps:
-    # Not the runner's system Python, so its pip is never PEP-668-blocked —
-    # no venv needed, which also sidesteps self-hosted runners lacking ensurepip.
+    # Not the runner's system Python, so its pip is never PEP-668-blocked. Pinned:
+    # "3.x" reached 3.15, which has no aarch64 wheels for crc32c and python-pkcs11 yet.
     - name: Set up Python
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
-        python-version: "3.x"
+        python-version: "3.14"
 
     # PyPI over Oracle's install.sh: a pinned `pip install` is checksum-verified by pip itself.
     - name: Install oci-cli via pip
