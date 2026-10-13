@@ -6,17 +6,85 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      runner:
-        description: Runner for the release workflow. Supports a single label or a JSON array of labels.
+      sha:
+        description: Merge commit of a mirror/vX.Y.Z pull request to tag. Defaults to the tip of main.
         required: false
         type: string
-        default: ubuntu-24.04
+
+permissions: {}
+
+concurrency:
+  group: tag-mirror-release
+  cancel-in-progress: false
 
 jobs:
-  release:
-    uses: ./.github/workflows/create-release.yaml
-    with:
-      RUNNER: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || 'ubuntu-24.04' }}
-    secrets:
-      GITHUB_APP_ID: ${{ secrets.NAVITEQ_GITHUB_APP_ID }}
-      GITHUB_APP_KEY: ${{ secrets.NAVITEQ_GITHUB_APP_KEY }}
+  tag:
+    name: Tag the merged mirror release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.NAVITEQ_GITHUB_APP_ID }}
+          private-key: ${{ secrets.NAVITEQ_GITHUB_APP_KEY }}
+
+      # This repository mirrors naviteq-ltd/github-workflows: a merged mirror/vX.Y.Z
+      # pull request is tagged vX.Y.Z, after the source release it carries. Any other
+      # push to main is left untagged.
+      - name: Tag and release the merged mirror pull request
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          SHA_INPUT: ${{ inputs.sha || github.sha }}
+          # A dispatch backfills an older release, which must not take over "Latest".
+          LATEST: ${{ github.event_name == 'push' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha="$(gh api "repos/${REPO}/commits/${SHA_INPUT}" --jq .sha)"
+          pull="$(gh api "repos/${REPO}/commits/${sha}/pulls" \
+            --jq "[.[] | select(.merged_at != null and .merge_commit_sha == \"${sha}\")] | first // empty")"
+          if [ -z "${pull}" ]; then
+            echo "${sha} is not the merge commit of a pull request; nothing to tag."
+            exit 0
+          fi
+          head_ref="$(jq -r .head.ref <<< "${pull}")"
+          if [[ ! "${head_ref}" =~ ^mirror/(v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "${sha} merged ${head_ref}, not a mirror release branch; nothing to tag."
+            exit 0
+          fi
+          tag="${BASH_REMATCH[1]}"
+
+          if ref="$(gh api "repos/${REPO}/git/ref/tags/${tag}" 2>&1)"; then
+            target="$(jq -r .object.sha <<< "${ref}")"
+            if [ "$(jq -r .object.type <<< "${ref}")" = "tag" ]; then
+              target="$(gh api "repos/${REPO}/git/tags/${target}" --jq .object.sha)"
+            fi
+            if [ "${target}" != "${sha}" ]; then
+              echo "::error::${tag} already points at ${target}, not at the merge commit ${sha} of ${head_ref}. Resolve it by hand."
+              exit 1
+            fi
+            echo "${tag} already points at ${sha}."
+          elif grep -q "HTTP 404" <<< "${ref}"; then
+            gh api "repos/${REPO}/git/refs" -f ref="refs/tags/${tag}" -f sha="${sha}" > /dev/null
+            echo "Tagged ${tag} at ${sha}."
+          else
+            printf '%s\n' "${ref}" >&2
+            exit 1
+          fi
+
+          if gh release view "${tag}" --repo "${REPO}" > /dev/null 2>&1; then
+            echo "Release ${tag} already exists."
+            exit 0
+          fi
+          {
+            printf 'Mirror of naviteq-ltd/github-workflows %s.\n\n' "${tag}"
+            jq -r '.body // ""' <<< "${pull}"
+          } > release-notes.md
+          gh release create "${tag}" --repo "${REPO}" --verify-tag --latest="${LATEST}" \
+            --title "${tag}" --notes-file release-notes.md
+          echo "Released ${tag}."
