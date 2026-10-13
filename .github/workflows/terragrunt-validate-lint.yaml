@@ -178,7 +178,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@40c63d1c8e81c19777aacecb7b7a3fc45ac28193
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@42f749d16d2c27dbe09d4873eaa786ac11a5df02
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -205,7 +205,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@40c63d1c8e81c19777aacecb7b7a3fc45ac28193
+        uses: naviteq/github-actions/.github/actions/registry-token@42f749d16d2c27dbe09d4873eaa786ac11a5df02
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -262,7 +262,7 @@ jobs:
 
       - name: Ensure tflint
         if: inputs.tflint
-        uses: naviteq/github-actions/.github/actions/ensure-tool@40c63d1c8e81c19777aacecb7b7a3fc45ac28193
+        uses: naviteq/github-actions/.github/actions/ensure-tool@42f749d16d2c27dbe09d4873eaa786ac11a5df02
         with:
           tool: tflint
           version: ${{ steps.tflint-version.outputs.version }}
@@ -320,7 +320,7 @@ jobs:
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@40c63d1c8e81c19777aacecb7b7a3fc45ac28193
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@42f749d16d2c27dbe09d4873eaa786ac11a5df02
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
