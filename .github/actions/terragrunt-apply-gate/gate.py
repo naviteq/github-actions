@@ -2,8 +2,9 @@
 """After a merge, find the pull request's saved plans and open the issue that gates their apply.
 
 `find` resolves the merged pull request and its plan artifact; `decide` checks the plan
-against the merged tree and opens the approval issue, or says why it cannot; `request`
-opens the issue that gates a requested destroy. It lives
+against the merged tree and opens the approval issue, hands a moved base on to a re-plan,
+or says why it cannot; `request` opens the issue that gates a requested destroy or a
+re-planned apply. It lives
 beside its action, not in scripts/, because the public mirror copies actions only.
 → docs/terragrunt-apply.md
 
@@ -245,9 +246,13 @@ def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, 
     """The approval issue: what would change, who may approve, and the exact command."""
     changing = [u for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
     destroys = sum(int(u.get("destroy") or 0) + int(u.get("replace") or 0) for u in changing)
+    replanned = "source_pr" in marker
+    pr = marker["source_pr"] if replanned else marker["pr"]
+    planned = (f"Re-planned at `{marker['commit'][:7]}`, after the base moved under the PR's plan" if replanned
+               else f"Merged as `{marker['commit'][:7]}`")
     lines = [f"<!-- {MARKER}: {json.dumps(marker, separators=(',', ':'))} -->",
-             f"## 🚦 Apply waiting for approval: [PR #{marker['pr']}]({pr_url})", "",
-             _facts(f"Merged as `{marker['commit'][:7]}`", f"[Plan run]({run_url})", f"artifact `{metadata['artifact']}`"),
+             f"## 🚦 Apply waiting for approval: [PR #{pr}]({pr_url})", "",
+             _facts(planned, f"[Plan run]({run_url})", f"artifact `{metadata['artifact']}`"),
              "", *_approve_block("apply", marker["artifact_id"], approvers,
                                  second_approver_reason(metadata, second_approver_cost)), ""]
     total = totals_line(changing)
@@ -323,6 +328,14 @@ def write_outputs(**values: object) -> None:
                     out.write(f"{key}<<GATE_EOF\n{value}\nGATE_EOF\n")
                 else:
                     out.write(f"{key}={value}\n")
+
+
+def replan_outputs(metadata: dict, pr: int, sha: str) -> dict[str, str]:
+    """Filters for the units the pull request planned, to plan again at the merged commit."""
+    units = [u["unit"] for u in metadata.get("units", []) if not u.get("deleted")]
+    if not units:
+        return {"replan": "", "replan_ref": "", "replan_pr": ""}
+    return {"replan": "\n".join(f"./{unit}" for unit in units), "replan_ref": sha, "replan_pr": str(pr)}
 
 
 def deleted_outputs(metadata: dict, base_commit: str) -> dict[str, str]:
@@ -406,6 +419,14 @@ def cmd_decide(args: argparse.Namespace) -> int:
     moved_base = bool(problem) and check(metadata, pr, args.head_sha, metadata.get("tree", "")) == ""
     if not problem or moved_base:
         write_outputs(**deleted_outputs(metadata, args.base_commit))
+    # Only the base moved: the same pull request plans again at the merged commit. → docs/terragrunt-apply.md
+    if moved_base and args.replan == "true":
+        outputs = replan_outputs(metadata, pr, args.sha)
+        if outputs["replan"]:
+            comment_on_pr(args, pr, f"🔄 Merged after another change under `{args.working_directory}`, so its plans "
+                          f"are stale. Planning its units again at `{args.sha[:7]}`; the approval issue follows.")
+        write_outputs(**outputs, state="replan" if outputs["replan"] else "nothing", issue="")
+        return 0
     if problem:
         number = open_issue(args, f"No Terragrunt apply for PR #{pr}: stale plan",
                             blocked_body(problem[0].upper() + problem[1:], pr, args.pr_url, args.sha), "blocked")
@@ -431,12 +452,39 @@ def cmd_decide(args: argparse.Namespace) -> int:
     return 0
 
 
+def request_apply(args: argparse.Namespace, metadata: dict) -> int:
+    """The approval issue for plans made again after the merge, since the base moved under the PR's."""
+    pr = int(args.pr) if args.pr else None
+    if not metadata.get("has_changes"):
+        print("Nothing to apply: the re-plan changes nothing.")
+        if pr:
+            comment_on_pr(args, pr, "✅ Planned again after the merge: nothing to apply.")
+        write_outputs(state="no-changes", issue="")
+        return 0
+    marker = {"artifact_id": int(args.artifact_id), "plan_run_id": metadata["plan_run_id"], "pr": metadata.get("pr"),
+              "head_sha": metadata["head_sha"], "commit": metadata["commit"], "tree": metadata["tree"],
+              "working_directory": metadata["working_directory"], "source_pr": pr}
+    run_url = f"{args.server_url}/{args.repo}/actions/runs/{metadata['plan_run_id']}"
+    pr_url = args.pr_url or (f"{args.server_url}/{args.repo}/pull/{pr}" if pr else run_url)
+    threshold = float(args.second_approver_cost) if args.second_approver_cost.strip() else None
+    body = issue_body(metadata, marker, approvers_of(args.approvers), pr_url, run_url, "", threshold)
+    two = ("two-approvers",) if second_approver_reason(metadata, threshold) else ()
+    title = f"Terragrunt apply: PR #{pr} (re-planned)" if pr else f"Terragrunt apply: {metadata['commit'][:7]} (re-planned)"
+    number = open_issue(args, title, body, "pending", two)
+    if pr:
+        comment_on_pr(args, pr, f"🚦 Planned again after the merge. Applying waits for approval in #{number}.")
+    write_outputs(state="pending", issue=number)
+    return 0
+
+
 def cmd_request(args: argparse.Namespace) -> int:
     metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
-    if metadata.get("schema") != 1 or not metadata.get("destroy"):
-        print("::error title=Not a destroy plan::the artifact's metadata.json does not describe destroy plans")
+    if metadata.get("schema") != 1 or bool(metadata.get("destroy")) != (args.action == "destroy"):
+        print(f"::error title=Not {args.action} plans::the artifact's metadata.json does not describe {args.action} plans")
         write_outputs(state="blocked", issue="")
         return 1
+    if args.action == "apply":
+        return request_apply(args, metadata)
     if not metadata.get("has_changes"):
         print("Nothing to destroy: every selected unit is already empty or kept.")
         write_outputs(state="no-changes", issue="")
@@ -479,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
     decide.add_argument("--plan-state", default="")
     decide.add_argument("--second-approver-cost", default="", help="Monthly cost delta above which two approve")
     decide.add_argument("--base-commit", default="", help="The merge's first parent, where deleted units still exist")
+    decide.add_argument("--replan", default="false", help="true hands a moved base on to a re-plan instead of blocking")
     request = sub.add_parser("request")
     request.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     request.add_argument("--server-url", default=os.environ.get("GITHUB_SERVER_URL", "https://github.com"))
@@ -487,6 +536,10 @@ def main(argv: list[str] | None = None) -> int:
     request.add_argument("--metadata", required=True)
     request.add_argument("--approvers", default="")
     request.add_argument("--label", default="terragrunt-destroy")
+    request.add_argument("--action", choices=("destroy", "apply"), default="destroy")
+    request.add_argument("--pr", default="", help="For a re-planned apply, the pull request it belongs to")
+    request.add_argument("--pr-url", default="")
+    request.add_argument("--second-approver-cost", default="", help="Monthly cost delta above which two approve")
     args = parser.parse_args(argv)
     return {"find": cmd_find, "decide": cmd_decide, "request": cmd_request}[args.command](args)
 
