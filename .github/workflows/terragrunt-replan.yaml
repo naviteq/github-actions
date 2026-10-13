@@ -181,7 +181,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@d9ce8418febdb7fb91ec111c218a0e00053c5802
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
     permissions:
       contents: read
       id-token: write
@@ -249,7 +249,7 @@ jobs:
 
       - name: Open the issue that gates the apply
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@d9ce8418febdb7fb91ec111c218a0e00053c5802
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
         with:
           command: request
           action: apply
