@@ -1,50 +1,33 @@
 ---
 name: Setup boilerplate
-description: Install gruntwork-io/boilerplate template renderer on the runner
+description: >
+  Install the gruntwork-io/boilerplate template renderer at an exact version, verified against
+  the release asset digest, or keep it when the runner already has that version
 
 inputs:
   version:
-    description: boilerplate version to install (e.g. v0.16.0)
+    description: Exact boilerplate version to install (e.g. v0.16.0)
     required: false
     default: v0.16.0
 
 outputs:
   version:
-    description: Installed boilerplate version string
+    description: Installed boilerplate version string, as `boilerplate --version` prints it
     value: ${{ steps.verify.outputs.version }}
 
 runs:
   using: composite
   steps:
-    - name: Install boilerplate
-      shell: bash
-      env:
-        BOILERPLATE_VERSION: ${{ inputs.version }}
-      run: |
-        set -e -x
-        trap 'echo "::endgroup::"' EXIT
-
-        echo "::group::Resolve boilerplate asset for runner architecture"
-        case "$RUNNER_ARCH" in
-          X64 | X86) ASSET_ARCH="amd64" ;;
-          ARM64) ASSET_ARCH="arm64" ;;
-          *)
-            echo "Unsupported architecture: $RUNNER_ARCH"
-            exit 1
-            ;;
-        esac
-        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-        echo "::endgroup::"
-
-        echo "::group::Download boilerplate binary and install to /usr/local/bin"
-        sudo curl -fsSL -o /usr/local/bin/boilerplate \
-          "https://github.com/gruntwork-io/boilerplate/releases/download/${BOILERPLATE_VERSION}/boilerplate_${OS}_${ASSET_ARCH}"
-        sudo chmod +x /usr/local/bin/boilerplate
-        echo "::endgroup::"
+    # → see docs/setup-boilerplate.md
+    - name: Ensure boilerplate ${{ inputs.version }}
+      uses: naviteq/github-actions/.github/actions/ensure-tool@40c63d1c8e81c19777aacecb7b7a3fc45ac28193
+      with:
+        tool: boilerplate
+        version: ${{ inputs.version }}
 
     - name: Verify boilerplate installation
       id: verify
       shell: bash
       run: |
-        boilerplate --version
+        set -euo pipefail
         echo "version=$(boilerplate --version)" >> "$GITHUB_OUTPUT"

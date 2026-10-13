@@ -6,7 +6,7 @@ description: >
 
 inputs:
   profiles:
-    description: YAML list of profiles (name, paths, aws_role, aws_region, env, skip); empty puts every unit in one default leg
+    description: YAML list of profiles (name, paths, aws_role, aws_region, oci_region, environment, env, skip); empty puts every unit in one default leg
     required: false
     default: ""
   units:
@@ -24,7 +24,7 @@ inputs:
 
 outputs:
   legs:
-    description: JSON list of plan legs (name, units, deleted, aws_role, aws_region, env, env_all)
+    description: JSON list of plan legs (name, units, deleted, aws_role, aws_region, oci_region, environment, env, env_all)
     value: ${{ steps.match.outputs.legs }}
   skipped:
     description: One "unit<TAB>profile<TAB>reason" line per unit a skip profile left out

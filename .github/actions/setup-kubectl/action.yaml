@@ -1,52 +1,55 @@
 ---
 name: Setup kubectl
 description: >
-  Install kubectl at the version a cluster pins, or the current stable release
-  when none is given. A major.minor version resolves to its latest patch.
+  Install kubectl at the version a cluster pins. A major.minor version resolves to that
+  minor's latest patch; the binary is checksum-verified and skipped when already on PATH.
 
 inputs:
   version:
-    description: Kubernetes version, e.g. v1.36.1; the stable release when empty
+    description: >
+      Kubernetes version, e.g. v1.36.1, or 1.36 for that minor's latest patch. Empty means
+      the pinned fallback v1.36.5, for a caller that has no cluster to ask
     required: false
     default: ""
 
 outputs:
   version:
-    description: The version that was installed
-    value: ${{ steps.install.outputs.version }}
+    description: The version that was installed, with a leading v
+    value: ${{ steps.resolve.outputs.version }}
 
 runs:
   using: composite
   steps:
-    - name: Install kubectl
-      id: install
+    # → see docs/setup-kubectl.md
+    - name: Resolve the kubectl version
+      id: resolve
       shell: bash
       env:
         REQUESTED: ${{ inputs.version }}
+        FALLBACK_VERSION: v1.36.5
       run: |
         set -euo pipefail
-
-        case "$RUNNER_ARCH" in
-          X64 | X86) arch="amd64" ;;
-          ARM64) arch="arm64" ;;
-          *) echo "::error title=Unsupported architecture::${RUNNER_ARCH}"; exit 1 ;;
-        esac
-        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-
-        version="${REQUESTED}"
-        [ -n "${version}" ] || version="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
+        version="${REQUESTED// /}"
+        if [ -z "${version}" ]; then
+          version="${FALLBACK_VERSION}"
+          echo "::notice title=setup-kubectl::No version given; using the pinned fallback ${version}"
+        fi
         case "${version}" in v*) ;; *) version="v${version}" ;; esac
-        # EKS reports its version as major.minor, which is not a release URL.
         case "${version}" in
           v[0-9]*.[0-9]*.[0-9]*) ;;
-          *) version="$(curl -fsSL "https://dl.k8s.io/release/stable-${version#v}.txt")" ;;
+          v[0-9]*.[0-9]*)
+            version="$(curl -fsSL --retry 5 --retry-all-errors "https://dl.k8s.io/release/stable-${version#v}.txt")"
+            echo "Resolved ${REQUESTED} to ${version}"
+            ;;
+          *)
+            echo "::error title=setup-kubectl::version '${REQUESTED}' is neither X.Y nor X.Y.Z"
+            exit 1
+            ;;
         esac
-
-        # A pinned release binary from the project itself, not a third party
-        # action that fetches the same file. → AGENTS.md
-        sudo curl -fsSL -o /usr/local/bin/kubectl \
-          "https://dl.k8s.io/release/${version}/bin/${os}/${arch}/kubectl"
-        sudo chmod +x /usr/local/bin/kubectl
-
-        kubectl version --client
         echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+    - name: Ensure kubectl ${{ steps.resolve.outputs.version }}
+      uses: naviteq/github-actions/.github/actions/ensure-tool@40c63d1c8e81c19777aacecb7b7a3fc45ac28193
+      with:
+        tool: kubectl
+        version: ${{ steps.resolve.outputs.version }}

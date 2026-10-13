@@ -154,10 +154,16 @@ on:
         type: string
         default: ""
       checkov_enable_cache:
-        description: Cache the Checkov pip install between runs.
+        description: Deprecated no-op, kept so existing callers do not break. true only prints a warning in the Checkov job.
         required: false
         type: boolean
-        default: true
+        default: false
+      checkov_version:
+        description: Exact Checkov version to run. Skipped when the runner already has it, installed otherwise.
+        required: false
+        type: string
+        # renovate: datasource=pypi depName=checkov
+        default: 3.3.28
       download_artifact:
         description: Artifact downloaded into the workspace before scanning. Used to scan another job's output.
         required: false
@@ -298,6 +304,7 @@ jobs:
       head_ref: ${{ inputs.checkov_head_ref }}
       submodules: ${{ inputs.checkov_submodules }}
       enable_cache: ${{ inputs.checkov_enable_cache }}
+      checkov_version: ${{ inputs.checkov_version }}
       config_file: ${{ inputs.checkov_config_file }}
       upload_sarif: ${{ inputs.upload_sarif }}
       download_artifact: ${{ inputs.download_artifact }}

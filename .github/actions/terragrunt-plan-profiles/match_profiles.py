@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Split the selected Terragrunt units into credential profiles, one plan job per profile.
 
-A profile maps path globs to the identity its units run under: an AWS role and region,
-and the keys of terragrunt_extra_env it may see. A unit no profile matches fails the run.
+A profile maps path globs to the identity its units run under: an AWS role and region, or
+an OCI home region, the GitHub Environment its job runs in, and the keys of
+terragrunt_extra_env it may see. A unit no profile matches fails the run.
 It lives beside its action, not in scripts/, because the public mirror copies actions
 only. → docs/terragrunt-plan.md
 
@@ -20,7 +21,9 @@ import sys
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-KEYS = {"name", "paths", "aws_role", "aws_region", "env", "skip"}
+KEYS = {"name", "paths", "aws_role", "aws_region", "oci_region", "environment", "env", "skip"}
+ENVIRONMENT = re.compile(r"^[A-Za-z0-9._-]+$")
+OCI_REGION = re.compile(r"^[a-z]+(?:-[a-z]+)+-[0-9]+$")
 
 
 class ProfileError(ValueError):
@@ -84,6 +87,14 @@ def load_profiles(raw: object) -> list[dict]:
         role = item.get("aws_role") or ""
         if not isinstance(role, str) or (role and not role.startswith("arn:")):
             raise ProfileError(f"{where}: aws_role must be a role ARN")
+        oci_region = item.get("oci_region") or ""
+        if not isinstance(oci_region, str) or (oci_region and not OCI_REGION.match(oci_region)):
+            raise ProfileError(f"{where}: oci_region must be a region identifier such as eu-frankfurt-1")
+        environment = item.get("environment") or ""
+        if not isinstance(environment, str) or (environment and not ENVIRONMENT.match(environment)):
+            raise ProfileError(f"{where}: environment must be a GitHub Environment name")
+        if oci_region and (role or item.get("aws_region")):
+            raise ProfileError(f"{where}: oci_region and an AWS role or region cannot share a profile")
         skip = item.get("skip")
         if skip is not None and (not isinstance(skip, str) or not skip.strip()):
             raise ProfileError(f"{where}: skip must say why the units are not planned")
@@ -92,6 +103,8 @@ def load_profiles(raw: object) -> list[dict]:
             "patterns": [glob_to_regex(p) for p in paths],
             "aws_role": role,
             "aws_region": str(item.get("aws_region") or ""),
+            "oci_region": oci_region,
+            "environment": environment,
             "env": env,
             "skip": (skip or "").strip(),
         })
@@ -114,7 +127,8 @@ def split(
         if not units and not deleted:
             return [], [], []
         leg = {"name": "default", "units": "\n".join(units), "deleted": "\n".join(deleted),
-               "aws_role": "", "aws_region": default_region, "env": [], "env_all": True}
+               "aws_role": "", "aws_region": default_region, "oci_region": "", "environment": "",
+               "env": [], "env_all": True}
         return [leg], [], []
 
     legs: dict[str, dict] = {}
@@ -130,7 +144,10 @@ def split(
             continue
         leg = legs.setdefault(profile["name"], {
             "name": profile["name"], "units": [], "deleted": [],
-            "aws_role": profile["aws_role"], "aws_region": profile["aws_region"] or default_region,
+            "aws_role": profile["aws_role"],
+            # An OCI profile signs nothing with AWS, so it gets no default region and no role step.
+            "aws_region": "" if profile["oci_region"] else profile["aws_region"] or default_region,
+            "oci_region": profile["oci_region"], "environment": profile["environment"],
             "env": profile["env"], "env_all": False,
         })
         leg[kind].append(unit)

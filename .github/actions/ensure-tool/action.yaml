@@ -1,0 +1,53 @@
+---
+name: Ensure tool
+description: >
+  Keep a CLI tool already on PATH when it is exactly the requested version, otherwise
+  download it from the publisher's release, verify its checksum and put it on PATH.
+  Installs as the runner user into $RUNNER_TEMP/bin, never with sudo. Linux x64/arm64.
+
+inputs:
+  tool:
+    description: >
+      Tool to ensure: age, aws, aws-nuke, boilerplate, conftest, ct, gitleaks, helm, infracost,
+      kind, kubeconform, kubectl, oci-cli, pre-commit, promtool, pyflakes, shellcheck, task,
+      terraform, terraform-docs, terragrunt, tflint, tfsec, tofu or yq
+    required: true
+  version:
+    description: >
+      Exact version, X.Y.Z with an optional leading v. Ranges, wildcards and latest are
+      rejected; any other version on PATH counts as a miss.
+    required: true
+  on_miss:
+    description: >
+      What a miss does: install downloads the requested version, fail stops the job so it
+      asserts the runner image contract instead
+    required: false
+    default: install
+
+outputs:
+  source:
+    description: baked when the version on PATH already matched, installed when this action downloaded it
+    value: ${{ steps.ensure.outputs.source }}
+  resolved:
+    description: Version the tool on PATH reports after the decision
+    value: ${{ steps.ensure.outputs.resolved }}
+  path:
+    description: Absolute path of the binary PATH resolves to
+    value: ${{ steps.ensure.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Ensure ${{ inputs.tool }} ${{ inputs.version }}
+      id: ensure
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        TOOL: ${{ inputs.tool }}
+        VERSION: ${{ inputs.version }}
+        ON_MISS: ${{ inputs.on_miss }}
+        # Only sent to api.github.com, for recipes verified against GitHub's release asset digest.
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/ensure_tool.py" --tool "${TOOL}" --version "${VERSION}" --on-miss "${ON_MISS}"

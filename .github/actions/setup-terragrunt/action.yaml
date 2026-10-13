@@ -1,9 +1,9 @@
 ---
 name: Setup Terragrunt
 description: >
-  Install Terragrunt and the engine it drives (OpenTofu by default, or Terraform),
+  Make Terragrunt and the engine it drives (OpenTofu by default, or Terraform) available
   at the versions the checked-out repository pins in .terragrunt-version and
-  .opentofu-version / .terraform-version.
+  .opentofu-version / .terraform-version, keeping binaries the runner image bakes.
 
 inputs:
   engine:
@@ -37,6 +37,12 @@ outputs:
   terraform_version:
     description: The Terraform version that was installed; empty for engine tofu
     value: ${{ steps.resolve.outputs.terraform }}
+  terragrunt_source:
+    description: baked when the runner image already had the pinned Terragrunt, installed when it was downloaded
+    value: ${{ steps.terragrunt.outputs.source }}
+  engine_source:
+    description: baked when the runner image already had the pinned engine, installed when it was downloaded
+    value: ${{ steps.engine.outputs.source }}
 
 runs:
   using: composite
@@ -75,37 +81,20 @@ runs:
           echo "terraform=${terraform}"
         } >> "$GITHUB_OUTPUT"
 
-    - name: Install OpenTofu
-      if: inputs.engine == 'tofu'
-      uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+    # Keeps a binary the runner image bakes at the pinned version, installs into $RUNNER_TEMP/bin otherwise.
+    - name: Ensure the engine
+      id: engine
+      uses: naviteq/github-actions/.github/actions/ensure-tool@40c63d1c8e81c19777aacecb7b7a3fc45ac28193
       with:
-        tofu_version: ${{ steps.resolve.outputs.opentofu }}
-        tofu_wrapper: false
+        tool: ${{ inputs.engine }}
+        version: ${{ steps.resolve.outputs.opentofu }}${{ steps.resolve.outputs.terraform }}
 
-    - name: Install Terraform
-      if: inputs.engine == 'terraform'
-      uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+    - name: Ensure Terragrunt
+      id: terragrunt
+      uses: naviteq/github-actions/.github/actions/ensure-tool@40c63d1c8e81c19777aacecb7b7a3fc45ac28193
       with:
-        terraform_version: ${{ steps.resolve.outputs.terraform }}
-        terraform_wrapper: false
-
-    # A pinned release binary, not an action: every Terragrunt action on the
-    # marketplace wraps this same download behind a third party. → AGENTS.md
-    - name: Install Terragrunt
-      shell: bash
-      env:
-        TERRAGRUNT_VERSION: ${{ steps.resolve.outputs.terragrunt }}
-      run: |
-        set -euo pipefail
-        case "$RUNNER_ARCH" in
-          X64 | X86) arch="amd64" ;;
-          ARM64) arch="arm64" ;;
-          *) echo "::error title=Unsupported architecture::${RUNNER_ARCH}"; exit 1 ;;
-        esac
-        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-        sudo curl -fsSL -o /usr/local/bin/terragrunt \
-          "https://github.com/gruntwork-io/terragrunt/releases/download/v${TERRAGRUNT_VERSION#v}/terragrunt_${os}_${arch}"
-        sudo chmod +x /usr/local/bin/terragrunt
+        tool: terragrunt
+        version: ${{ steps.resolve.outputs.terragrunt }}
 
     # A runner image may bake tofu as well; without this Terragrunt picks it first.
     - name: Point Terragrunt at the engine

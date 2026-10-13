@@ -170,6 +170,14 @@ on:
         type: number
         required: false
         default: 14
+      github_app_repositories:
+        description: >
+          Comma-separated repositories in the caller's owner that the build may read through the
+          `github_app_token` build secret. Needs the github_client_id (or github_app_id) and
+          github_app_key secrets; empty mints nothing.
+        type: string
+        required: false
+        default: ""
     secrets:
       token:
         description: Registry Token
@@ -182,6 +190,15 @@ on:
         required: false
       slack_webhook:
         description: Slack incoming webhook URL
+        required: false
+      github_client_id:
+        description: Client ID of the GitHub App that mints the `github_app_token` build secret
+        required: false
+      github_app_id:
+        description: App ID, accepted when the App has no client ID secret
+        required: false
+      github_app_key:
+        description: Private key of the GitHub App that mints the `github_app_token` build secret
         required: false
 
 permissions: {}
@@ -202,6 +219,7 @@ jobs:
     env:
       # Per-platform legs push by digest only; the merge job publishes tags, scans and reports.
       DOCKER_BUILD_PUBLISHES: ${{ inputs.platform_runners == '' }}
+      MINT_APP_TOKEN: ${{ inputs.github_app_repositories != '' && secrets.github_app_key != '' }}
     outputs:
       tag-names: ${{ steps.tag_outputs.outputs.tag-names }}
       tags: ${{ steps.tag_outputs.outputs.tags }}
@@ -456,6 +474,16 @@ jobs:
 
           echo "failed to resolve sha-based image ref from metadata tags" >&2
           exit 1
+      # → see docs/docker-build.md#github-app-token-build-secret
+      - name: Mint a GitHub App token for the build
+        id: app_token
+        if: ${{ env.MINT_APP_TOKEN == 'true' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        with:
+          client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
+          private-key: ${{ secrets.github_app_key }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.github_app_repositories }}
       - name: Build and push
         id: build_push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
@@ -470,7 +498,9 @@ jobs:
             inputs.aws_region != '' && steps.ecr.outputs.registry || inputs.registry,
             inputs.image != '' && inputs.image || github.repository, inputs.docker_push) || '' }}
           build-args: ${{ inputs.build_args }}
-          secrets: ${{ secrets.build_secrets }}
+          secrets: |
+            ${{ secrets.build_secrets }}
+            ${{ steps.app_token.outputs.token != '' && format('github_app_token={0}', steps.app_token.outputs.token) || '' }}
           tags: ${{ matrix.platform == '' && steps.meta.outputs.tags || '' }}
           labels: ${{ steps.meta.outputs.labels }}
           attests: |

@@ -92,10 +92,12 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Setup Helm
-      uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+    # → see docs/helm-release-oci.md
+    - name: Ensure Helm
+      uses: naviteq/github-actions/.github/actions/ensure-tool@40c63d1c8e81c19777aacecb7b7a3fc45ac28193
       with:
-        version: v4.3.0
+        tool: helm
+        version: 4.3.0
 
     - name: Validate chart
       shell: bash
