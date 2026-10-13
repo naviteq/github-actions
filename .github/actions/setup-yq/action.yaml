@@ -19,7 +19,7 @@ runs:
   using: composite
   steps:
     - name: Ensure yq
-      uses: naviteq/github-actions/.github/actions/ensure-tool@43f94263e8c2ce8c724815647205d3f58738bc8d
+      uses: naviteq/github-actions/.github/actions/ensure-tool@847dbde07eefbeaab4fea69ae37828ff0079510c
       with:
         tool: yq
         version: ${{ inputs.version }}
