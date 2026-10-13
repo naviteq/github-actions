@@ -1,4 +1,12 @@
+---
 self-hosted-runner:
   labels:
+    - ubuntu-26.04
     - terraform
+    - terraform-base
+    - helm
     - aws
+    - general-small
+    - docker-build-amd64
+    - docker-build-arm64
+    - test-runner
