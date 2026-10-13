@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    # checkov:skip=CKV_GHA_7: The only input picks which merge commit to tag; nothing is built.
     inputs:
       sha:
         description: Merge commit of a mirror/vX.Y.Z pull request to tag. Defaults to the tip of main.
