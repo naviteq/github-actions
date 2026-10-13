@@ -52,7 +52,7 @@ on:
         type: boolean
         default: false
       tflint_version:
-        description: tflint version, e.g. v0.64.0; read from the repository's .tflint-version when empty
+        description: Exact tflint version, e.g. v0.64.0; read from the repository's .tflint-version when empty, and tflint fails when neither is set
         required: false
         type: string
         default: ""
@@ -157,7 +157,7 @@ jobs:
       - name: Generate a GitHub App token for the private git sources
         id: app-token
         if: env.HAS_GITHUB_APP == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ secrets.naviteq_github_client_id || secrets.naviteq_github_app_id }}
           private-key: ${{ secrets.naviteq_github_app_key }}
@@ -178,7 +178,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -205,7 +205,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/registry-token@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -241,15 +241,46 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: terragrunt hcl fmt --check --non-interactive
 
-      - name: Install tflint
+      # Accepts a bare version or a `tflint <version>` line, as setup-tflint read the file.
+      - name: Resolve the tflint version
+        id: tflint-version
         if: inputs.tflint
-        uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
-        with:
-          tflint_version: ${{ inputs.tflint_version != '' && inputs.tflint_version || 'latest' }}
-          tflint_version_file: ${{ inputs.tflint_version == '' && '.tflint-version' || '' }}
-          cache: false
+        env:
+          TFLINT_INPUT: ${{ inputs.tflint_version }}
+        run: |
+          set -euo pipefail
+          version="${TFLINT_INPUT}"
+          if [ -z "${version}" ] && [ -f .tflint-version ]; then
+            version="$(sed -nE 's/^[[:space:]]*tflint[[:space:]]+([^[:space:]]+).*/\1/p' .tflint-version | head -n 1)"
+            [ -n "${version}" ] || version="$(tr -d '[:space:]' < .tflint-version)"
+          fi
+          if [ -z "${version}" ]; then
+            echo "::error title=No tflint version pinned::Pass tflint_version, or commit a .tflint-version at the repository root."
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
-      # The action's own cache key has no architecture, and the runner pool mixes amd64 and arm64.
+      - name: Ensure tflint
+        if: inputs.tflint
+        uses: naviteq/github-actions/.github/actions/ensure-tool@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
+        with:
+          tool: tflint
+          version: ${{ steps.tflint-version.outputs.version }}
+
+      # The problem matcher setup-tflint registered: annotates findings when .tflint.hcl sets format = "compact".
+      - name: Annotate tflint findings
+        if: inputs.tflint
+        run: |
+          set -euo pipefail
+          matcher="${RUNNER_TEMP}/tflint-matcher.json"
+          cat > "${matcher}" <<'JSON'
+          {"problemMatcher": [{"owner": "tflint-compact", "pattern": [{
+            "regexp": "^(.+):(\\d+):(\\d+):\\s(Error|Warning|Notice)\\s-\\s(.+)\\s\\((.+)\\)$",
+            "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5, "code": 6}]}]}
+          JSON
+          echo "::add-matcher::${matcher}"
+
+      # Keyed by architecture: the runner pool mixes amd64 and arm64.
       - name: Cache the tflint plugins
         if: inputs.tflint
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -289,7 +320,7 @@ jobs:
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}

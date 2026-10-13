@@ -144,15 +144,16 @@ on:
         required: false
       github_app_id:
         description: >-
-          Always required. It mints the token that downloads the private
-          oci-nuke release, and — when auto_approve is on — the one that posts
-          the approval comment. → see docs/oci-nuke.md
+          Required unless the runner bakes the requested oci_nuke_version. It
+          mints the token that downloads the private oci-nuke release, and —
+          when auto_approve is on — the one that posts the approval comment.
+          → see docs/oci-nuke.md
         required: false
       github_client_id:
         description: GitHub App client ID. Preferred over github_app_id, which is the deprecated fallback.
         required: false
       github_app_key:
-        description: Private key for the App identified by github_client_id or github_app_id. Always required, for the same two reasons.
+        description: Private key for the App identified by github_client_id or github_app_id. Required in the same cases.
         required: false
     outputs:
       issue_number:
@@ -371,8 +372,33 @@ jobs:
         if: ${{ steps.pause.outputs.skip != 'true' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Require the App credentials that read the oci-nuke release
+      - name: Probe for a baked oci-nuke
+        id: baked_probe
         if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          REQUESTED: ${{ inputs.oci_nuke_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Probe the runner for the requested oci-nuke"
+          # Exact-version contract: the first two words of `oci-nuke version` must equal
+          # `oci-nuke <tag>`; anything else is a miss. → see docs/oci-nuke.md
+          baked=false
+          if command -v oci-nuke > /dev/null 2>&1; then
+            out="$(oci-nuke version 2> /dev/null || true)"
+            read -r tool resolved _ <<< "${out}" || true
+            if [[ "${tool:-}" == "oci-nuke" && "${resolved:-}" == "${REQUESTED}" ]]; then
+              baked=true
+              line="tool=oci-nuke requested=${REQUESTED} resolved=${resolved} source=baked"
+              echo "${line}"
+              echo "${line}" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+          echo "baked=${baked}" >> "$GITHUB_OUTPUT"
+
+      - name: Require the App credentials that read the oci-nuke release
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.baked_probe.outputs.baked != 'true' }}
         env:
           APP_ID_SET: ${{ secrets.github_client_id != '' || secrets.github_app_id != '' }}
           APP_KEY_SET: ${{ secrets.github_app_key != '' }}
@@ -390,8 +416,8 @@ jobs:
 
       - name: Generate a GitHub App token for the oci-nuke release
         id: install_token
-        if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.baked_probe.outputs.baked != 'true' }}
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         with:
           client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
           private-key: ${{ secrets.github_app_key }}
@@ -399,16 +425,31 @@ jobs:
           repositories: oci-nuke
 
       - name: Install oci-nuke
-        if: ${{ steps.pause.outputs.skip != 'true' }}
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.baked_probe.outputs.baked != 'true' }}
         # Resolves only while naviteq-ltd/oci-nuke keeps Actions access set to
         # "Accessible from repositories in the organization"; a 404 means that.
-        uses: naviteq-ltd/oci-nuke@6c4da8b66899f97c71bbc63d735a4177af986038 # v2.2.0
+        uses: naviteq-ltd/oci-nuke@85f5d611cf1bf81e143443996b4abde80431534b # v3.0.0
         with:
           # The SHA pins the action's code; `version` picks the release it
           # installs. Two versions, and bumping one does not move the other.
           version: ${{ inputs.oci_nuke_version }}
           token: ${{ steps.install_token.outputs.token }}
           repository: naviteq-ltd/oci-nuke
+
+      - name: Record the installed oci-nuke
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.baked_probe.outputs.baked != 'true' }}
+        env:
+          REQUESTED: ${{ inputs.oci_nuke_version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Record the oci-nuke the install action put on PATH"
+          out="$(oci-nuke version)"
+          read -r _ resolved _ <<< "${out}"
+          line="tool=oci-nuke requested=${REQUESTED} resolved=${resolved} source=installed"
+          echo "${line}"
+          echo "${line}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Resolve config
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -948,7 +989,7 @@ jobs:
       - name: Generate a GitHub App token for auto-approve
         id: app_token
         if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' && steps.auto_approve.outputs.auto_approve_allowed == 'true' }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         with:
           client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
           private-key: ${{ secrets.github_app_key }}

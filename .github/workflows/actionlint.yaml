@@ -14,7 +14,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: actionlint-${{ github.ref }}
+  group: actionlint-${{ github.workflow }}-${{ github.ref }}-${{ inputs.runner }}
   cancel-in-progress: true
 
 jobs:
@@ -29,6 +29,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # On PATH before raven-actions/actionlint, so it skips its unpinned pipx and sudo apt installs. → see docs/actionlint.md
+      - name: Ensure pyflakes
+        uses: naviteq/github-actions/.github/actions/ensure-tool@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
+        with:
+          tool: pyflakes
+          version: 4.0.3
+
+      - name: Ensure shellcheck
+        uses: naviteq/github-actions/.github/actions/ensure-tool@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
+        with:
+          tool: shellcheck
+          version: 0.11.0
+
       - name: Run actionlint with reviewdog
         uses: reviewdog/action-actionlint@a8ac3eea598697a830f7d8e701fc9fcbfde88974 # v1.80.0
         with:
@@ -36,21 +49,6 @@ jobs:
           fail_level: any
           filter_mode: nofilter
           actionlint_flags: "-config-file .github/actionlint.yaml"
-
-      - name: Ensure Node.js is available
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: "24"
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: 3.x
-
-      - name: Install pipx
-        run: |
-          python3 -m pip install pipx
-          python3 -m pipx ensurepath
 
       - name: Run actionlint on workflows
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2
@@ -60,6 +58,6 @@ jobs:
 
       - name: Validate local actions
         if: ${{ always() }}
-        uses: naviteq/github-actions/.github/actions/action-lint@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/action-lint@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           actions: .github/actions/*/action.y*ml

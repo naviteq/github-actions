@@ -1,0 +1,88 @@
+---
+name: Terragrunt OCI session
+description: >
+  Give a Terragrunt job an OCI identity: install the CLI, exchange the job's GitHub OIDC token
+  for a session token, resolve the Object Storage namespace and export the Customer Secret Key
+  the S3 remote state signs with. → see docs/terragrunt-plan.md
+
+inputs:
+  region:
+    description: The tenancy's home region; the identity domain that serves the token exchange lives there
+    required: true
+  oidc_domain_url:
+    description: The OCI Identity Domain's URL, also the token audience
+    required: true
+  oidc_client_id:
+    description: The Confidential Application's OAuth client ID
+    required: true
+  oidc_client_secret:
+    description: The Confidential Application's OAuth client secret
+    required: true
+  tenancy_ocid:
+    description: OCID of the tenancy the session must belong to; the action fails on a mismatch
+    required: true
+  s3_access_key_id:
+    description: Customer Secret Key ID for the S3-compatible state backend
+    required: true
+  s3_secret_access_key:
+    description: Customer Secret Key secret for the S3-compatible state backend
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Require the OCI secrets
+      shell: bash
+      env:
+        DOMAIN_URL: ${{ inputs.oidc_domain_url }}
+        CLIENT_ID: ${{ inputs.oidc_client_id }}
+        CLIENT_SECRET: ${{ inputs.oidc_client_secret }}
+        TENANCY: ${{ inputs.tenancy_ocid }}
+        ACCESS_KEY: ${{ inputs.s3_access_key_id }}
+        SECRET_KEY: ${{ inputs.s3_secret_access_key }}
+      run: |
+        set -euo pipefail
+        missing=""
+        [ -n "${DOMAIN_URL}" ] || missing+=" oci_oidc_domain_url"
+        [ -n "${CLIENT_ID}" ] || missing+=" oci_oidc_client_id"
+        [ -n "${CLIENT_SECRET}" ] || missing+=" oci_oidc_client_secret"
+        [ -n "${TENANCY}" ] || missing+=" oci_tenancy_ocid"
+        [ -n "${ACCESS_KEY}" ] || missing+=" oci_s3_access_key_id"
+        [ -n "${SECRET_KEY}" ] || missing+=" oci_s3_secret_access_key"
+        if [ -n "${missing}" ]; then
+          echo "::error title=Empty OCI secrets::A profile with oci_region needs these secrets, and they are empty:${missing}. Pass them through, and share the organisation secrets with this repository."
+          exit 1
+        fi
+
+    - name: Install the OCI CLI
+      uses: naviteq/github-actions/.github/actions/setup-oci-cli@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
+
+    - name: Configure OCI credentials
+      uses: naviteq/github-actions/.github/actions/configure-oci-credentials@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
+      with:
+        region: ${{ inputs.region }}
+        auth_method: github-oidc
+        oidc_domain_url: ${{ inputs.oidc_domain_url }}
+        oidc_client_id: ${{ inputs.oidc_client_id }}
+        oidc_client_secret: ${{ inputs.oidc_client_secret }}
+        expected_tenancy_ocid: ${{ inputs.tenancy_ocid }}
+
+    # The remote_state endpoint is namespace-scoped; the namespace is a tenancy fact, not a secret.
+    - name: Resolve the Object Storage namespace
+      shell: bash
+      run: echo "OCI_NAMESPACE=$(oci os ns get --query data --raw-output)" >> "$GITHUB_ENV"
+
+    # The S3 backend speaks SigV4 and cannot use the session token. → docs/terragrunt-plan.md
+    - name: Configure remote-state credentials
+      shell: bash
+      env:
+        ACCESS_KEY: ${{ inputs.s3_access_key_id }}
+        SECRET_KEY: ${{ inputs.s3_secret_access_key }}
+      run: |
+        set -euo pipefail
+        echo "::add-mask::${ACCESS_KEY}"
+        echo "::add-mask::${SECRET_KEY}"
+        {
+          echo "AWS_ACCESS_KEY_ID=${ACCESS_KEY}"
+          echo "AWS_SECRET_ACCESS_KEY=${SECRET_KEY}"
+        } >> "$GITHUB_ENV"

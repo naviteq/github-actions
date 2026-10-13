@@ -66,10 +66,16 @@ on:
         type: string
         default: ""
       enable_cache:
-        description: Cache the Checkov pip install between runs (keyed on the upstream action SHA).
+        description: Deprecated no-op, kept so existing callers do not break. Checkov is baked into the runner image or installed at checkov_version; true only prints a warning.
         required: false
         type: boolean
-        default: true
+        default: false
+      checkov_version:
+        description: Exact Checkov version to run. Skipped when the runner already has it, installed otherwise.
+        required: false
+        type: string
+        # renovate: datasource=pypi depName=checkov
+        default: 3.3.28
       download_artifact:
         description: Artifact to download into the workspace before scanning. Used to scan another job's output.
         required: false
@@ -99,7 +105,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: checkov-security-${{ github.workflow }}-${{ github.ref }}-${{ inputs.framework || 'all' }}-${{ inputs.full_scan || 'false' }}-${{ inputs.base_ref || 'default' }}-${{ inputs.head_ref || 'default' }}-${{ inputs.submodules != '' && inputs.submodules || (vars.DEFAULT_ORG_SUBMODULES || 'false') }}-${{ inputs.enable_cache && 'cache-on' || 'cache-off' }}
+  group: checkov-security-${{ github.workflow }}-${{ github.ref }}-${{ inputs.framework || 'all' }}-${{ inputs.full_scan || 'false' }}-${{ inputs.base_ref || 'default' }}-${{ inputs.head_ref || 'default' }}-${{ inputs.submodules != '' && inputs.submodules || (vars.DEFAULT_ORG_SUBMODULES || 'false') }}-${{ inputs.runner }}
   cancel-in-progress: true
 
 jobs:
@@ -133,16 +139,10 @@ jobs:
           name: ${{ inputs.download_artifact }}
           path: ${{ inputs.download_path }}
 
-      - name: Cache Checkov install
+      - name: Warn about the deprecated enable_cache input
         if: ${{ inputs.enable_cache }}
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cache/pip
-            ~/.local/share/checkov
-          key: checkov-${{ runner.os }}-py3-bridgecrewio-4048c972aae68d0b983a48bb3479aab2d877b898
-          restore-keys: |
-            checkov-${{ runner.os }}-py3-bridgecrewio-
+        shell: bash
+        run: echo "::warning title=enable_cache is deprecated::It is a no-op since Checkov runs natively at checkov_version; drop it from the caller."
 
       - name: Resolve diff range
         id: range
@@ -366,36 +366,48 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
           echo "::endgroup::"
 
-      - name: Run Checkov (full scan)
-        if: ${{ inputs.full_scan }}
-        uses: bridgecrewio/checkov-action@d0dd2e9434b4428060edba72d050c135273bd677 # v12.3132.0
+      # Native CLI, not bridgecrewio/checkov-action: that one pulls a 188 MB image per job → see docs/security-scan.md
+      - name: Set up Checkov
+        if: ${{ inputs.full_scan || steps.resolved.outputs.has_changes == 'true' }}
+        uses: naviteq/github-actions/.github/actions/setup-checkov@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
-          directory: ${{ env.CHECKOV_DIRECTORY }}
-          framework: ${{ env.CHECKOV_FRAMEWORK }}
-          quiet: true
-          output_format: cli,sarif
-          output_file_path: checkov-report.txt,results.sarif
-          compact: true
-          soft_fail: ${{ env.CHECKOV_SOFT_FAIL }}
-          check: ${{ env.CHECKOV_CHECK }}
-          skip_check: ${{ env.CHECKOV_SKIP_CHECK }}
-          config_file: ${{ env.CHECKOV_CONFIG_FILE }}
+          version: ${{ inputs.checkov_version }}
 
-      - name: Run Checkov (changed files)
-        if: ${{ !inputs.full_scan && steps.resolved.outputs.has_changes == 'true' }}
-        uses: bridgecrewio/checkov-action@d0dd2e9434b4428060edba72d050c135273bd677 # v12.3132.0
-        with:
-          directory: ${{ env.CHECKOV_DIRECTORY }}
-          file: ${{ steps.resolved.outputs.files }}
-          framework: ${{ env.CHECKOV_FRAMEWORK }}
-          quiet: true
-          output_format: cli,sarif
-          output_file_path: checkov-report.txt,results.sarif
-          compact: true
-          soft_fail: ${{ env.CHECKOV_SOFT_FAIL }}
-          check: ${{ env.CHECKOV_CHECK }}
-          skip_check: ${{ env.CHECKOV_SKIP_CHECK }}
-          config_file: ${{ env.CHECKOV_CONFIG_FILE }}
+      - name: Run Checkov
+        if: ${{ inputs.full_scan || steps.resolved.outputs.has_changes == 'true' }}
+        shell: bash
+        env:
+          CHECKOV_FILES: ${{ !inputs.full_scan && steps.resolved.outputs.files || '' }}
+        run: |
+          set -uo pipefail
+          trap 'echo "::endgroup::"' EXIT
+
+          echo "::group::Build the Checkov command line"
+          # Same argv the action's entrypoint built: -f replaces -d when files are given.
+          args=()
+          if [[ -n "${CHECKOV_FILES}" ]]; then
+            IFS=',' read -r -a files <<<"${CHECKOV_FILES}"
+            args+=(-f "${files[@]}")
+          else
+            args+=(-d "${CHECKOV_DIRECTORY}")
+          fi
+          read -r -a frameworks <<<"${CHECKOV_FRAMEWORK//,/ }"
+          args+=(--framework "${frameworks[@]}")
+          IFS=',' read -r -a checks <<<"${CHECKOV_CHECK}"
+          for c in "${checks[@]}"; do c="${c// /}"; [[ -n "${c}" ]] && args+=(--check "${c}"); done
+          IFS=',' read -r -a skips <<<"${CHECKOV_SKIP_CHECK}"
+          for c in "${skips[@]}"; do c="${c// /}"; [[ -n "${c}" ]] && args+=(--skip-check "${c}"); done
+          [[ -n "${CHECKOV_CONFIG_FILE}" ]] && args+=(--config-file "${CHECKOV_CONFIG_FILE}")
+          [[ "${CHECKOV_SOFT_FAIL}" == "true" ]] && args+=(--soft-fail)
+          args+=(--compact --quiet --output cli --output sarif --output-file-path "checkov-report.txt,results.sarif")
+          printf 'checkov'; printf ' %q' "${args[@]}"; printf '\n'
+          echo "::endgroup::"
+
+          echo "::group::Run Checkov"
+          checkov "${args[@]}"
+          rc=$?
+          echo "::endgroup::"
+          exit "${rc}"
 
       - name: Write summary
         if: always()

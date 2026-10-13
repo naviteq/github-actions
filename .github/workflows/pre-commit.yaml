@@ -24,7 +24,9 @@ on:
         type: string
         default: "--all-files"
       extra_pre_command:
-        description: Extra command to run before pre-commit.
+        description: >
+          Extra command to run before pre-commit, eval'd in the same shell. Keep it to
+          `source path/to/script.sh` and put every $VAR and quote inside the script.
         required: false
         type: string
         default: ""
@@ -44,10 +46,25 @@ on:
         required: false
         type: boolean
         default: false
+      pre_commit_version:
+        description: >
+          Exact pre-commit version to run (X.Y.Z). A runner that already has it on PATH
+          uses it as is; any other runner installs it. The job fails if the version
+          pre-commit reports afterwards is not this one.
+        required: false
+        type: string
+        # renovate: datasource=pypi depName=pre-commit
+        default: 4.6.2
     outputs:
       outcome:
         description: Outcome from the pre-commit job
         value: ${{ jobs.pre-commit.outputs.outcome }}
+      pre_commit_source:
+        description: baked when the runner already had pre_commit_version, installed when the job installed it
+        value: ${{ jobs.pre-commit.outputs.pre_commit_source }}
+      pre_commit_resolved:
+        description: Version pre-commit reported after the decision
+        value: ${{ jobs.pre-commit.outputs.pre_commit_resolved }}
 
 permissions: {}
 
@@ -59,23 +76,52 @@ jobs:
       contents: read
     outputs:
       outcome: ${{ steps.run.outcome }}
+      pre_commit_source: ${{ steps.ensure.outputs.source }}
+      pre_commit_resolved: ${{ steps.ensure.outputs.resolved }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      # No setup-python: a baked pre-commit runs on the image's own Python. → docs/pre-commit.md
+      - name: Ensure pre-commit ${{ inputs.pre_commit_version }}
+        id: ensure
+        uses: naviteq/github-actions/.github/actions/ensure-tool@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
-          python-version: "3.x"
+          tool: pre-commit
+          version: ${{ inputs.pre_commit_version }}
 
+      - name: Report pre-commit source
+        id: report
+        shell: bash
+        env:
+          REQUESTED: ${{ inputs.pre_commit_version }}
+          SOURCE: ${{ steps.ensure.outputs.source }}
+          RESOLVED: ${{ steps.ensure.outputs.resolved }}
+          TOOL_PATH: ${{ steps.ensure.outputs.path }}
+        run: |
+          set -euo pipefail
+          if [ "${RESOLVED}" != "${REQUESTED#v}" ]; then
+            echo "::error title=pre-commit::requested ${REQUESTED#v}, resolved ${RESOLVED:-nothing} (${SOURCE})"
+            exit 1
+          fi
+          interpreter="$(dirname "$(readlink -f "${TOOL_PATH}")")/python"
+          python_version="unknown"
+          if [ -x "${interpreter}" ]; then
+            python_version="$("${interpreter}" -c 'import platform; print(platform.python_version())')"
+          fi
+          case "${SOURCE}" in
+            baked) path_ran="baked into the runner image: no setup-python, no pip install" ;;
+            *) path_ran="installed by ensure-tool" ;;
+          esac
+          echo "python=${python_version}" >> "${GITHUB_OUTPUT}"
+          echo "pre-commit ${RESOLVED} on Python ${python_version}, ${path_ran}." | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      # The interpreter is in the key: hook venvs restored onto another Python are rebuilt but never re-saved.
       - name: Cache pre-commit environments
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
-          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-
-      - name: Install pre-commit
-        run: pip install pre-commit
+          key: pre-commit-${{ runner.os }}-${{ runner.arch }}-py${{ steps.report.outputs.python }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
       - name: Run pre-commit
         continue-on-error: ${{ inputs.allow_failure }}

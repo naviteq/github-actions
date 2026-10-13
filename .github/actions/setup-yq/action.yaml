@@ -1,12 +1,14 @@
 ---
 name: Setup yq
-description: Install mikefarah/yq YAML processor on the runner
+description: >
+  Compatibility wrapper over ensure-tool for yq. Keeps the baked yq when it already reports the
+  requested version, otherwise installs it with a verified checksum. New callers use ensure-tool.
 
 inputs:
   version:
-    description: yq version to install (e.g. v4.48.1)
+    description: yq version to ensure, exact (e.g. v4.54.1); the version the runner images bake
     required: false
-    default: v4.48.1
+    default: v4.54.1
 
 outputs:
   version:
@@ -16,36 +18,11 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Install yq
-      shell: bash
-      env:
-        YQ_VERSION: ${{ inputs.version }}
-      run: |
-        set -e -x
-        trap 'echo "::endgroup::"' EXIT
-
-        echo "::group::Install wget via apt"
-        sudo apt-get update
-        sudo apt-get install -y wget
-        echo "::endgroup::"
-
-        echo "::group::Resolve yq asset for runner architecture"
-        case "$RUNNER_ARCH" in
-          X64) ASSET_ARCH="amd64" ;;
-          X86) ASSET_ARCH="amd64" ;;
-          ARM64) ASSET_ARCH="arm64" ;;
-          *)
-            echo "Unsupported architecture: $RUNNER_ARCH"
-            exit 1
-            ;;
-        esac
-        OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-        echo "::endgroup::"
-
-        echo "::group::Download yq binary and install to /usr/local/bin"
-        sudo wget -q -O /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_${OS}_${ASSET_ARCH}"
-        sudo chmod +x /usr/local/bin/yq
-        echo "::endgroup::"
+    - name: Ensure yq
+      uses: naviteq/github-actions/.github/actions/ensure-tool@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
+      with:
+        tool: yq
+        version: ${{ inputs.version }}
 
     - name: Verify yq installation
       id: verify

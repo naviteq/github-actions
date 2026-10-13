@@ -133,6 +133,24 @@ on:
       aws_iam_role:
         description: AWS role assumed through OIDC for a profile with no aws_role; this one writes
         required: false
+      oci_oidc_domain_url:
+        description: OCI Identity Domain URL, for a profile with oci_region; also the token audience
+        required: false
+      oci_oidc_client_id:
+        description: OAuth client ID of the identity domain's Confidential Application, for a profile with oci_region
+        required: false
+      oci_oidc_client_secret:
+        description: OAuth client secret of that application; reaches no OCI API on its own
+        required: false
+      oci_tenancy_ocid:
+        description: OCID of the tenancy a profile with oci_region must authenticate into; a mismatch fails the job
+        required: false
+      oci_s3_access_key_id:
+        description: Customer Secret Key ID the S3-compatible state backend signs with, for a profile with oci_region
+        required: false
+      oci_s3_secret_access_key:
+        description: Customer Secret Key secret that goes with oci_s3_access_key_id
+        required: false
       terragrunt_extra_env:
         description: KEY=VALUE lines exported with masked values; with profiles, a job gets only the keys its profile lists
         required: false
@@ -184,7 +202,7 @@ jobs:
       - name: Check the approval comment
         id: approval
         if: inputs.approval == 'issue'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           command: approval
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
@@ -268,7 +286,7 @@ jobs:
 
       - name: Check the plans against the approval
         id: plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           command: plans
           metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
@@ -282,7 +300,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           profiles: ${{ inputs.profiles }}
           units: ${{ steps.plans.outputs.units }}
@@ -310,7 +328,7 @@ jobs:
     needs: verify
     if: needs.verify.outputs.has_changes == 'true'
     runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
-    environment: ${{ inputs.github_environment }}
+    environment: ${{ matrix.leg.environment || inputs.github_environment }}
     permissions:
       contents: read
       actions: read
@@ -334,7 +352,7 @@ jobs:
       - name: Generate a GitHub App token for the private git sources
         id: app-token
         if: env.HAS_GITHUB_APP == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ secrets.naviteq_github_client_id || secrets.naviteq_github_app_id }}
           private-key: ${{ secrets.naviteq_github_app_key }}
@@ -355,7 +373,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -382,7 +400,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/registry-token@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -416,6 +434,19 @@ jobs:
               exit 1
             fi
           done
+
+      # The OIDC subject carries the profile's Environment, which the tenancy's trust rule matches. → docs/terragrunt-plan.md
+      - name: Configure OCI credentials and remote-state access
+        if: matrix.leg.oci_region != ''
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
+        with:
+          region: ${{ matrix.leg.oci_region }}
+          oidc_domain_url: ${{ secrets.oci_oidc_domain_url }}
+          oidc_client_id: ${{ secrets.oci_oidc_client_id }}
+          oidc_client_secret: ${{ secrets.oci_oidc_client_secret }}
+          tenancy_ocid: ${{ secrets.oci_tenancy_ocid }}
+          s3_access_key_id: ${{ secrets.oci_s3_access_key_id }}
+          s3_secret_access_key: ${{ secrets.oci_s3_secret_access_key }}
 
       - name: Turn on the provider cache
         if: inputs.provider_cache
@@ -455,7 +486,7 @@ jobs:
 
       # Every unit before anything is applied, so a later unit cannot see an earlier apply.
       - name: Re-plan and compare with the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           command: run
           phase: check
@@ -469,7 +500,7 @@ jobs:
     needs: [verify, check]
     if: needs.verify.outputs.has_changes == 'true'
     runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
-    environment: ${{ inputs.github_environment }}
+    environment: ${{ matrix.leg.environment || inputs.github_environment }}
     permissions:
       contents: read
       actions: read
@@ -494,7 +525,7 @@ jobs:
       - name: Generate a GitHub App token for the private git sources
         id: app-token
         if: env.HAS_GITHUB_APP == 'true'
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ secrets.naviteq_github_client_id || secrets.naviteq_github_app_id }}
           private-key: ${{ secrets.naviteq_github_app_key }}
@@ -515,7 +546,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -542,7 +573,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/registry-token@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -576,6 +607,19 @@ jobs:
               exit 1
             fi
           done
+
+      # The OIDC subject carries the profile's Environment, which the tenancy's trust rule matches. → docs/terragrunt-plan.md
+      - name: Configure OCI credentials and remote-state access
+        if: matrix.leg.oci_region != ''
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
+        with:
+          region: ${{ matrix.leg.oci_region }}
+          oidc_domain_url: ${{ secrets.oci_oidc_domain_url }}
+          oidc_client_id: ${{ secrets.oci_oidc_client_id }}
+          oidc_client_secret: ${{ secrets.oci_oidc_client_secret }}
+          tenancy_ocid: ${{ secrets.oci_tenancy_ocid }}
+          s3_access_key_id: ${{ secrets.oci_s3_access_key_id }}
+          s3_secret_access_key: ${{ secrets.oci_s3_secret_access_key }}
 
       - name: Turn on the provider cache
         if: inputs.provider_cache
@@ -613,21 +657,13 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/terragrunt-plans
 
-      # A pinned, checksummed release binary: a plan file carries state values in clear.
-      - name: Install age
+      # A checksum-pinned release binary: a plan file carries state values in clear.
+      - name: Ensure age
         if: needs.verify.outputs.destroy != 'true'
-        run: |
-          set -euo pipefail
-          case "${RUNNER_ARCH}" in
-            X64) arch=amd64 sum=cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10 ;;
-            ARM64) arch=arm64 sum=6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4 ;;
-            *) echo "::error title=Unsupported architecture::${RUNNER_ARCH}"; exit 1 ;;
-          esac
-          archive="${RUNNER_TEMP}/age.tar.gz"
-          curl -fsSL -o "${archive}" "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-${arch}.tar.gz"
-          echo "${sum}  ${archive}" | sha256sum -c -
-          tar -xzf "${archive}" -C "${RUNNER_TEMP}"
-          echo "${RUNNER_TEMP}/age" >> "$GITHUB_PATH"
+        uses: naviteq/github-actions/.github/actions/ensure-tool@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
+        with:
+          tool: age
+          version: 1.3.2
 
       - name: Decrypt this profile's plans
         if: needs.verify.outputs.destroy != 'true'
@@ -652,7 +688,7 @@ jobs:
 
       # For a destroy, `destroy` per unit instead of the plan files. → docs/terragrunt-destroy.md
       - name: Apply the saved plans, or destroy the units
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           command: run
           phase: apply
@@ -663,7 +699,7 @@ jobs:
 
       - name: Prove a second plan changes nothing
         if: inputs.verify_clean && needs.verify.outputs.destroy != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@8c3b1160e92b9a77d79761976b65373c4d85aa60
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c73a8c2d68a4416f0e5fbc7dd3d36306c8800bb6
         with:
           command: run
           phase: clean
