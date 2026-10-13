@@ -163,17 +163,25 @@ def totals(rows: list[dict]) -> dict[str, int]:
     return {key: sum(int(row.get(key) or 0) for row in rows if not row.get("error")) for key in COUNT_KEYS}
 
 
-def quiet(rows: list[dict]) -> bool:
-    """Nothing worth a comment or a message: no unit changes and none failed."""
-    return not any(changes(row) or row.get("error") for row in rows)
+def quiet(rows: list[dict], skipped: list[list[str]] | None = None) -> bool:
+    """Nothing worth a comment or a message: no unit changes, none failed and none was left unplanned."""
+    return not skipped and not any(changes(row) or row.get("error") for row in rows)
 
 
 def units(count: int) -> str:
     return f"{count} unit" if count == 1 else f"{count} units"
 
 
-def status(rows: list[dict]) -> tuple[str, str]:
+def status(rows: list[dict], skipped: list[list[str]] | None = None) -> tuple[str, str]:
     """Emoji and one-line outcome for a heading."""
+    emoji, outcome = _status(rows)
+    if not skipped:
+        return emoji, outcome
+    unplanned = f"{units(len(skipped))} not planned"
+    return ("⏭️", unplanned) if not rows else (emoji, f"{outcome} · {unplanned}")
+
+
+def _status(rows: list[dict]) -> tuple[str, str]:
     failed = [row for row in rows if row.get("error")]
     changing = [row for row in rows if changes(row)]
     sums = totals(rows)
@@ -236,7 +244,7 @@ def comment(rows: list[dict], resources: dict[str, list[dict[str, str]]], skippe
             run_url: str, context: dict | None = None, limit: int = COMMENT_LIMIT) -> str:
     """The sticky PR comment: the outcome at a glance, the table, then each changing unit's addresses."""
     context = context or {}
-    emoji, outcome = status(rows)
+    emoji, outcome = status(rows, skipped)
     head = [f"### {emoji} Terragrunt plan: {outcome}", ""]
     line = totals_line(rows)
     if line:
@@ -306,12 +314,12 @@ def section(row: dict, found: list[dict], values: bool = True) -> str:
                       diff_block(found, values), "", "</details>", "", ""])
 
 
-SLACK_COLOR = {"✅": "#2eb886", "📝": "#d4a72c", "⚠️": "#e8912d", "❌": "#e01e5a"}
+SLACK_COLOR = {"✅": "#2eb886", "📝": "#d4a72c", "⚠️": "#e8912d", "❌": "#e01e5a", "⏭️": "#868e96"}
 
 
-def slack_payload(rows: list[dict], context: dict, run_url: str) -> dict:
+def slack_payload(rows: list[dict], context: dict, run_url: str, skipped: list[list[str]] | None = None) -> dict:
     """Counts per unit and links only: a Slack channel is read by more people than the repository."""
-    emoji, outcome = status(rows)
+    emoji, outcome = status(rows, skipped)
     repository = context.get("repository", "")
     pr = context.get("pr")
     commit = str(context.get("commit") or "")[:7]
@@ -338,6 +346,10 @@ def slack_payload(rows: list[dict], context: dict, run_url: str) -> dict:
             lines.append(f"{_unit_status(row)} {unit}  {counts}")
     if len(listed) > SLACK_UNITS:
         lines.append(f"…and {len(listed) - SLACK_UNITS} more")
+    for unit in (skipped or [])[:SLACK_UNITS]:
+        lines.append(f"⏭️ `{unit[0]}`: not planned")
+    if len(skipped or []) > SLACK_UNITS:
+        lines.append(f"…and {len(skipped or []) - SLACK_UNITS} more not planned")
     blocks: list[dict] = [{"type": "header", "text": {"type": "plain_text", "text": head[:150], "emoji": True}},
                           {"type": "section", "fields": fields}]
     if lines:
@@ -389,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
         context = json.loads(args.context_json)
         Path(args.comment_file).write_text(comment(rows, resources, skipped, args.run_url, context), encoding="utf-8")
     if args.slack_file:
-        payload = slack_payload(rows, json.loads(args.context_json), args.run_url)
+        payload = slack_payload(rows, json.loads(args.context_json), args.run_url, skipped)
         Path(args.slack_file).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     if os.environ.get("GITHUB_OUTPUT"):
@@ -397,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
             out.write(f"changes={json.dumps(rows, separators=(',', ':'))}\n")
             out.write(f"has_changes={'true' if has_changes(rows) else 'false'}\n")
             out.write(f"handed_over={'true' if handed_over else 'false'}\n")
-            out.write(f"quiet={'true' if quiet(rows) else 'false'}\n")
+            out.write(f"quiet={'true' if quiet(rows, skipped) else 'false'}\n")
     return 0
 
 

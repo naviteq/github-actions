@@ -56,6 +56,11 @@ on:
         required: false
         type: string
         default: ""
+      config_file:
+        description: YAML file with env_vars and credential profiles, relative to the repository root; replaces the profiles and env_vars inputs
+        required: false
+        type: string
+        default: ""
       profiles:
         description: YAML credential profiles, as in terragrunt-plan, naming the read-only roles
         required: false
@@ -153,7 +158,7 @@ permissions: {}
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@e49717b3fbc4a89133e9f38ac157fa74aa0318ee
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@0e5ef4e77d2725780b97a6a0069c913936b5b75c
     permissions:
       contents: read
       id-token: write
@@ -171,6 +176,7 @@ jobs:
       github_environment: ${{ inputs.github_environment }}
       aws_region: ${{ inputs.aws_region }}
       profiles: ${{ inputs.profiles }}
+      config_file: ${{ inputs.config_file }}
       env_vars: ${{ inputs.env_vars }}
       # Nothing is kept for an apply: a drift plan is a report, not a change to approve.
       plan_recipient: ""
@@ -207,7 +213,7 @@ jobs:
 
       - name: Reconcile the drift issues
         id: drift
-        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@e49717b3fbc4a89133e9f38ac157fa74aa0318ee
+        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@0e5ef4e77d2725780b97a6a0069c913936b5b75c
         with:
           changes: ${{ needs.plan.outputs.changes }}
           counts_dir: counts

@@ -60,6 +60,11 @@ on:
         required: false
         type: string
         default: ""
+      config_file:
+        description: YAML file with env_vars and credential profiles, relative to the repository root; replaces the profiles and env_vars inputs
+        required: false
+        type: string
+        default: ""
       profiles:
         description: YAML credential profiles, as in terragrunt-plan, naming the roles that plan the destroy
         required: false
@@ -160,7 +165,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@e49717b3fbc4a89133e9f38ac157fa74aa0318ee
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@0e5ef4e77d2725780b97a6a0069c913936b5b75c
     permissions:
       contents: read
       id-token: write
@@ -180,6 +185,7 @@ jobs:
       github_environment: ${{ inputs.github_environment }}
       aws_region: ${{ inputs.aws_region }}
       profiles: ${{ inputs.profiles }}
+      config_file: ${{ inputs.config_file }}
       env_vars: ${{ inputs.env_vars }}
       pr_comment: false
       artifact_retention_days: ${{ inputs.artifact_retention_days }}
@@ -225,7 +231,7 @@ jobs:
 
       - name: Open the issue that gates the destroy
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@e49717b3fbc4a89133e9f38ac157fa74aa0318ee
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@0e5ef4e77d2725780b97a6a0069c913936b5b75c
         with:
           command: request
           sha: ${{ github.sha }}

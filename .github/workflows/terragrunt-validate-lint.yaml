@@ -61,6 +61,11 @@ on:
         required: false
         type: string
         default: ""
+      config_file:
+        description: YAML file with env_vars and credential profiles, relative to the repository root; replaces the profiles and env_vars inputs
+        required: false
+        type: string
+        default: ""
       env_vars:
         description: Non-secret KEY=VALUE lines exported before the checks, e.g. a placeholder OCI_NAMESPACE for get_env()
         required: false
@@ -154,6 +159,15 @@ jobs:
         with:
           fetch-depth: ${{ (inputs.filter_affected || inputs.filter != '') && '0' || '1' }}
 
+      # → docs/terragrunt-plan.md#config-file
+      - name: Read the config file
+        id: config
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@0e5ef4e77d2725780b97a6a0069c913936b5b75c
+        with:
+          config_file: ${{ inputs.config_file }}
+          mode: plan
+          env_vars: ${{ inputs.env_vars }}
+
       - name: Generate a GitHub App token for the private git sources
         id: app-token
         if: env.HAS_GITHUB_APP == 'true'
@@ -178,7 +192,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@e49717b3fbc4a89133e9f38ac157fa74aa0318ee
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@0e5ef4e77d2725780b97a6a0069c913936b5b75c
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -205,7 +219,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@e49717b3fbc4a89133e9f38ac157fa74aa0318ee
+        uses: naviteq/github-actions/.github/actions/registry-token@0e5ef4e77d2725780b97a6a0069c913936b5b75c
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -213,7 +227,7 @@ jobs:
       # KEY=VALUE lines for get_env() and other registries. → docs/terragrunt-validate-lint.md
       - name: Export env_vars and TERRAGRUNT_EXTRA_ENV
         env:
-          PLAIN_ENV: ${{ inputs.env_vars }}
+          PLAIN_ENV: ${{ steps.config.outputs.env_vars }}
           SECRET_ENV: ${{ secrets.terragrunt_extra_env }}
         run: |
           set -euo pipefail
@@ -262,7 +276,7 @@ jobs:
 
       - name: Ensure tflint
         if: inputs.tflint
-        uses: naviteq/github-actions/.github/actions/ensure-tool@e49717b3fbc4a89133e9f38ac157fa74aa0318ee
+        uses: naviteq/github-actions/.github/actions/ensure-tool@0e5ef4e77d2725780b97a6a0069c913936b5b75c
         with:
           tool: tflint
           version: ${{ steps.tflint-version.outputs.version }}
@@ -320,7 +334,7 @@ jobs:
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@e49717b3fbc4a89133e9f38ac157fa74aa0318ee
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@0e5ef4e77d2725780b97a6a0069c913936b5b75c
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}

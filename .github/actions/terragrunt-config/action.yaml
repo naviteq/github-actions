@@ -1,0 +1,60 @@
+---
+name: Terragrunt config
+description: >
+  Read the caller's Terragrunt config file, env_vars and credential profiles, resolved for
+  plan or apply; without a file, pass the inline inputs through.
+
+inputs:
+  config_file:
+    description: YAML file with env_vars and profiles, relative to the repository root; empty uses the inline inputs
+    required: false
+    default: ""
+  mode:
+    description: plan or apply, the half of each mode-split profile value to keep
+    required: true
+  profiles:
+    description: Inline profiles input; must be empty when config_file is set
+    required: false
+    default: ""
+  env_vars:
+    description: Inline env_vars input; must be empty when config_file is set
+    required: false
+    default: ""
+
+outputs:
+  profiles:
+    description: The profiles for this mode, as YAML (JSON) the terragrunt-plan-profiles action reads
+    value: ${{ steps.read.outputs.profiles }}
+  env_vars:
+    description: KEY=VALUE lines to export
+    value: ${{ steps.read.outputs.env_vars }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the config file
+      id: read
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CONFIG_FILE: ${{ inputs.config_file }}
+        MODE: ${{ inputs.mode }}
+        PROFILES: ${{ inputs.profiles }}
+        ENV_VARS: ${{ inputs.env_vars }}
+      run: |
+        set -euo pipefail
+        args=(--mode "${MODE}" --profiles "${PROFILES}" --env-vars "${ENV_VARS}")
+        if [ -n "${CONFIG_FILE}" ]; then
+          if [ ! -f "${CONFIG_FILE}" ]; then
+            echo "::error title=No config file::${CONFIG_FILE} is not a file in this checkout."
+            exit 1
+          fi
+          if ! command -v yq >/dev/null; then
+            echo "::error title=yq not found::the config file is YAML and this runner has no yq to read it."
+            exit 1
+          fi
+          json="${RUNNER_TEMP}/terragrunt-config.json"
+          yq -o=json '.' "${CONFIG_FILE}" > "${json}"
+          args+=(--config-json "${json}")
+        fi
+        python3 "${ACTION_PATH}/config.py" "${args[@]}"
