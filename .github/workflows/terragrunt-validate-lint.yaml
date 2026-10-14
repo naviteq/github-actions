@@ -76,6 +76,11 @@ on:
         required: false
         type: boolean
         default: true
+      module_cache:
+        description: Restore the module sources Terragrunt downloads, and save them on a push to the default branch
+        required: false
+        type: boolean
+        default: true
       allow_failure:
         description: Run every check and report each outcome instead of stopping at the first failure
         required: false
@@ -140,6 +145,8 @@ jobs:
       HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
       # CAS resolves git refs over SSH and never sees the insteadOf rewrite. → docs/validate-oke.md
       TG_NO_CAS: "1"
+      # Caches are saved by a push to the default branch only, so PRs share one entry. → terraform-modules ADR-0036
+      SAVE_CACHE: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch }}
     outputs:
       outcome: ${{ (steps.engine-fmt.outcome == 'failure' || steps.hcl-fmt.outcome == 'failure' || steps.stack-generate.outcome == 'failure' || steps.hcl-validate.outcome == 'failure' || steps.tflint.outcome == 'failure') && 'failure' || 'success' }}
       engine_fmt: ${{ steps.engine-fmt.outcome }}
@@ -162,7 +169,7 @@ jobs:
       # → docs/terragrunt-plan.md#config-file
       - name: Read the config file
         id: config
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           config_file: ${{ inputs.config_file }}
           mode: plan
@@ -192,7 +199,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -219,7 +226,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/registry-token@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -276,7 +283,7 @@ jobs:
 
       - name: Ensure tflint
         if: inputs.tflint
-        uses: naviteq/github-actions/.github/actions/ensure-tool@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/ensure-tool@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           tool: tflint
           version: ${{ steps.tflint-version.outputs.version }}
@@ -295,9 +302,10 @@ jobs:
           echo "::add-matcher::${matcher}"
 
       # Keyed by architecture: the runner pool mixes amd64 and arm64.
-      - name: Cache the tflint plugins
+      - name: Restore the tflint plugins
+        id: tflint-cache
         if: inputs.tflint
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.tflint.d/plugins
           key: tflint-plugins-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('{0}/**/.tflint.hcl', inputs.working_directory)) }}
@@ -320,6 +328,13 @@ jobs:
           echo "::endgroup::"
           tflint "${args[@]}"
 
+      - name: Save the tflint plugins
+        if: inputs.tflint && env.SAVE_CACHE == 'true' && steps.tflint-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.tflint.d/plugins
+          key: ${{ steps.tflint-cache.outputs.cache-primary-key }}
+
       # Last, so the checks above read committed files and not .terragrunt-cache.
       - name: Generate the stacks
         id: stack-generate
@@ -334,11 +349,20 @@ jobs:
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
           filter_affected: ${{ inputs.filter_affected }}
+
+      # After tflint, which would otherwise lint the restored third-party modules.
+      - name: Restore the module sources
+        id: module-cache
+        if: inputs.validate_inputs && inputs.module_cache
+        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
+        with:
+          mode: restore
+          working_directory: ${{ inputs.working_directory }}
 
       - name: Validate the inputs
         id: hcl-validate
@@ -366,4 +390,14 @@ jobs:
             done <<< "${UNITS}"
           fi
           terragrunt "${args[@]}"
+
+      - name: Save the module sources
+        if: >-
+          inputs.validate_inputs && inputs.module_cache && env.SAVE_CACHE == 'true'
+          && steps.module-cache.outputs.cache_hit != 'true'
+        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
+        with:
+          mode: save
+          working_directory: ${{ inputs.working_directory }}
+          key: ${{ steps.module-cache.outputs.primary_key }}
 

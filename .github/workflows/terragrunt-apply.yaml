@@ -161,7 +161,7 @@ on:
         required: false
     outputs:
       applied:
-        description: true when every approved plan was applied
+        description: true when every approved plan was applied; false when a profile left units to apply by hand
         value: ${{ jobs.result.outputs.applied }}
       units:
         description: The units whose plans were applied, in run order, one per line
@@ -187,6 +187,7 @@ jobs:
       APPROVAL: ${{ inputs.approval }}
     outputs:
       legs: ${{ steps.profiles.outputs.legs }}
+      skipped: ${{ steps.profiles.outputs.skipped }}
       units: ${{ steps.plans.outputs.units }}
       has_changes: ${{ steps.plans.outputs.has_changes }}
       destroy: ${{ steps.plans.outputs.destroy }}
@@ -208,7 +209,7 @@ jobs:
       - name: Check the approval comment
         id: approval
         if: inputs.approval == 'issue'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           command: approval
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
@@ -262,7 +263,7 @@ jobs:
       # → docs/terragrunt-plan.md#config-file
       - name: Read the config file
         id: config
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           config_file: ${{ inputs.config_file }}
           mode: apply
@@ -302,7 +303,7 @@ jobs:
 
       - name: Check the plans against the approval
         id: plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           command: plans
           metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
@@ -316,14 +317,14 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           profiles: ${{ steps.config.outputs.profiles }}
           units: ${{ steps.plans.outputs.units }}
           aws_region: ${{ inputs.aws_region }}
 
       - name: Mark the gate issue as applying
-        if: inputs.approval == 'issue' && steps.plans.outputs.waiting != 'true'
+        if: inputs.approval == 'issue' && steps.plans.outputs.waiting != 'true' && steps.profiles.outputs.legs != '[]'
         env:
           ISSUE: ${{ steps.approval.outputs.issue }}
           LABEL: ${{ inputs.label }}
@@ -342,7 +343,8 @@ jobs:
   check:
     name: Check ${{ matrix.leg.name }}
     needs: verify
-    if: needs.verify.outputs.has_changes == 'true'
+    # A matrix over no legs fails before it starts. → docs/terragrunt-apply.md#units-ci-does-not-apply
+    if: needs.verify.outputs.has_changes == 'true' && needs.verify.outputs.legs != '[]'
     runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
     environment: ${{ matrix.leg.environment || inputs.github_environment }}
     permissions:
@@ -389,7 +391,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -416,7 +418,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/registry-token@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -454,7 +456,7 @@ jobs:
       # The OIDC subject carries the profile's Environment, which the tenancy's trust rule matches. → docs/terragrunt-plan.md
       - name: Configure OCI credentials and remote-state access
         if: matrix.leg.oci_region != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           region: ${{ matrix.leg.oci_region }}
           oidc_domain_url: ${{ secrets.oci_oidc_domain_url }}
@@ -502,7 +504,7 @@ jobs:
 
       # Every unit before anything is applied, so a later unit cannot see an earlier apply.
       - name: Re-plan and compare with the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           command: run
           phase: check
@@ -514,7 +516,7 @@ jobs:
   apply:
     name: Apply ${{ matrix.leg.name }}
     needs: [verify, check]
-    if: needs.verify.outputs.has_changes == 'true'
+    if: needs.verify.outputs.has_changes == 'true' && needs.verify.outputs.legs != '[]'
     runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
     environment: ${{ matrix.leg.environment || inputs.github_environment }}
     permissions:
@@ -562,7 +564,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -589,7 +591,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/registry-token@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -627,7 +629,7 @@ jobs:
       # The OIDC subject carries the profile's Environment, which the tenancy's trust rule matches. → docs/terragrunt-plan.md
       - name: Configure OCI credentials and remote-state access
         if: matrix.leg.oci_region != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           region: ${{ matrix.leg.oci_region }}
           oidc_domain_url: ${{ secrets.oci_oidc_domain_url }}
@@ -676,7 +678,7 @@ jobs:
       # A checksum-pinned release binary: a plan file carries state values in clear.
       - name: Ensure age
         if: needs.verify.outputs.destroy != 'true'
-        uses: naviteq/github-actions/.github/actions/ensure-tool@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/ensure-tool@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           tool: age
           version: 1.3.2
@@ -704,7 +706,7 @@ jobs:
 
       # For a destroy, `destroy` per unit instead of the plan files. → docs/terragrunt-destroy.md
       - name: Apply the saved plans, or destroy the units
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           command: run
           phase: apply
@@ -715,7 +717,7 @@ jobs:
 
       - name: Prove a second plan changes nothing
         if: inputs.verify_clean && needs.verify.outputs.destroy != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           command: run
           phase: clean
@@ -743,21 +745,29 @@ jobs:
           DESTROY: ${{ needs.verify.outputs.destroy }}
           REASON: ${{ needs.verify.outputs.reason }}
           WAITING: ${{ needs.verify.outputs.waiting }}
+          LEGS: ${{ needs.verify.outputs.legs }}
+          SKIPPED: ${{ needs.verify.outputs.skipped }}
           ACTOR: ${{ github.event.comment.user.login }}
         run: |
           set -euo pipefail
           verb=apply; done_text="✅ **Applied** every saved plan."
           if [ "${DESTROY}" = "true" ]; then verb=destroy; done_text="✅ **Destroyed** every planned unit."; fi
+          # Units a profile skips for this mode: `unit` (reason), comma-separated.
+          by_hand="$(awk -F '\t' 'NF >= 3 { printf "%s`%s` (%s)", (n++ ? ", " : ""), $1, $3 }' <<< "${SKIPPED}")"
           if [ "${VERIFY}" = "success" ] && [ "${WAITING}" = "true" ]; then
             state=waiting; text="⏳ **Approved by @${ACTOR}, waiting for a second approver:** ${REASON}. Nothing was applied yet."
           elif [ "${VERIFY}" != "success" ]; then
             state=refused; text="⛔ **Refused:** ${REASON:-the approval or the plans did not check out}."
           elif [ "${HAS_CHANGES}" != "true" ]; then
             state=applied; text="✅ **Nothing to ${verb}:** no plan changes anything."
+          elif [ "${LEGS}" = "[]" ]; then
+            state=by-hand; text="✋ **Nothing CI can ${verb}:** ${by_hand:-every unit is skipped for ${verb}}. Nothing was touched; ${verb} these units by hand, then close this issue."
           elif [ "${CHECK}" != "success" ]; then
             state=refused; text="⛔ **Refused:** a unit would now change differently than planned. Nothing was touched; re-plan it."
           elif [ "${APPLY}" != "success" ]; then
             state=failed; text="❌ **The ${verb} failed.** The run shows which units were done."
+          elif [ -n "${by_hand}" ]; then
+            state=by-hand; text="${done_text%.} CI can ${verb}. ✋ **Still to ${verb} by hand:** ${by_hand}. Close this issue once they are done."
           else
             state=applied; text="${done_text}"
           fi
@@ -806,6 +816,7 @@ jobs:
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/${ISSUE}" -f state=closed -f state_reason=completed > /dev/null
           fi
 
+      # By hand is a profile's decision, not a failure.
       - name: Fail unless applied
-        if: steps.outcome.outputs.applied != 'true' && steps.outcome.outputs.state != 'waiting'
+        if: steps.outcome.outputs.applied != 'true' && steps.outcome.outputs.state != 'waiting' && steps.outcome.outputs.state != 'by-hand'
         run: exit 1

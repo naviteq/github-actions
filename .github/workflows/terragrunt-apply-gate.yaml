@@ -66,6 +66,11 @@ on:
         required: false
         type: string
         default: ""
+      config_file:
+        description: The config file the apply reads, relative to the repository root; units its apply profiles skip get an apply-by-hand issue instead of an approval
+        required: false
+        type: string
+        default: ""
       replan:
         description: When only the base moved between the plan and the merge, output the units to plan again instead of opening a blocking issue; chain terragrunt-replan on the replan output
         required: false
@@ -85,7 +90,7 @@ on:
         required: false
     outputs:
       state:
-        description: nothing, no-changes, pending, replan or blocked
+        description: nothing, no-changes, pending, by-hand, replan or blocked
         value: ${{ jobs.gate.outputs.state }}
       issue:
         description: The issue opened, if any
@@ -151,7 +156,7 @@ jobs:
 
       - name: Find the merged pull request and its plans
         id: find
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           command: find
           sha: ${{ github.sha }}
@@ -169,9 +174,41 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/terragrunt-plans
 
+      # The apply-mode profiles: a unit they skip gets no approval command. → docs/terragrunt-apply.md#units-ci-does-not-apply
+      - name: Read the apply profiles
+        id: config
+        if: steps.find.outputs.artifact_id != '' && inputs.config_file != ''
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
+        with:
+          config_file: ${{ inputs.config_file }}
+          mode: apply
+
+      - name: List the planned units
+        id: planned
+        if: steps.config.outcome == 'success'
+        env:
+          METADATA: ${{ runner.temp }}/terragrunt-plans/metadata.json
+        run: |
+          set -euo pipefail
+          {
+            echo "units<<GATE_UNITS_EOF"
+            jq -r '.units[] | select(.deleted | not) | .unit' "${METADATA}"
+            echo "GATE_UNITS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # An unmatched unit fails the apply itself; the issue still opens.
+      - name: Find the units CI does not apply
+        id: apply-profiles
+        if: steps.config.outcome == 'success'
+        continue-on-error: true
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
+        with:
+          profiles: ${{ steps.config.outputs.profiles }}
+          units: ${{ steps.planned.outputs.units }}
+
       - name: Open the approval issue, or say why there is none
         id: decide
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           command: decide
           sha: ${{ github.sha }}
@@ -189,6 +226,7 @@ jobs:
           plan_state: ${{ steps.find.outputs.plan_state }}
           base_commit: ${{ steps.tree.outputs.base }}
           replan: ${{ inputs.replan }}
+          apply_skipped: ${{ steps.apply-profiles.outputs.skipped }}
 
   # The default branch is the only place a cache entry every pull request can read is saved.
   warm:
@@ -203,7 +241,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -212,7 +250,7 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/registry-token@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -226,7 +264,7 @@ jobs:
 
       - name: Warm the provider cache from the lock files
         if: steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@2f64810b72bfd1f1b4180fa0d5c4f2802c614be3
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
