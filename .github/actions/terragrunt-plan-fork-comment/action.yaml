@@ -1,0 +1,168 @@
+---
+name: Terragrunt plan fork comment
+description: >
+  Post the pull-request comment and the Slack summary of a fork's Terragrunt plan from the base
+  repository, which a fork's read-only token cannot. Runs on workflow_run, renders the report the
+  plan run bundled as data, and comments only on the open pull request whose head is that run's commit.
+
+inputs:
+  github_token:
+    description: Token with actions read and pull-requests write in the base repository; empty uses github.token
+    required: false
+    default: ""
+  pr_comment:
+    description: Keep one comment on the pull request with the counts and every changed resource
+    required: false
+    default: "true"
+  slack_notify:
+    description: Post the outcome and counts per unit to Slack through slack_webhook
+    required: false
+    default: "false"
+  slack_webhook:
+    description: Slack incoming-webhook URL; empty posts nothing
+    required: false
+    default: ""
+  report_no_changes:
+    description: Comment and post also when nothing changes, nothing failed and no unit was skipped
+    required: false
+    default: "false"
+  artifact_name:
+    description: The report artifact to render; empty takes the run's only artifact named *-fork-report
+    required: false
+    default: ""
+  run_id:
+    description: The plan run that left the report; empty takes the workflow_run event's
+    required: false
+    default: ""
+  head_repository:
+    description: owner/name of the repository the plan run's commit came from; empty takes the workflow_run event's
+    required: false
+    default: ""
+  head_branch:
+    description: Branch the plan run's commit came from; empty takes the workflow_run event's
+    required: false
+    default: ""
+  head_sha:
+    description: Commit the plan run planned, which must still be the pull request's head; empty takes the workflow_run event's
+    required: false
+    default: ""
+
+outputs:
+  pr:
+    description: Number of the pull request the report belongs to; empty when there was nothing to post
+    value: ${{ steps.find.outputs.pr }}
+  quiet:
+    description: true when nothing changes and nothing failed, so nothing new was posted
+    value: ${{ steps.result.outputs.quiet }}
+  comment_file:
+    description: The rendered comment; empty when there was nothing to post
+    value: ${{ steps.find.outputs.pr != '' && format('{0}/terragrunt-plan-fork-comment.md', runner.temp) || '' }}
+
+runs:
+  using: composite
+  steps:
+    # The report is the fork's data; who and where come from the base repository only.
+    - name: Find the report and its pull request
+      id: find
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+        HEAD_REPOSITORY: ${{ inputs.head_repository || github.event.workflow_run.head_repository.full_name }}
+        HEAD_BRANCH: ${{ inputs.head_branch || github.event.workflow_run.head_branch }}
+        HEAD_SHA: ${{ inputs.head_sha || github.event.workflow_run.head_sha }}
+        ARTIFACT_NAME: ${{ inputs.artifact_name }}
+      with:
+        github-token: ${{ inputs.github_token || github.token }}
+        script: |
+          const { RUN_ID, HEAD_REPOSITORY, HEAD_BRANCH, HEAD_SHA, ARTIFACT_NAME } = process.env;
+          if (!RUN_ID || !HEAD_REPOSITORY || !HEAD_BRANCH || !HEAD_SHA) {
+            core.notice('No plan run of a pull request to report on.');
+            return;
+          }
+          const { owner, repo } = context.repo;
+          const artifacts = (await github.paginate(github.rest.actions.listWorkflowRunArtifacts,
+            { owner, repo, run_id: Number(RUN_ID), per_page: 100 }))
+            .filter((a) => !a.expired && (ARTIFACT_NAME ? a.name === ARTIFACT_NAME : a.name.endsWith('-fork-report')));
+          if (artifacts.length === 0) {
+            core.notice(`Run ${RUN_ID} left no fork report: not a fork's pull request, or nothing to post.`);
+            return;
+          }
+          if (artifacts.length > 1) {
+            core.setFailed(`Run ${RUN_ID} left ${artifacts.length} fork reports (${artifacts.map((a) => a.name).join(', ')}); pick one with artifact_name.`);
+            return;
+          }
+          const pulls = await github.paginate(github.rest.pulls.list,
+            { owner, repo, state: 'open', head: `${HEAD_REPOSITORY.split('/')[0]}:${HEAD_BRANCH}`, per_page: 100 });
+          const pr = pulls.find((p) => p.head.repo?.full_name === HEAD_REPOSITORY);
+          if (!pr) {
+            core.notice(`No open pull request from ${HEAD_REPOSITORY}:${HEAD_BRANCH}.`);
+            return;
+          }
+          if (pr.head.sha !== HEAD_SHA) {
+            core.notice(`#${pr.number} has moved on from ${HEAD_SHA}; the run for its new head reports instead.`);
+            return;
+          }
+          core.setOutput('pr', String(pr.number));
+          core.setOutput('artifact', artifacts[0].name);
+          core.setOutput('run_id', RUN_ID);
+          core.setOutput('head_sha', HEAD_SHA);
+
+    - name: Download the report
+      if: steps.find.outputs.pr != ''
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+      with:
+        name: ${{ steps.find.outputs.artifact }}
+        path: ${{ runner.temp }}/terragrunt-plan-fork-report
+        run-id: ${{ steps.find.outputs.run_id }}
+        repository: ${{ github.repository }}
+        github-token: ${{ inputs.github_token || github.token }}
+
+    - name: Render the comment and the Slack message
+      id: result
+      if: steps.find.outputs.pr != ''
+      uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@3a8d88494ca5a3d1981eff268a9106d163fb1067
+      with:
+        report_in: ${{ runner.temp }}/terragrunt-plan-fork-report
+        context_json: >-
+          {"repository": "${{ github.repository }}", "pr": ${{ steps.find.outputs.pr }}, "head_sha": "${{ steps.find.outputs.head_sha }}"}
+        run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.find.outputs.run_id }}
+        comment_file: ${{ runner.temp }}/terragrunt-plan-fork-comment.md
+        slack_file: ${{ inputs.slack_notify == 'true' && format('{0}/terragrunt-plan-fork-slack.json', runner.temp) || '' }}
+
+    - name: Comment on the pull request
+      if: steps.find.outputs.pr != '' && inputs.pr_comment == 'true'
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        COMMENT_FILE: ${{ runner.temp }}/terragrunt-plan-fork-comment.md
+        MARKER: terragrunt-plan:${{ steps.result.outputs.working_directory }}
+        ISSUE_NUMBER: ${{ steps.find.outputs.pr }}
+        # A clean run posts nothing new, but corrects a comment an earlier push left.
+        SILENT: ${{ steps.result.outputs.quiet == 'true' && inputs.report_no_changes != 'true' }}
+      with:
+        github-token: ${{ inputs.github_token || github.token }}
+        script: |
+          const fs = require('fs');
+          const marker = `<!-- ${process.env.MARKER} -->`;
+          const body = `${marker}\n${fs.readFileSync(process.env.COMMENT_FILE, 'utf8')}`;
+          const { owner, repo } = context.repo;
+          const issue_number = Number(process.env.ISSUE_NUMBER);
+          const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+          const mine = comments.find((c) => c.user?.type === 'Bot' && c.body?.startsWith(marker));
+          if (mine) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body });
+          } else if (process.env.SILENT !== 'true') {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body });
+          }
+
+    # Counts and links only, never addresses or values. → docs/terragrunt-plan.md
+    - name: Post the summary to Slack
+      if: >-
+        steps.find.outputs.pr != '' && inputs.slack_notify == 'true' && inputs.slack_webhook != ''
+        && (steps.result.outputs.quiet != 'true' || inputs.report_no_changes == 'true')
+      continue-on-error: true
+      uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4
+      with:
+        errors: true
+        webhook: ${{ inputs.slack_webhook }}
+        webhook-type: incoming-webhook
+        payload-file-path: ${{ runner.temp }}/terragrunt-plan-fork-slack.json
