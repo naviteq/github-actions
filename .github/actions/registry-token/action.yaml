@@ -1,16 +1,23 @@
 ---
 name: Registry token
 description: >
-  Exchange the Runestra registry client credentials for a short-lived token and
-  export it under every name OpenTofu, Terragrunt and helm read it from.
+  Export a Runestra registry token under every name OpenTofu, Terragrunt and
+  helm read it from. A static token is exported as is; client credentials are
+  exchanged for a short-lived one, which costs an Auth0 machine-to-machine token.
 
 inputs:
+  token:
+    description: Static Runestra registry token; when set, client_id and client_secret are ignored
+    required: false
+    default: ""
   client_id:
     description: Runestra registry client id
-    required: true
+    required: false
+    default: ""
   client_secret:
     description: Runestra registry client secret
-    required: true
+    required: false
+    default: ""
   registry_url:
     description: Registry base URL
     required: false
@@ -19,31 +26,36 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Exchange the client credentials
+    - name: Resolve the registry token
       shell: bash
       env:
+        STATIC_TOKEN: ${{ inputs.token }}
         CLIENT_ID: ${{ inputs.client_id }}
         CLIENT_SECRET: ${{ inputs.client_secret }}
         REGISTRY_URL: ${{ inputs.registry_url }}
       run: |
         set -euo pipefail
 
-        if [ -z "${CLIENT_ID}" ] || [ -z "${CLIENT_SECRET}" ]; then
-          echo "::error title=No registry credentials::RUNESTRA_CLIENT_ID and RUNESTRA_CLIENT_SECRET are empty in this repository."
-          exit 1
-        fi
+        if [ -n "${STATIC_TOKEN}" ]; then
+          token="${STATIC_TOKEN}"
+        else
+          if [ -z "${CLIENT_ID}" ] || [ -z "${CLIENT_SECRET}" ]; then
+            echo "::error title=No registry credentials::Pass a static token, or both RUNESTRA_CLIENT_ID and RUNESTRA_CLIENT_SECRET."
+            exit 1
+          fi
 
-        # JSON, not form-encoded: the registry answers 415 to anything else.
-        payload="$(jq -cn --arg id "${CLIENT_ID}" --arg secret "${CLIENT_SECRET}" '{client_id:$id, client_secret:$secret}')"
-        if ! response="$(curl -fsSL -X POST -H 'Content-Type: application/json' -d "${payload}" "${REGISTRY_URL}/api/v1/auth")"; then
-          echo "::error title=Registry refused the credentials::${REGISTRY_URL} did not issue a token."
-          exit 1
-        fi
+          # JSON, not form-encoded: the registry answers 415 to anything else.
+          payload="$(jq -cn --arg id "${CLIENT_ID}" --arg secret "${CLIENT_SECRET}" '{client_id:$id, client_secret:$secret}')"
+          if ! response="$(curl -fsSL -X POST -H 'Content-Type: application/json' -d "${payload}" "${REGISTRY_URL}/api/v1/auth")"; then
+            echo "::error title=Registry refused the credentials::${REGISTRY_URL} did not issue a token."
+            exit 1
+          fi
 
-        token="$(printf '%s' "${response}" | jq -r '.access_token // empty')"
-        if [ -z "${token}" ]; then
-          echo "::error title=No token in the response::The registry answered without an access_token."
-          exit 1
+          token="$(printf '%s' "${response}" | jq -r '.access_token // empty')"
+          if [ -z "${token}" ]; then
+            echo "::error title=No token in the response::The registry answered without an access_token."
+            exit 1
+          fi
         fi
 
         echo "::add-mask::${token}"

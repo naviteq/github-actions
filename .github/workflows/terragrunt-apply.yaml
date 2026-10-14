@@ -135,6 +135,9 @@ on:
       runestra_client_secret:
         description: Runestra registry client secret
         required: false
+      runestra_registry_token:
+        description: Static Runestra registry token; preferred over the client id and secret, which cost an Auth0 token per job
+        required: false
       aws_iam_role:
         description: AWS role assumed through OIDC for a profile with no aws_role; this one writes
         required: false
@@ -209,7 +212,7 @@ jobs:
       - name: Check the approval comment
         id: approval
         if: inputs.approval == 'issue'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           command: approval
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
@@ -263,7 +266,7 @@ jobs:
       # → docs/terragrunt-plan.md#config-file
       - name: Read the config file
         id: config
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           config_file: ${{ inputs.config_file }}
           mode: apply
@@ -303,7 +306,7 @@ jobs:
 
       - name: Check the plans against the approval
         id: plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           command: plans
           metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
@@ -317,7 +320,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           profiles: ${{ steps.config.outputs.profiles }}
           units: ${{ steps.plans.outputs.units }}
@@ -357,7 +360,7 @@ jobs:
         leg: ${{ fromJSON(needs.verify.outputs.legs) }}
     env:
       HAS_GITHUB_APP: ${{ secrets.naviteq_github_client_id != '' || secrets.naviteq_github_app_id != '' }}
-      HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
+      HAS_REGISTRY_AUTH: ${{ secrets.runestra_registry_token != '' || secrets.runestra_client_id != '' }}
       TG_NO_CAS: "1"
       # Skips the init that breaks under the provider cache. → see docs/terragrunt-plan.md
       TG_DEPENDENCY_FETCH_OUTPUT_FROM_STATE: ${{ inputs.dependency_outputs_from_state }}
@@ -391,7 +394,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -416,10 +419,11 @@ jobs:
           role-session-name: gh-terragrunt-apply-${{ github.run_id }}-${{ matrix.leg.name }}
           aws-region: ${{ matrix.leg.aws_region }}
 
-      - name: Exchange the registry client credentials for a token
-        if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+      - name: Resolve the registry token
+        if: env.HAS_REGISTRY_AUTH == 'true'
+        uses: naviteq/github-actions/.github/actions/registry-token@d6f73484d848864781f193b0c433a39bf49c680e
         with:
+          token: ${{ secrets.runestra_registry_token }}
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
@@ -456,7 +460,7 @@ jobs:
       # The OIDC subject carries the profile's Environment, which the tenancy's trust rule matches. → docs/terragrunt-plan.md
       - name: Configure OCI credentials and remote-state access
         if: matrix.leg.oci_region != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           region: ${{ matrix.leg.oci_region }}
           oidc_domain_url: ${{ secrets.oci_oidc_domain_url }}
@@ -504,7 +508,7 @@ jobs:
 
       # Every unit before anything is applied, so a later unit cannot see an earlier apply.
       - name: Re-plan and compare with the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           command: run
           phase: check
@@ -530,7 +534,7 @@ jobs:
         leg: ${{ fromJSON(needs.verify.outputs.legs) }}
     env:
       HAS_GITHUB_APP: ${{ secrets.naviteq_github_client_id != '' || secrets.naviteq_github_app_id != '' }}
-      HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
+      HAS_REGISTRY_AUTH: ${{ secrets.runestra_registry_token != '' || secrets.runestra_client_id != '' }}
       TG_NO_CAS: "1"
       # Skips the init that breaks under the provider cache. → see docs/terragrunt-plan.md
       TG_DEPENDENCY_FETCH_OUTPUT_FROM_STATE: ${{ inputs.dependency_outputs_from_state }}
@@ -564,7 +568,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -589,10 +593,11 @@ jobs:
           role-session-name: gh-terragrunt-apply-${{ github.run_id }}-${{ matrix.leg.name }}
           aws-region: ${{ matrix.leg.aws_region }}
 
-      - name: Exchange the registry client credentials for a token
-        if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+      - name: Resolve the registry token
+        if: env.HAS_REGISTRY_AUTH == 'true'
+        uses: naviteq/github-actions/.github/actions/registry-token@d6f73484d848864781f193b0c433a39bf49c680e
         with:
+          token: ${{ secrets.runestra_registry_token }}
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
@@ -629,7 +634,7 @@ jobs:
       # The OIDC subject carries the profile's Environment, which the tenancy's trust rule matches. → docs/terragrunt-plan.md
       - name: Configure OCI credentials and remote-state access
         if: matrix.leg.oci_region != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           region: ${{ matrix.leg.oci_region }}
           oidc_domain_url: ${{ secrets.oci_oidc_domain_url }}
@@ -678,7 +683,7 @@ jobs:
       # A checksum-pinned release binary: a plan file carries state values in clear.
       - name: Ensure age
         if: needs.verify.outputs.destroy != 'true'
-        uses: naviteq/github-actions/.github/actions/ensure-tool@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/ensure-tool@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           tool: age
           version: 1.3.2
@@ -706,7 +711,7 @@ jobs:
 
       # For a destroy, `destroy` per unit instead of the plan files. → docs/terragrunt-destroy.md
       - name: Apply the saved plans, or destroy the units
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           command: run
           phase: apply
@@ -717,7 +722,7 @@ jobs:
 
       - name: Prove a second plan changes nothing
         if: inputs.verify_clean && needs.verify.outputs.destroy != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           command: run
           phase: clean

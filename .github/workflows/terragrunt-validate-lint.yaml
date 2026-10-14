@@ -102,6 +102,9 @@ on:
       runestra_client_secret:
         description: Runestra registry client secret
         required: false
+      runestra_registry_token:
+        description: Static Runestra registry token; preferred over the client id and secret, which cost an Auth0 token per job
+        required: false
       aws_iam_role:
         description: AWS role assumed through OIDC when aws_region is set
         required: false
@@ -142,7 +145,7 @@ jobs:
       id-token: write
     env:
       HAS_GITHUB_APP: ${{ secrets.naviteq_github_client_id != '' || secrets.naviteq_github_app_id != '' }}
-      HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
+      HAS_REGISTRY_AUTH: ${{ secrets.runestra_registry_token != '' || secrets.runestra_client_id != '' }}
       # CAS resolves git refs over SSH and never sees the insteadOf rewrite. → docs/validate-oke.md
       TG_NO_CAS: "1"
       # Caches are saved by a push to the default branch only, so PRs share one entry. → terraform-modules ADR-0036
@@ -169,7 +172,7 @@ jobs:
       # → docs/terragrunt-plan.md#config-file
       - name: Read the config file
         id: config
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           config_file: ${{ inputs.config_file }}
           mode: plan
@@ -199,7 +202,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -224,10 +227,11 @@ jobs:
           role-session-name: gh-terragrunt-validate-${{ github.run_id }}
           aws-region: ${{ inputs.aws_region }}
 
-      - name: Exchange the registry client credentials for a token
-        if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+      - name: Resolve the registry token
+        if: env.HAS_REGISTRY_AUTH == 'true'
+        uses: naviteq/github-actions/.github/actions/registry-token@d6f73484d848864781f193b0c433a39bf49c680e
         with:
+          token: ${{ secrets.runestra_registry_token }}
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
@@ -283,7 +287,7 @@ jobs:
 
       - name: Ensure tflint
         if: inputs.tflint
-        uses: naviteq/github-actions/.github/actions/ensure-tool@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/ensure-tool@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           tool: tflint
           version: ${{ steps.tflint-version.outputs.version }}
@@ -349,7 +353,7 @@ jobs:
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -359,7 +363,7 @@ jobs:
       - name: Restore the module sources
         id: module-cache
         if: inputs.validate_inputs && inputs.module_cache
-        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           mode: restore
           working_directory: ${{ inputs.working_directory }}
@@ -395,7 +399,7 @@ jobs:
         if: >-
           inputs.validate_inputs && inputs.module_cache && env.SAVE_CACHE == 'true'
           && steps.module-cache.outputs.cache_hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           mode: save
           working_directory: ${{ inputs.working_directory }}

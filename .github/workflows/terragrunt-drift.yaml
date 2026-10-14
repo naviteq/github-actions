@@ -122,6 +122,9 @@ on:
       runestra_client_secret:
         description: Runestra registry client secret
         required: false
+      runestra_registry_token:
+        description: Static Runestra registry token; preferred over the client id and secret, which cost an Auth0 token per job
+        required: false
       aws_iam_role:
         description: AWS role assumed through OIDC when aws_region is set; read-only is enough
         required: false
@@ -158,7 +161,7 @@ permissions: {}
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@d6f73484d848864781f193b0c433a39bf49c680e
     permissions:
       contents: read
       id-token: write
@@ -213,7 +216,7 @@ jobs:
 
       - name: Reconcile the drift issues
         id: drift
-        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           changes: ${{ needs.plan.outputs.changes }}
           counts_dir: counts

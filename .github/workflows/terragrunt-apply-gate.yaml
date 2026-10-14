@@ -88,6 +88,9 @@ on:
       runestra_client_secret:
         description: Runestra registry client secret
         required: false
+      runestra_registry_token:
+        description: Static Runestra registry token; preferred over the client id and secret, which cost an Auth0 token per job
+        required: false
     outputs:
       state:
         description: nothing, no-changes, pending, by-hand, replan or blocked
@@ -156,7 +159,7 @@ jobs:
 
       - name: Find the merged pull request and its plans
         id: find
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           command: find
           sha: ${{ github.sha }}
@@ -178,7 +181,7 @@ jobs:
       - name: Read the apply profiles
         id: config
         if: steps.find.outputs.artifact_id != '' && inputs.config_file != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           config_file: ${{ inputs.config_file }}
           mode: apply
@@ -201,14 +204,14 @@ jobs:
         id: apply-profiles
         if: steps.config.outcome == 'success'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           profiles: ${{ steps.config.outputs.profiles }}
           units: ${{ steps.planned.outputs.units }}
 
       - name: Open the approval issue, or say why there is none
         id: decide
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           command: decide
           sha: ${{ github.sha }}
@@ -236,22 +239,23 @@ jobs:
     permissions:
       contents: read
     env:
-      HAS_REGISTRY_CLIENT: ${{ secrets.runestra_client_id != '' }}
+      HAS_REGISTRY_AUTH: ${{ secrets.runestra_registry_token != '' || secrets.runestra_client_id != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
           opentofu_version: ${{ inputs.opentofu_version }}
           terraform_version: ${{ inputs.terraform_version }}
 
-      - name: Exchange the registry client credentials for a token
-        if: env.HAS_REGISTRY_CLIENT == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+      - name: Resolve the registry token
+        if: env.HAS_REGISTRY_AUTH == 'true'
+        uses: naviteq/github-actions/.github/actions/registry-token@d6f73484d848864781f193b0c433a39bf49c680e
         with:
+          token: ${{ secrets.runestra_registry_token }}
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
@@ -264,7 +268,7 @@ jobs:
 
       - name: Warm the provider cache from the lock files
         if: steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@d6f73484d848864781f193b0c433a39bf49c680e
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
