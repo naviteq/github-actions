@@ -163,7 +163,7 @@ on:
         required: false
     outputs:
       state:
-        description: pending when an issue was opened, no-changes when the re-plan changes nothing
+        description: pending when an issue was opened, by-hand when CI applies none of its units, no-changes when the re-plan changes nothing
         value: ${{ jobs.request.outputs.state }}
       issue:
         description: The issue opened, if any
@@ -181,7 +181,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
     permissions:
       contents: read
       id-token: write
@@ -247,9 +247,46 @@ jobs:
           artifact-ids: ${{ steps.artifact.outputs.id }}
           path: ${{ runner.temp }}/terragrunt-plans
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: inputs.config_file != ''
+        with:
+          ref: ${{ inputs.ref }}
+
+      # The apply-mode profiles: a unit they skip gets no approval command. → docs/terragrunt-apply.md#units-ci-does-not-apply
+      - name: Read the apply profiles
+        id: config
+        if: inputs.config_file != ''
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        with:
+          config_file: ${{ inputs.config_file }}
+          mode: apply
+
+      - name: List the planned units
+        id: planned
+        if: steps.config.outcome == 'success'
+        env:
+          METADATA: ${{ runner.temp }}/terragrunt-plans/metadata.json
+        run: |
+          set -euo pipefail
+          {
+            echo "units<<GATE_UNITS_EOF"
+            jq -r '.units[] | select(.deleted | not) | .unit' "${METADATA}"
+            echo "GATE_UNITS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # An unmatched unit fails the apply itself; the issue still opens.
+      - name: Find the units CI does not apply
+        id: apply-profiles
+        if: steps.config.outcome == 'success'
+        continue-on-error: true
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
+        with:
+          profiles: ${{ steps.config.outputs.profiles }}
+          units: ${{ steps.planned.outputs.units }}
+
       - name: Open the issue that gates the apply
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@b9927b47bcc38b2e6a12debaeb4aca7968c432c3
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@e7c29745c3409c3e41df1cd90ce85e530fa4cb6e
         with:
           command: request
           action: apply
@@ -260,3 +297,4 @@ jobs:
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
           second_approver_cost: ${{ inputs.second_approver_cost || vars.TERRAGRUNT_APPLY_SECOND_APPROVER_COST }}
           label: ${{ inputs.label }}
+          apply_skipped: ${{ steps.apply-profiles.outputs.skipped }}

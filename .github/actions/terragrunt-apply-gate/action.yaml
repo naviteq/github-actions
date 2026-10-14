@@ -84,6 +84,10 @@ inputs:
     description: For decide and request, the label prefix of gate issues
     required: false
     default: terragrunt-apply
+  apply_skipped:
+    description: For decide and an apply request, the skipped output of terragrunt-plan-profiles run on the apply-mode profiles
+    required: false
+    default: ""
 
 outputs:
   pr:
@@ -105,7 +109,7 @@ outputs:
     description: found, running, failed or missing
     value: ${{ steps.gate.outputs.plan_state }}
   state:
-    description: nothing, no-changes, pending, replan or blocked
+    description: nothing, no-changes, pending, by-hand, replan or blocked
     value: ${{ steps.gate.outputs.state }}
   issue:
     description: The issue opened, if any
@@ -154,6 +158,7 @@ runs:
         LABEL: ${{ inputs.label }}
         REPLAN: ${{ inputs.replan }}
         ACTION: ${{ inputs.action }}
+        APPLY_SKIPPED: ${{ inputs.apply_skipped }}
       run: |
         set -euo pipefail
         script="${ACTION_PATH}/gate.py"
@@ -166,10 +171,11 @@ runs:
               --artifact-id "${ARTIFACT_ID}" --metadata "${METADATA}" --tree "${TREE}" --changed "${CHANGED}" \
               --working-directory "${WORKING_DIRECTORY}" --approvers "${APPROVERS}" --label "${LABEL}" \
               --plan-state "${PLAN_STATE}" --base-commit "${BASE_COMMIT}" \
-              --second-approver-cost "${SECOND_APPROVER_COST}" --replan "${REPLAN}" ;;
+              --second-approver-cost "${SECOND_APPROVER_COST}" --replan "${REPLAN}" \
+              --apply-skipped "${APPLY_SKIPPED}" ;;
           request)
             python3 "${script}" request --action "${ACTION}" --artifact-id "${ARTIFACT_ID}" --metadata "${METADATA}" \
               --approvers "${APPROVERS}" --label "${LABEL}" --pr "${PR}" --pr-url "${PR_URL}" \
-              --second-approver-cost "${SECOND_APPROVER_COST}" ;;
+              --second-approver-cost "${SECOND_APPROVER_COST}" --apply-skipped "${APPLY_SKIPPED}" ;;
           *) echo "::error title=Unknown command::${COMMAND}"; exit 1 ;;
         esac

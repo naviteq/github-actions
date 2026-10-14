@@ -1,0 +1,87 @@
+---
+name: Terragrunt module cache
+description: >
+  Restore or save the module sources Terragrunt downloads into .terragrunt-cache, scrubbed
+  of the unit files and generated files a run writes over them.
+
+inputs:
+  mode:
+    description: restore, or save after terragrunt hcl validate --inputs --all has run
+    required: true
+  working_directory:
+    description: Directory Terragrunt ran in, relative to the repository root
+    required: false
+    default: "."
+  layout:
+    description: Where restore puts the sources, root for hcl validate or unit for run --all
+    required: false
+    default: root
+  key:
+    description: Key to save under; pass the primary_key output of the restore
+    required: false
+    default: ""
+
+outputs:
+  cache_hit:
+    description: true when the restore matched the primary key exactly
+    value: ${{ steps.restore.outputs.cache-hit }}
+  primary_key:
+    description: The key the restore looked up, to save under
+    value: ${{ steps.restore.outputs.cache-primary-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the mode
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        KEY: ${{ inputs.key }}
+      run: |
+        case "${MODE}" in
+          restore) ;;
+          save) [ -n "${KEY}" ] || { echo "::error title=No cache key::mode save needs the key the restore returned."; exit 1; } ;;
+          *) echo "::error title=Unknown mode::mode is '${MODE}'; use restore or save."; exit 1 ;;
+        esac
+
+    # A prefix hit is safe: Terragrunt re-downloads any source whose version changed. → docs/terragrunt-validate-lint.md
+    - name: Restore the module sources
+      id: restore
+      if: inputs.mode == 'restore'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/terragrunt-modules
+        key: terragrunt-modules-${{ runner.os }}-${{ hashFiles(format('{0}/**/*.hcl', inputs.working_directory), format('!{0}/**/.terragrunt-cache/**', inputs.working_directory)) }}
+        restore-keys: |
+          terragrunt-modules-${{ runner.os }}-
+
+    - name: Put the sources where Terragrunt looks for them
+      if: inputs.mode == 'restore'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        LAYOUT: ${{ inputs.layout }}
+      run: |
+        python3 "${ACTION_PATH}/module_cache.py" unpack --working-directory "${WORKING_DIRECTORY}" \
+          --store "${RUNNER_TEMP}/terragrunt-modules" --layout "${LAYOUT}"
+
+    # A generated provider block can hold a token read with get_env().
+    - name: Scrub the sources and move them into the store
+      id: pack
+      if: inputs.mode == 'save'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+      run: |
+        python3 "${ACTION_PATH}/module_cache.py" pack --working-directory "${WORKING_DIRECTORY}" \
+          --store "${RUNNER_TEMP}/terragrunt-modules"
+
+    # An empty entry would become the newest prefix match for every pull request.
+    - name: Save the module sources
+      if: inputs.mode == 'save' && steps.pack.outputs.sources != '0'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/terragrunt-modules
+        key: ${{ inputs.key }}

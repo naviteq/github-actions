@@ -2,8 +2,8 @@
 """After a merge, find the pull request's saved plans and open the issue that gates their apply.
 
 `find` resolves the merged pull request and its plan artifact; `decide` checks the plan
-against the merged tree and opens the approval issue, hands a moved base on to a re-plan,
-or says why it cannot; `request` opens the issue that gates a requested destroy or a
+against the merged tree and opens the approval issue (or an apply-by-hand one when CI may
+apply none of its units), hands a moved base on to a re-plan, or says why it cannot; `request` opens the issue that gates a requested destroy or a
 re-planned apply. It lives
 beside its action, not in scripts/, because the public mirror copies actions only.
 → docs/terragrunt-apply.md
@@ -241,8 +241,30 @@ def _facts(*parts: str) -> str:
     return " · ".join(part for part in parts if part)
 
 
+def apply_skipped(metadata: dict, lines: str) -> list[dict]:
+    """The changing units an apply-mode profile skips, from the profiles action's skipped lines."""
+    reasons = {}
+    for line in lines.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0].strip():
+            reasons[parts[0].strip()] = parts[2].strip()
+    return [{"unit": u["unit"], "reason": reasons[u["unit"]]} for u in metadata.get("units", [])
+            if u["unit"] in reasons and any(u.get(key) for key in COUNT_KEYS)]
+
+
+def only_by_hand(metadata: dict, by_hand: list[dict] | None) -> bool:
+    """Every changing unit is skipped for apply, so an approval could only be refused."""
+    return bool(by_hand) and len(by_hand or []) == sum(1 for u in metadata.get("units", [])
+                                                       if any(u.get(key) for key in COUNT_KEYS))
+
+
+def _by_hand_list(skipped: list[dict]) -> str:
+    return ", ".join(f"`{s['unit']}` ({s['reason']})" for s in skipped)
+
+
 def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, run_url: str,
-               base_commit: str = "", second_approver_cost: float | None = None) -> str:
+               base_commit: str = "", second_approver_cost: float | None = None,
+               by_hand: list[dict] | None = None) -> str:
     """The approval issue: what would change, who may approve, and the exact command."""
     changing = [u for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
     destroys = sum(int(u.get("destroy") or 0) + int(u.get("replace") or 0) for u in changing)
@@ -250,11 +272,18 @@ def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, 
     pr = marker["source_pr"] if replanned else marker["pr"]
     planned = (f"Re-planned at `{marker['commit'][:7]}`, after the base moved under the PR's plan" if replanned
                else f"Merged as `{marker['commit'][:7]}`")
-    lines = [f"<!-- {MARKER}: {json.dumps(marker, separators=(',', ':'))} -->",
-             f"## 🚦 Apply waiting for approval: [PR #{pr}]({pr_url})", "",
-             _facts(planned, f"[Plan run]({run_url})", f"artifact `{metadata['artifact']}`"),
-             "", *_approve_block("apply", marker["artifact_id"], approvers,
-                                 second_approver_reason(metadata, second_approver_cost)), ""]
+    manual = only_by_hand(metadata, by_hand)  # → docs/terragrunt-apply.md#units-ci-does-not-apply
+    if manual:
+        head = [f"## ✋ Apply by hand: [PR #{pr}]({pr_url})", "",
+                _facts(planned, f"[Plan run]({run_url})", f"artifact `{metadata['artifact']}`"), "",
+                "> [!IMPORTANT]", f"> CI does not apply these units: {_by_hand_list(by_hand or [])}.",
+                f"> Apply them by hand from `{marker['commit'][:7]}`, then close this issue.", ""]
+    else:
+        head = [f"## 🚦 Apply waiting for approval: [PR #{pr}]({pr_url})", "",
+                _facts(planned, f"[Plan run]({run_url})", f"artifact `{metadata['artifact']}`"),
+                "", *_approve_block("apply", marker["artifact_id"], approvers,
+                                    second_approver_reason(metadata, second_approver_cost)), ""]
+    lines = [f"<!-- {MARKER}: {json.dumps(marker, separators=(',', ':'))} -->", *head]
     total = totals_line(changing)
     if total:
         lines += [total, ""]
@@ -275,6 +304,11 @@ def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, 
     if metadata.get("skipped"):
         lines += ["> [!NOTE]", "> Not planned: "
                   + ", ".join(f"`{s['unit']}` ({s['reason']})" for s in metadata["skipped"]) + ".", ""]
+    if manual:
+        return "\n".join(lines)
+    if by_hand:
+        lines += ["> [!NOTE]", f"> Not applied by CI: {_by_hand_list(by_hand)}. Apply them by hand; the issue "
+                  "stays open for them after the rest is applied.", ""]
     lines += ["<details><summary>What happens on approval</summary>", "",
               "Every unit is planned again first. If any unit would now change differently from the table above, "
               "nothing is applied and the issue is refused. Otherwise the saved plans are applied, one credential "
@@ -444,7 +478,14 @@ def cmd_decide(args: argparse.Namespace) -> int:
               "working_directory": args.working_directory}
     run_url = f"{args.server_url}/{args.repo}/actions/runs/{metadata['plan_run_id']}"
     threshold = float(args.second_approver_cost) if args.second_approver_cost.strip() else None
-    body = issue_body(metadata, marker, approvers_of(args.approvers), args.pr_url, run_url, args.base_commit, threshold)
+    by_hand = apply_skipped(metadata, args.apply_skipped)
+    body = issue_body(metadata, marker, approvers_of(args.approvers), args.pr_url, run_url, args.base_commit, threshold,
+                      by_hand)
+    if only_by_hand(metadata, by_hand):
+        number = open_issue(args, f"Terragrunt apply by hand: PR #{pr}", body, "by-hand")
+        comment_on_pr(args, pr, f"✋ Merged. CI does not apply its units; apply them by hand, see #{number}.")
+        write_outputs(state="by-hand", issue=number)
+        return 0
     two = ("two-approvers",) if second_approver_reason(metadata, threshold) else ()
     number = open_issue(args, f"Terragrunt apply: PR #{pr}", body, "pending", two)
     comment_on_pr(args, pr, f"🚦 Merged. Applying its plans waits for approval in #{number}.")
@@ -467,10 +508,18 @@ def request_apply(args: argparse.Namespace, metadata: dict) -> int:
     run_url = f"{args.server_url}/{args.repo}/actions/runs/{metadata['plan_run_id']}"
     pr_url = args.pr_url or (f"{args.server_url}/{args.repo}/pull/{pr}" if pr else run_url)
     threshold = float(args.second_approver_cost) if args.second_approver_cost.strip() else None
-    body = issue_body(metadata, marker, approvers_of(args.approvers), pr_url, run_url, "", threshold)
+    by_hand = apply_skipped(metadata, args.apply_skipped)
+    body = issue_body(metadata, marker, approvers_of(args.approvers), pr_url, run_url, "", threshold, by_hand)
+    title = f"PR #{pr} (re-planned)" if pr else f"{metadata['commit'][:7]} (re-planned)"
+    if only_by_hand(metadata, by_hand):
+        number = open_issue(args, f"Terragrunt apply by hand: {title}", body, "by-hand")
+        if pr:
+            comment_on_pr(args, pr, f"✋ Planned again after the merge. CI does not apply its units; apply them by "
+                          f"hand, see #{number}.")
+        write_outputs(state="by-hand", issue=number)
+        return 0
     two = ("two-approvers",) if second_approver_reason(metadata, threshold) else ()
-    title = f"Terragrunt apply: PR #{pr} (re-planned)" if pr else f"Terragrunt apply: {metadata['commit'][:7]} (re-planned)"
-    number = open_issue(args, title, body, "pending", two)
+    number = open_issue(args, f"Terragrunt apply: {title}", body, "pending", two)
     if pr:
         comment_on_pr(args, pr, f"🚦 Planned again after the merge. Applying waits for approval in #{number}.")
     write_outputs(state="pending", issue=number)
@@ -528,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
     decide.add_argument("--second-approver-cost", default="", help="Monthly cost delta above which two approve")
     decide.add_argument("--base-commit", default="", help="The merge's first parent, where deleted units still exist")
     decide.add_argument("--replan", default="false", help="true hands a moved base on to a re-plan instead of blocking")
+    decide.add_argument("--apply-skipped", default="", help="unit<TAB>profile<TAB>reason lines an apply profile skips")
     request = sub.add_parser("request")
     request.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     request.add_argument("--server-url", default=os.environ.get("GITHUB_SERVER_URL", "https://github.com"))
@@ -540,6 +590,7 @@ def main(argv: list[str] | None = None) -> int:
     request.add_argument("--pr", default="", help="For a re-planned apply, the pull request it belongs to")
     request.add_argument("--pr-url", default="")
     request.add_argument("--second-approver-cost", default="", help="Monthly cost delta above which two approve")
+    request.add_argument("--apply-skipped", default="", help="For an apply, the lines an apply profile skips")
     args = parser.parse_args(argv)
     return {"find": cmd_find, "decide": cmd_decide, "request": cmd_request}[args.command](args)
 
