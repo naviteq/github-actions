@@ -8,6 +8,9 @@ only. → docs/terragrunt-plan.md
 
     python3 .github/actions/terragrunt-plan-result/result.py --counts-dir counts \\
         --plans-dir plans --units "$UNITS" --context-json "$CONTEXT" --comment-file comment.md
+
+A fork's run bundles the same inputs with --report-out; the base repository renders them
+with --report-in, reading the bundle as data only.
 """
 
 from __future__ import annotations
@@ -15,6 +18,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -22,6 +27,9 @@ COMMENT_LIMIT = 60000
 SLACK_UNITS = 20
 COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
 SIGN = {"create": "+", "update": "!", "replace": "-/+", "delete": "-"}
+REPORT_FILES = ("*.counts.json", "*.resources.json", "*.costs.json")
+# Only these facts come from a fork's bundle; who and where are the base repository's.
+REPORT_CONTEXT = ("commit", "working_directory")
 
 
 def diff_lines(found: list[dict], values: bool = True) -> list[str]:
@@ -369,9 +377,38 @@ def _lines(value: str) -> list[str]:
     return [line for line in value.splitlines() if line.strip()]
 
 
+def write_report(report_dir: Path, counts_dir: Path, units: list[str], skipped: list[list[str]],
+                 context: dict) -> None:
+    """What the comment is rendered from, for the base repository to render a fork's comment."""
+    target = report_dir / "counts"
+    target.mkdir(parents=True, exist_ok=True)
+    for pattern in REPORT_FILES:
+        for path in sorted(counts_dir.glob(pattern)) if counts_dir.is_dir() else []:
+            shutil.copyfile(path, target / path.name)
+    data = {"schema": 1, "units": units, "skipped": skipped,
+            "context": {key: context[key] for key in REPORT_CONTEXT if key in context}}
+    (report_dir / "report.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def read_report(report_dir: Path) -> tuple[Path, list[str], list[list[str]], dict]:
+    """A fork's bundle, kept to the shapes write_report makes."""
+    data = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("schema") != 1:
+        raise SystemExit(f"{report_dir}/report.json is not a schema 1 plan report")
+    units = [str(unit) for unit in data.get("units") or []]
+    skipped = [[str(cell) for cell in row] for row in data.get("skipped") or [] if isinstance(row, list)]
+    context = data.get("context") if isinstance(data.get("context"), dict) else {}
+    return report_dir / "counts", units, skipped, {key: str(context[key]) for key in REPORT_CONTEXT if key in context}
+
+
+def safe_path(value: str) -> str:
+    """A directory name fit for a one-line output and an HTML comment marker."""
+    return re.sub(r"[^A-Za-z0-9._/-]", "", value)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--counts-dir", required=True)
+    parser.add_argument("--counts-dir", default="")
     parser.add_argument("--plans-dir", default="", help="Downloaded encrypted plans, if any; gets manifest.tsv and metadata.json")
     parser.add_argument("--units", default="")
     parser.add_argument("--skipped", default="")
@@ -379,30 +416,40 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-url", default="")
     parser.add_argument("--comment-file", default="")
     parser.add_argument("--slack-file", default="", help="Write the Slack message payload here, as JSON")
+    parser.add_argument("--report-out", default="", help="Bundle the comment's inputs here, for a fork's pull request")
+    parser.add_argument("--report-in", default="", help="Render a bundle a fork's run made; --context-json wins over it")
     args = parser.parse_args(argv)
+    if bool(args.counts_dir) == bool(args.report_in):
+        parser.error("give exactly one of --counts-dir and --report-in")
 
-    counts_dir = Path(args.counts_dir)
-    rows = merge_counts(counts_dir, _lines(args.units)) if counts_dir.is_dir() else []
+    if args.report_in:
+        counts_dir, unit_list, skipped, bundled = read_report(Path(args.report_in))
+        context = {**bundled, **json.loads(args.context_json)}
+    else:
+        counts_dir, unit_list = Path(args.counts_dir), _lines(args.units)
+        skipped = [line.split("\t") for line in _lines(args.skipped)]
+        context = json.loads(args.context_json)
+    rows = merge_counts(counts_dir, unit_list) if counts_dir.is_dir() else []
     resources = merge_resources(counts_dir) if counts_dir.is_dir() else {}
     for unit, cost in (merge_costs(counts_dir) if counts_dir.is_dir() else {}).items():
         for row in rows:
             if row["unit"] == unit:
                 row["cost"] = cost
-    skipped = [line.split("\t") for line in _lines(args.skipped)]
     handed_over = False
     # Also with nothing planned: the gate must tell "nothing to apply" from "never planned".
     if args.plans_dir:
         Path(args.plans_dir).mkdir(parents=True, exist_ok=True)
         manifest = join_manifests(Path(args.plans_dir))
-        data = metadata(json.loads(args.context_json), rows, manifest, skipped, resources)
+        data = metadata(context, rows, manifest, skipped, resources)
         (Path(args.plans_dir) / "metadata.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         handed_over = True
     if args.comment_file:
-        context = json.loads(args.context_json)
         Path(args.comment_file).write_text(comment(rows, resources, skipped, args.run_url, context), encoding="utf-8")
     if args.slack_file:
-        payload = slack_payload(rows, json.loads(args.context_json), args.run_url, skipped)
+        payload = slack_payload(rows, context, args.run_url, skipped)
         Path(args.slack_file).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    if args.report_out:
+        write_report(Path(args.report_out), counts_dir, unit_list, skipped, context)
 
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
@@ -410,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:
             out.write(f"has_changes={'true' if has_changes(rows) else 'false'}\n")
             out.write(f"handed_over={'true' if handed_over else 'false'}\n")
             out.write(f"quiet={'true' if quiet(rows, skipped) else 'false'}\n")
+            out.write(f"working_directory={safe_path(str(context.get('working_directory') or ''))}\n")
     return 0
 
 

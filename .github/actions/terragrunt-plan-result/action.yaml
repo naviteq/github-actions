@@ -6,8 +6,9 @@ description: >
 
 inputs:
   counts_dir:
-    description: Directory holding every plan job's <profile>.counts.json and <profile>.resources.json
-    required: true
+    description: Directory holding every plan job's <profile>.counts.json and <profile>.resources.json; empty with report_in
+    required: false
+    default: ""
   plans_dir:
     description: Directory for the hand-off to the apply, holding any downloaded encrypted plans; empty hands nothing over
     required: false
@@ -36,6 +37,14 @@ inputs:
     description: File to write the Slack message payload to, as JSON, with counts per unit and links only; empty writes none
     required: false
     default: ""
+  report_out:
+    description: Directory to bundle the counts, units, skipped units and run facts into, for a fork's pull request
+    required: false
+    default: ""
+  report_in:
+    description: Directory of a bundle a fork's run made, rendered instead of counts_dir, units and skipped
+    required: false
+    default: ""
 
 outputs:
   changes:
@@ -50,6 +59,9 @@ outputs:
   quiet:
     description: true when nothing changes and nothing failed, so there is nothing to comment on or post
     value: ${{ steps.result.outputs.quiet }}
+  working_directory:
+    description: The run's working_directory, cut to path characters, for the comment's marker
+    value: ${{ steps.result.outputs.working_directory }}
 
 runs:
   using: composite
@@ -67,8 +79,11 @@ runs:
         RUN_URL: ${{ inputs.run_url }}
         COMMENT_FILE: ${{ inputs.comment_file }}
         SLACK_FILE: ${{ inputs.slack_file }}
+        REPORT_OUT: ${{ inputs.report_out }}
+        REPORT_IN: ${{ inputs.report_in }}
       run: |
         set -euo pipefail
         python3 "${ACTION_PATH}/result.py" --counts-dir "${COUNTS_DIR}" --plans-dir "${PLANS_DIR}" \
           --units "${UNITS}" --skipped "${SKIPPED}" --context-json "${CONTEXT_JSON}" \
-          --run-url "${RUN_URL}" --comment-file "${COMMENT_FILE}" --slack-file "${SLACK_FILE}"
+          --run-url "${RUN_URL}" --comment-file "${COMMENT_FILE}" --slack-file "${SLACK_FILE}" \
+          --report-out "${REPORT_OUT}" --report-in "${REPORT_IN}"

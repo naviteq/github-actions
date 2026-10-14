@@ -23,7 +23,7 @@ runs:
   steps:
     - name: Ensure aws
       id: ensure
-      uses: naviteq/github-actions/.github/actions/ensure-tool@5aeb50bc4c631672723e6b21157d11e35733258f
+      uses: naviteq/github-actions/.github/actions/ensure-tool@3a95364e3eeb766de0bc335bcd2f3a62e85f9a8b
       with:
         tool: aws
         version: ${{ inputs.version }}
