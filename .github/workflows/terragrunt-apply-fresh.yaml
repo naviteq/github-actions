@@ -119,7 +119,7 @@ jobs:
           persist-credentials: ${{ inputs.console_url == '' }}
 
       - name: Install Terragrunt and OpenTofu
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@1f93528f5821e3ba7030c335aabbb5ebe175e968
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@a05cded9871a75435b26944a54af2f2d773c8550
         with:
           terragrunt_version: ${{ inputs.terragrunt_version }}
           opentofu_version: ${{ inputs.opentofu_version }}
@@ -136,14 +136,14 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@1f93528f5821e3ba7030c335aabbb5ebe175e968
+        uses: naviteq/github-actions/.github/actions/registry-token@a05cded9871a75435b26944a54af2f2d773c8550
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
       - name: Get a catalog token from the Console broker
         if: inputs.console_url != ''
-        uses: naviteq/github-actions/.github/actions/catalog-token@1f93528f5821e3ba7030c335aabbb5ebe175e968
+        uses: naviteq/github-actions/.github/actions/catalog-token@a05cded9871a75435b26944a54af2f2d773c8550
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
@@ -192,7 +192,7 @@ jobs:
 
       - name: Select the units to apply, in run order
         id: select
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@1f93528f5821e3ba7030c335aabbb5ebe175e968
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@a05cded9871a75435b26944a54af2f2d773c8550
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -203,7 +203,7 @@ jobs:
       # No saved plan: each unit is planned after its dependencies exist. → docs/terragrunt-apply-fresh.md
       - name: Apply
         id: fresh
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@1f93528f5821e3ba7030c335aabbb5ebe175e968
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@a05cded9871a75435b26944a54af2f2d773c8550
         with:
           command: run
           phase: fresh
