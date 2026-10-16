@@ -18,6 +18,7 @@ import base64
 import hashlib
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -74,6 +75,24 @@ def scrub(cache: Path) -> tuple[int, int]:
     return kept, dropped
 
 
+def make_private(source: Path) -> None:
+    """Give every file below source its own writable inode, so a later download can overwrite it."""
+    # hcl validate ignores TG_NO_CAS and leaves read-only hardlinks. → see docs/terragrunt-validate-lint.md
+    for directory in [source, *(p for p in source.rglob("*") if p.is_dir() and not p.is_symlink())]:
+        directory.chmod(stat.S_IMODE(directory.stat().st_mode) | stat.S_IRWXU)
+    for path in source.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        info = path.stat()
+        if info.st_nlink == 1 and info.st_mode & stat.S_IWUSR:
+            continue
+        copy = path.with_name(f"{path.name}.module-cache")
+        shutil.copyfile(path, copy)
+        copy.chmod(stat.S_IMODE(info.st_mode) | stat.S_IWUSR)
+        os.utime(copy, ns=(info.st_atime_ns, info.st_mtime_ns))
+        os.replace(copy, path)
+
+
 def pack(working_directory: Path, store: Path) -> int:
     cache = working_directory / CACHE_DIR
     kept, dropped = scrub(cache)
@@ -101,6 +120,7 @@ def unpack(working_directory: Path, store: Path, layout: str) -> int:
         for entry in sorted(store.iterdir()):
             if not (cache / entry.name).exists():
                 shutil.move(str(entry), str(cache / entry.name))
+                make_private(cache / entry.name)
                 moved += 1
     else:
         for unit in units(working_directory):
@@ -109,6 +129,7 @@ def unpack(working_directory: Path, store: Path, layout: str) -> int:
             if entry.is_dir() and not target.exists():
                 target.parent.mkdir(exist_ok=True)
                 shutil.move(str(entry), str(target))
+                make_private(target)
                 moved += 1
     print(f"Unpacked the module sources of {moved} units")
     return 0
