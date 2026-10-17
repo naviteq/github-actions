@@ -16,13 +16,16 @@ scripts/, because the public mirror copies actions only. → docs/terragrunt-app
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -316,10 +319,77 @@ def levels(order: list[str], deps: dict[str, set[str]]) -> list[list[str]]:
     return [grouped[level] for level in sorted(grouped)]
 
 
+_EMIT = threading.Lock()
+
+
+class NullSink:
+    """What a run without console_url uses: nothing is sent and nothing is touched."""
+
+    enabled = False
+
+    def emit(self, event_type: str, payload: dict | None = None) -> bool:
+        return False
+
+    def close(self) -> None:
+        return None
+
+
+def build_sink() -> object:
+    """An EventSink from the CONSOLE_* environment, or a NullSink when console_url is empty."""
+    if not os.environ.get("CONSOLE_URL", ""):
+        return NullSink()
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "console-events"))
+        from console_events import EventSink
+    except ImportError:
+        return NullSink()
+    return EventSink(os.environ["CONSOLE_URL"], os.environ.get("CONSOLE_AUDIENCE", ""),
+                     os.environ.get("CONSOLE_RUN_ID", ""))
+
+
+def emit(sink: object, event_type: str, payload: dict) -> None:
+    """Parallel units share one sink; telemetry never fails an apply."""
+    if sink is None:
+        return
+    try:
+        with _EMIT:
+            sink.emit(event_type, payload)
+    except Exception:
+        pass
+
+
+def log_lines_wanted() -> bool:
+    """console_log_lines: on by default once console_url is set."""
+    return os.environ.get("CONSOLE_LOG_LINES", "").strip().lower() not in ("false", "0", "no", "off")
+
+
+def reporting(sink: object) -> bool:
+    return bool(getattr(sink, "enabled", False))
+
+
+def dag_units(root: Path, order: list[str]) -> list[str]:
+    """The selected units in `terragrunt find --dag --json` order, relative to root; any it did not list follow."""
+    try:
+        found = subprocess.run(["terragrunt", "find", "--dag", "--json"], cwd=root.resolve(),
+                               capture_output=True, text=True, check=True).stdout
+        paths = [os.path.normpath(r["path"]) for r in json.loads(found) if r.get("type") == "unit"]
+    except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError):
+        paths = []
+    chosen = set(order)
+    ordered = [p for p in dict.fromkeys(paths) if p in chosen]
+    return ordered + [u for u in order if u not in set(ordered)]
+
+
 _PRINT = threading.Lock()
 
 
-def streamed(unit: str, cwd: Path, *args: str) -> int:
+LOG_LINE_CAP = 4096
+PROGRESS_STATUS = {"apply_start": "started", "apply_progress": "progressing", "apply_complete": "completed",
+                   "apply_errored": "errored"}
+PROGRESS_POLL_SECONDS = 0.5
+
+
+def streamed(unit: str, cwd: Path, *args: str, sink: object = None, log_lines: bool = False) -> int:
     """terragrunt run in one unit, its output prefixed so parallel units stay readable."""
     process = subprocess.Popen(["terragrunt", "run", "--non-interactive", "--", *args], cwd=cwd,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -327,13 +397,93 @@ def streamed(unit: str, cwd: Path, *args: str) -> int:
     for line in process.stdout:
         with _PRINT:
             print(f"[{unit}] {line}", end="", flush=True)
+        if log_lines and reporting(sink) and line.strip():
+            masked = sink.mask(line.rstrip("\r\n")) if hasattr(sink, "mask") else line.rstrip("\r\n")
+            text = masked.encode("utf-8", "replace")[:LOG_LINE_CAP].decode("utf-8", "ignore")
+            emit(sink, "log.line", {"stream": "stdout", "level": "info", "text": text})
     return process.wait()
 
 
-def fresh_unit(root: Path, unit: str, expect: dict, engine: str) -> dict:
+def progress_event(unit: str, raw: str) -> dict | None:
+    """One `-json-into` line as an opentofu.resource.progress payload; None for anything else."""
+    try:
+        message = json.loads(raw)
+        status = PROGRESS_STATUS.get(message["type"])
+        hook = message["hook"]
+        address, action = hook["resource"]["addr"], hook.get("action", "")
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if status is None or not isinstance(address, str) or not isinstance(action, str):
+        return None
+    return {"unit": unit, "address": address, "action": action, "status": status}
+
+
+class ResourceProgress:
+    """Tails OpenTofu's `-json-into` file while an apply runs and forwards resource progress to the sink."""
+
+    def __init__(self, unit: str, sink: object) -> None:
+        self.unit, self.sink = unit, sink
+        self.path = ""
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> "ResourceProgress":
+        handle, self.path = tempfile.mkstemp(prefix="tofu-json-", suffix=".json")
+        os.close(handle)
+        self._thread = threading.Thread(target=self._tail, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=30)
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
+
+    def _forward(self, raw: str) -> None:
+        payload = progress_event(self.unit, raw)
+        if payload is not None:
+            emit(self.sink, "opentofu.resource.progress", payload)
+
+    def _tail(self) -> None:
+        pending = ""
+        try:
+            with open(self.path, encoding="utf-8", errors="replace") as handle:
+                while True:
+                    finished = self._stop.is_set()
+                    data = handle.read()
+                    pending += data
+                    *lines, pending = pending.split("\n")
+                    for raw in lines:
+                        self._forward(raw)
+                    if finished and not data:
+                        break
+                    if not data:
+                        self._stop.wait(PROGRESS_POLL_SECONDS)
+            if pending.strip():
+                self._forward(pending)
+        except Exception:  # a broken tail must never reach the apply
+            pass
+
+
+@functools.lru_cache(maxsize=None)
+def supports_json_into(engine: str) -> bool:
+    """Whether `<engine> apply` takes `-json-into`: OpenTofu 1.13+ only, never terraform. → docs/console-integration.md"""
+    try:
+        shown = subprocess.run([engine, "apply", "-help"], capture_output=True, text=True, check=False, timeout=30)
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return False
+    return "-json-into" in f"{shown.stdout or ''}{shown.stderr or ''}"
+
+
+def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object = None,
+                log_lines: bool = False) -> dict:
     """Plan one unit now, check the plan against the policy, then apply exactly that plan."""
     unit_dir = root / unit
-    if streamed(unit, unit_dir, "plan", "-input=false", "-out=tfplan-fresh") != 0:
+    if streamed(unit, unit_dir, "plan", "-input=false", "-out=tfplan-fresh", sink=sink, log_lines=log_lines) != 0:
         return {"unit": unit, "outcome": "plan failed"}
     plan_file = find_newest(unit_dir, "tfplan-fresh")
     if plan_file is None:
@@ -346,9 +496,40 @@ def fresh_unit(root: Path, unit: str, expect: dict, engine: str) -> dict:
         return {**row, "outcome": "refused", "reason": violation}
     if not any(row[key] for key in COUNT_KEYS):
         return {**row, "outcome": "unchanged"}
-    if streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve())) != 0:
+    if reporting(sink) and supports_json_into(engine):
+        with ResourceProgress(unit, sink) as progress:
+            code = streamed(unit, unit_dir, "apply", "-input=false", f"-json-into={progress.path}",
+                            str(plan_file.resolve()), sink=sink, log_lines=log_lines)
+    elif reporting(sink):
+        code = streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve()), sink=sink,
+                        log_lines=log_lines)
+    else:
+        code = streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve()))
+    if code != 0:
         return {**row, "outcome": "apply failed"}
     return {**row, "outcome": "applied"}
+
+
+FAILURE_REASONS = {"plan failed": "plan_failed", "left no plan": "plan_failed", "refused": "expectation_violated",
+                   "apply failed": "apply_failed"}
+
+
+def fresh_unit(root: Path, unit: str, expect: dict, engine: str, sink: object = None,
+               log_lines: bool = False) -> dict:
+    """fresh_steps, reporting the unit's start and end from its own result row."""
+    emit(sink, "terragrunt.unit.started", {"unit": unit})
+    try:
+        row = fresh_steps(root, unit, expect, engine, sink, log_lines)
+    except Exception:
+        emit(sink, "terragrunt.unit.failed", {"unit": unit, "reason": "plan_failed"})
+        raise
+    if row["outcome"] in ("applied", "unchanged"):
+        emit(sink, "terragrunt.unit.completed", {"unit": unit, "resources_added": row.get("add", 0),
+                                                 "change": row.get("change", 0), "replace": row.get("replace", 0),
+                                                 "destroy": row.get("destroy", 0)})
+    else:
+        emit(sink, "terragrunt.unit.failed", {"unit": unit, "reason": FAILURE_REASONS.get(row["outcome"], "plan_failed")})
+    return row
 
 
 def is_protected(unit_dir: Path) -> bool:
@@ -398,10 +579,12 @@ def dependencies_of(unit: str, deps: dict[str, set[str]]) -> set[str]:
     return found
 
 
+APPLY_PHASE = "Apply the stack"
 SETTLED = {"applied", "destroyed", "unchanged", "protected", "kept"}
 
 
-def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: str, parallelism: int) -> list[dict]:
+def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: str, parallelism: int,
+               sink: object = None, log_lines: bool = False) -> list[dict]:
     """Level by level, dependencies first for fresh and last for destroy; a level that fails anywhere is the last one run.
 
     Like `run --all destroy`, a destroy keeps every prevent_destroy unit and everything it depends on.
@@ -410,6 +593,11 @@ def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: s
     if "max_monthly_cost_delta" in expect:
         raise Refused("max_monthly_cost_delta needs saved plans with a cost estimate; the fresh and destroy phases have none")
     worker = PHASES[phase][0]
+    report = phase == "fresh" and reporting(sink)
+    started = time.monotonic()
+    if report:
+        emit(sink, "run.phase.started", {"phase": APPLY_PHASE})
+        emit(sink, "run.units.seeded", {"units": dag_units(root, order)})
     listing = subprocess.run(["terragrunt", "list", "--long", "--dependencies", "--queue-construct-as", PHASES[phase][2]],
                              cwd=root.resolve(), capture_output=True, text=True, check=True).stdout
     deps = parse_dependencies(listing, order)
@@ -421,7 +609,8 @@ def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: s
                     for unit in group if unit in kept)
         todo = [unit for unit in group if unit not in kept]
         with ThreadPoolExecutor(max_workers=max(1, parallelism)) as pool:
-            done = list(pool.map(lambda unit: worker(root, unit, expect, engine), todo))
+            done = list(pool.map(lambda unit: worker(root, unit, expect, engine, sink=sink, log_lines=log_lines) if report
+                                 else worker(root, unit, expect, engine), todo))
         rows.extend(done)
         for row in done:
             if row["outcome"] == "protected":
@@ -429,6 +618,9 @@ def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: s
                     kept.setdefault(dep, row["unit"])
         if any(row["outcome"] not in SETTLED for row in done):
             break
+    else:
+        if report:
+            emit(sink, "run.phase.completed", {"phase": APPLY_PHASE, "elapsed_seconds": round(time.monotonic() - started)})
     return rows
 
 
@@ -498,7 +690,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "run" and args.phase in PHASES:
             order = [line.strip() for line in args.units.splitlines() if line.strip()]
             expect = json.loads(args.expect_json or "{}")
-            rows = run_levels(args.phase, Path(args.working_directory), order, expect, args.engine, args.parallelism)
+            sink = build_sink() if args.phase == "fresh" else None
+            try:
+                rows = run_levels(args.phase, Path(args.working_directory), order, expect, args.engine,
+                                  args.parallelism, sink=sink, log_lines=log_lines_wanted())
+            finally:
+                if sink is not None:
+                    sink.close()
             report = levels_report(args.phase, rows, order)
             print(report, end="")
             if os.environ.get("GITHUB_STEP_SUMMARY"):
