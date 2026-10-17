@@ -440,7 +440,7 @@ jobs:
 
       - name: Ensure AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/ensure-tool@7015c18f273eb964aa5d587bbe00963b7174625f
+        uses: naviteq/github-actions/.github/actions/ensure-tool@683dad07941f70995dbe2c18fed9a253b892fc88
         with:
           tool: aws
           version: ${{ inputs.aws_cli_version }}
@@ -565,7 +565,7 @@ jobs:
 
       - name: Ensure aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/ensure-tool@7015c18f273eb964aa5d587bbe00963b7174625f
+        uses: naviteq/github-actions/.github/actions/ensure-tool@683dad07941f70995dbe2c18fed9a253b892fc88
         with:
           tool: aws-nuke
           version: ${{ inputs.aws_nuke_version }}
