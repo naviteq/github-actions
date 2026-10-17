@@ -178,6 +178,16 @@ on:
         type: string
         required: false
         default: ""
+      download_artifact:
+        description: Artifact downloaded into the workspace before the build. Used to build another job's output into the image.
+        type: string
+        required: false
+        default: ""
+      download_path:
+        description: Directory the artifact is extracted into, relative to the workspace. Must match the path the producer uploaded from.
+        type: string
+        required: false
+        default: ""
     secrets:
       token:
         description: Registry Token
@@ -234,6 +244,12 @@ jobs:
       - &checkout
         name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download build input artifact
+        if: inputs.download_artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ inputs.download_artifact }}
+          path: ${{ inputs.download_path }}
       - &setup_buildx
         name: Set up Docker Buildx
         # v4.3.0 is the floor: it closed the ENOENT race on ephemeral runners.

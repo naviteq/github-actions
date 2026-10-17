@@ -339,6 +339,9 @@ def output_lines(name: str, change: dict, patterns: list[str]) -> list[list[str]
     was = ABSENT if action == "create" else change.get("before")
     now = ABSENT if action == "delete" else change.get("after")
     if not shown(ch, (name,), was, now):
+        # A deleted output that held null or an empty collection has nothing after it to print.
+        if now is ABSENT:
+            return [line("-", 0, f"{name} = {literal(was)}")]
         return [line("~", 0, f"{name} = {literal(now)}")]
     return attribute(ch, name, (name,), (name,), was, now, 0)
 
