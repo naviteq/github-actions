@@ -16,6 +16,7 @@ scripts/, because the public mirror copies actions only. → docs/terragrunt-app
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -468,6 +469,16 @@ class ResourceProgress:
             pass
 
 
+@functools.lru_cache(maxsize=None)
+def supports_json_into(engine: str) -> bool:
+    """Whether `<engine> apply` takes `-json-into`: OpenTofu 1.13+ only, never terraform. → docs/console-integration.md"""
+    try:
+        shown = subprocess.run([engine, "apply", "-help"], capture_output=True, text=True, check=False, timeout=30)
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return False
+    return "-json-into" in f"{shown.stdout or ''}{shown.stderr or ''}"
+
+
 def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object = None,
                 log_lines: bool = False) -> dict:
     """Plan one unit now, check the plan against the policy, then apply exactly that plan."""
@@ -485,10 +496,13 @@ def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object =
         return {**row, "outcome": "refused", "reason": violation}
     if not any(row[key] for key in COUNT_KEYS):
         return {**row, "outcome": "unchanged"}
-    if reporting(sink):
+    if reporting(sink) and supports_json_into(engine):
         with ResourceProgress(unit, sink) as progress:
             code = streamed(unit, unit_dir, "apply", "-input=false", f"-json-into={progress.path}",
                             str(plan_file.resolve()), sink=sink, log_lines=log_lines)
+    elif reporting(sink):
+        code = streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve()), sink=sink,
+                        log_lines=log_lines)
     else:
         code = streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve()))
     if code != 0:

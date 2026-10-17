@@ -76,6 +76,11 @@ on:
         required: false
         type: boolean
         default: true
+      provider_cache_persist:
+        description: Keep the provider cache in the Actions cache between jobs; false downloads each job's providers once and shares them between its units
+        required: false
+        type: boolean
+        default: true
       provider_cache_registries:
         description: Extra provider registry hostnames to cache, comma-separated, besides the two public ones
         required: false
@@ -161,7 +166,7 @@ permissions: {}
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@59cdba2789f3b0b1a2d14ff0cb44157f2ca18cea
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@b55720315554bb7ba9a1d0b9fb8b1449fadbaccd
     permissions:
       contents: read
       id-token: write
@@ -186,6 +191,7 @@ jobs:
       pr_comment: false
       artifact_name: terragrunt-drift-${{ github.run_id }}-${{ github.run_attempt }}
       provider_cache: ${{ inputs.provider_cache }}
+      provider_cache_persist: ${{ inputs.provider_cache_persist }}
       provider_cache_registries: ${{ inputs.provider_cache_registries }}
       dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
       diff_mask: ${{ inputs.diff_mask }}
@@ -216,7 +222,7 @@ jobs:
 
       - name: Reconcile the drift issues
         id: drift
-        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@59cdba2789f3b0b1a2d14ff0cb44157f2ca18cea
+        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@b55720315554bb7ba9a1d0b9fb8b1449fadbaccd
         with:
           changes: ${{ needs.plan.outputs.changes }}
           counts_dir: counts
