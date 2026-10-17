@@ -189,7 +189,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@3a63c0b64feab869a73908dc6fd20aa1ec16bf36
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@2d98595ae7e74f4eb6837849e4a8a540bae29aee
     permissions:
       contents: read
       id-token: write
@@ -265,7 +265,7 @@ jobs:
       - name: Read the apply profiles
         id: config
         if: inputs.config_file != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@3a63c0b64feab869a73908dc6fd20aa1ec16bf36
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@2d98595ae7e74f4eb6837849e4a8a540bae29aee
         with:
           config_file: ${{ inputs.config_file }}
           mode: apply
@@ -288,14 +288,14 @@ jobs:
         id: apply-profiles
         if: steps.config.outcome == 'success'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@3a63c0b64feab869a73908dc6fd20aa1ec16bf36
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@2d98595ae7e74f4eb6837849e4a8a540bae29aee
         with:
           profiles: ${{ steps.config.outputs.profiles }}
           units: ${{ steps.planned.outputs.units }}
 
       - name: Open the issue that gates the apply
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@3a63c0b64feab869a73908dc6fd20aa1ec16bf36
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@2d98595ae7e74f4eb6837849e4a8a540bae29aee
         with:
           command: request
           action: apply
