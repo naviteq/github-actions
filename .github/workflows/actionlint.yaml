@@ -31,13 +31,13 @@ jobs:
 
       # On PATH before raven-actions/actionlint, so it skips its unpinned pipx and sudo apt installs. → see docs/actionlint.md
       - name: Ensure pyflakes
-        uses: naviteq/github-actions/.github/actions/ensure-tool@b18a6f4e50ab550f37837a43aa67719a6d191b86
+        uses: naviteq/github-actions/.github/actions/ensure-tool@03038ee09f925b785a79eb72b9e2d29c5857153a
         with:
           tool: pyflakes
           version: 4.0.3
 
       - name: Ensure shellcheck
-        uses: naviteq/github-actions/.github/actions/ensure-tool@b18a6f4e50ab550f37837a43aa67719a6d191b86
+        uses: naviteq/github-actions/.github/actions/ensure-tool@03038ee09f925b785a79eb72b9e2d29c5857153a
         with:
           tool: shellcheck
           version: 0.11.0
@@ -58,6 +58,6 @@ jobs:
 
       - name: Validate local actions
         if: ${{ always() }}
-        uses: naviteq/github-actions/.github/actions/action-lint@b18a6f4e50ab550f37837a43aa67719a6d191b86
+        uses: naviteq/github-actions/.github/actions/action-lint@03038ee09f925b785a79eb72b9e2d29c5857153a
         with:
           actions: .github/actions/*/action.y*ml

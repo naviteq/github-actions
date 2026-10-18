@@ -20,7 +20,7 @@ runs:
   steps:
     # → see docs/setup-boilerplate.md
     - name: Ensure boilerplate ${{ inputs.version }}
-      uses: naviteq/github-actions/.github/actions/ensure-tool@b18a6f4e50ab550f37837a43aa67719a6d191b86
+      uses: naviteq/github-actions/.github/actions/ensure-tool@03038ee09f925b785a79eb72b9e2d29c5857153a
       with:
         tool: boilerplate
         version: ${{ inputs.version }}
