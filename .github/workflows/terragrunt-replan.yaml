@@ -98,6 +98,11 @@ on:
         required: false
         type: string
         default: ""
+      provider_mirror_url:
+        description: Provider network mirror for the two public registries' providers, https://<host>/v1/mirror/ for boring-registry (http:// reaches Terragrunt's provider cache only); probed first, and downloads stay direct with a warning when it does not answer
+        required: false
+        type: string
+        default: ""
       dependency_outputs_from_state:
         description: Read the outputs of a dependency outside the run straight from its S3 state, without init; turn off for OpenTofu state encryption
         required: false
@@ -189,7 +194,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@3f86ee6a2e4c7335b88f6a5bd81fe0abef5d863e
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@80979894cf368ec7d22c01cfc4b0f7f83bcf926e
     permissions:
       contents: read
       id-token: write
@@ -217,6 +222,7 @@ jobs:
       provider_cache: ${{ inputs.provider_cache }}
       provider_cache_persist: ${{ inputs.provider_cache_persist }}
       provider_cache_registries: ${{ inputs.provider_cache_registries }}
+      provider_mirror_url: ${{ inputs.provider_mirror_url }}
       dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
     secrets: inherit
 
@@ -265,7 +271,7 @@ jobs:
       - name: Read the apply profiles
         id: config
         if: inputs.config_file != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@3f86ee6a2e4c7335b88f6a5bd81fe0abef5d863e
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@80979894cf368ec7d22c01cfc4b0f7f83bcf926e
         with:
           config_file: ${{ inputs.config_file }}
           mode: apply
@@ -288,14 +294,14 @@ jobs:
         id: apply-profiles
         if: steps.config.outcome == 'success'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@3f86ee6a2e4c7335b88f6a5bd81fe0abef5d863e
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@80979894cf368ec7d22c01cfc4b0f7f83bcf926e
         with:
           profiles: ${{ steps.config.outputs.profiles }}
           units: ${{ steps.planned.outputs.units }}
 
       - name: Open the issue that gates the apply
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@3f86ee6a2e4c7335b88f6a5bd81fe0abef5d863e
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@80979894cf368ec7d22c01cfc4b0f7f83bcf926e
         with:
           command: request
           action: apply

@@ -60,6 +60,12 @@ def resources(plan: dict) -> list[dict[str, str]]:
     return sorted(found, key=lambda r: r["address"])
 
 
+def state_changes(plan: dict) -> int:
+    """Resources the plan imports, moves or forgets: no count shows them, but the apply changes state."""
+    return sum(1 for c in plan.get("resource_changes") or [] if c.get("previous_address")
+               or (c.get("change") or {}).get("importing") or "forget" in (c.get("change") or {}).get("actions", []))
+
+
 def changeset(found: list[dict[str, str]]) -> str:
     text = "\n".join(f"{r['address']} {r['action']}" for r in found)
     return hashlib.sha256(text.encode()).hexdigest()
@@ -384,12 +390,160 @@ _PRINT = threading.Lock()
 
 
 LOG_LINE_CAP = 4096
+ERROR_EXCERPT_CAP = 4096
 PROGRESS_STATUS = {"apply_start": "started", "apply_progress": "progressing", "apply_complete": "completed",
                    "apply_errored": "errored"}
 PROGRESS_POLL_SECONDS = 0.5
 
 
-def streamed(unit: str, cwd: Path, *args: str, sink: object = None, log_lines: bool = False) -> int:
+ANSI_SEQUENCE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\^_])")
+CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+TERRAGRUNT_PREFIX = re.compile(r"^\s*(?:(?:\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+)?(?P<stream>(?:STDOUT|STDERR)\s+\S+:)\s?|"
+                               r"\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(?P<level>TRACE|DEBUG|INFO|WARN|ERROR)\b)")
+BOX_GUTTER = re.compile(r"^\s*([\u2577\u2502\u2575])\s?")
+ERROR_LINE = re.compile(r"\s*Error:")
+DIAGNOSTIC = re.compile(r"\s*(?:Error|Warning):")
+ERROR_EXCERPT_MAX_LINES = 100
+
+
+def split_prefix(text: str) -> tuple[str, str]:
+    """Terragrunt's log prefix (`STDERR tofu:` or a level such as `ERROR`) and the text after it."""
+    prefix = TERRAGRUNT_PREFIX.match(text)
+    if prefix is None:
+        return "", text
+    if prefix.group("stream"):
+        return " ".join(prefix.group("stream").split()), text[prefix.end():]
+    level, rest = prefix.group("level"), text[prefix.end():]
+    pad = len(rest) - len(rest.lstrip(" "))
+    return level, rest[min(pad, 7 - len(level)):]  # the level is padded to six columns, then one space
+
+
+class ErrorExcerptCollector:
+    """The first error block of a command's output, for the failed-unit event. → docs/console-integration.md"""
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+        self._size = 0
+        self._count = 0
+        self._overflow = False
+        self._state = "waiting"
+        self._source = ""
+        self._previous = ""
+        self._blank = False
+        self._mode = ""
+        self._pending = 0
+        self._fallback: tuple[list[str], bool] | None = None
+        self._broken = False
+
+    def feed(self, line: str) -> None:
+        """Best effort: a bug here ends the capture, never the apply."""
+        if self._broken:
+            return
+        try:
+            self._consume(line)
+        except Exception:
+            self._broken = True
+
+    def _consume(self, line: str) -> None:
+        source, text = split_prefix(CONTROL_CHARACTERS.sub("", ANSI_SEQUENCE.sub("", line)).rstrip("\n"))
+        previous, self._previous = self._previous, source
+        if self._state == "done":
+            return
+        gutter = BOX_GUTTER.match(text)
+        boxed = gutter is not None and gutter.group(1) == "\u2502"
+        content = text[gutter.end():] if boxed else text
+        if self._state == "waiting":
+            self._start(source, boxed, text, content)
+        elif self._state == "seeking":
+            if source == "ERROR" and previous != "ERROR" and text.strip() and not ERROR_LINE.match(text):
+                self._state = "native"
+                self._add(text.strip())
+        elif self._state == "boxed":
+            self._boxed(boxed, content)
+        elif self._state == "plain":
+            self._plain(source, text)
+        else:
+            self._native(source, text)
+
+    def _start(self, source: str, boxed: bool, text: str, content: str) -> None:
+        if ERROR_LINE.match(content):
+            self._state, self._source = ("boxed" if boxed else "plain"), source
+            self._add(content if boxed else text)
+        elif source == "ERROR" and text.strip():
+            self._state = "native"
+            self._add(text.strip())
+
+    def _boxed(self, boxed: bool, content: str) -> None:
+        if not boxed:
+            self._end()
+            return
+        self._add(content)
+
+    def _plain(self, source: str, content: str) -> None:
+        """Ends at the next diagnostic, another log source or two blank lines: no-color output has single ones."""
+        blank = not content.strip()
+        if source != self._source or DIAGNOSTIC.match(content) or (blank and self._blank):
+            self._end()
+            return
+        self._blank = blank
+        self._add(content)
+
+    def _native(self, source: str, content: str) -> None:
+        """Terragrunt's own message: `error occurred:` up to its last `* ` item, any other one up to the next log line."""
+        blank = not content.strip()
+        if source:
+            self._end()
+        elif not self._mode and blank:
+            self._pending += 1
+            if self._pending > ERROR_EXCERPT_MAX_LINES:
+                self._end()
+        elif not self._mode:
+            self._mode = "items" if content.startswith("* ") else "message"
+            for _ in range(self._pending if self._mode == "message" else 0):
+                self._add("")
+            self._add(content)
+        elif self._mode == "items" and (blank or not (content.startswith("* ") or content[:1].isspace())):
+            self._end()
+        else:
+            self._add(content)
+
+    def _end(self) -> None:
+        """A Terragrunt-level HCL diagnostic is kept only until Terragrunt's own error, which names the cause, follows."""
+        if self._state == "plain" and self._source == "ERROR" and self._fallback is None:
+            self._fallback = (self._lines, self._overflow)
+            self._lines, self._size, self._count, self._overflow = [], 0, 0, False
+            self._state = "seeking"
+        else:
+            self._state = "done"
+
+    def _add(self, content: str) -> None:
+        if self._state == "done":
+            return
+        self._count += 1
+        if self._size >= 2 * ERROR_EXCERPT_CAP or self._count > ERROR_EXCERPT_MAX_LINES:
+            self._overflow = True
+            self._end()
+            return
+        self._lines.append(content.rstrip())
+        self._size += len(content.encode("utf-8", "replace")) + 1
+
+    def result(self, mask: object = None) -> tuple[str, bool] | None:
+        """The masked, capped text and whether it was cut; None when there was no error block."""
+        try:
+            lines, overflow = (self._lines, self._overflow) if self._lines else self._fallback or ([], False)
+            if self._broken or not lines:
+                return None
+            text = "\n".join(lines).rstrip()
+            if callable(mask):
+                text = mask(text)
+            raw = text.encode("utf-8", "replace")
+            return raw[:ERROR_EXCERPT_CAP].decode("utf-8", "ignore"), overflow or len(raw) > ERROR_EXCERPT_CAP
+        except Exception:
+            return None
+
+
+def streamed(unit: str, cwd: Path, *args: str, sink: object = None, log_lines: bool = False,
+             collector: ErrorExcerptCollector | None = None) -> int:
     """terragrunt run in one unit, its output prefixed so parallel units stay readable."""
     process = subprocess.Popen(["terragrunt", "run", "--non-interactive", "--", *args], cwd=cwd,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -397,6 +551,8 @@ def streamed(unit: str, cwd: Path, *args: str, sink: object = None, log_lines: b
     for line in process.stdout:
         with _PRINT:
             print(f"[{unit}] {line}", end="", flush=True)
+        if collector is not None:
+            collector.feed(line)
         if log_lines and reporting(sink) and line.strip():
             masked = sink.mask(line.rstrip("\r\n")) if hasattr(sink, "mask") else line.rstrip("\r\n")
             text = masked.encode("utf-8", "replace")[:LOG_LINE_CAP].decode("utf-8", "ignore")
@@ -479,34 +635,44 @@ def supports_json_into(engine: str) -> bool:
     return "-json-into" in f"{shown.stdout or ''}{shown.stderr or ''}"
 
 
+def excerpt_row(collector: ErrorExcerptCollector | None, sink: object) -> dict:
+    """The collector's result as a transient row key that fresh_unit moves onto the failed event."""
+    found = collector.result(getattr(sink, "mask", None)) if collector is not None else None
+    return {"excerpt": {"text": found[0], "shortened": found[1]}} if found else {}
+
+
 def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object = None,
                 log_lines: bool = False) -> dict:
     """Plan one unit now, check the plan against the policy, then apply exactly that plan."""
     unit_dir = root / unit
-    if streamed(unit, unit_dir, "plan", "-input=false", "-out=tfplan-fresh", sink=sink, log_lines=log_lines) != 0:
-        return {"unit": unit, "outcome": "plan failed"}
+    collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
+    if streamed(unit, unit_dir, "plan", "-input=false", "-out=tfplan-fresh", sink=sink, log_lines=log_lines,
+                collector=collector) != 0:
+        return {"unit": unit, "outcome": "plan failed", **excerpt_row(collector, sink)}
     plan_file = find_newest(unit_dir, "tfplan-fresh")
     if plan_file is None:
         return {"unit": unit, "outcome": "left no plan"}
     shown = subprocess.run([engine, "show", "-json", plan_file.name], cwd=plan_file.parent,
                            capture_output=True, text=True, check=True)
-    row = {"unit": unit, **counts_of(resources(json.loads(shown.stdout)))}
+    plan = json.loads(shown.stdout)
+    row = {"unit": unit, **counts_of(resources(plan))}
     violation = unit_violation(row, expect)
     if violation:
         return {**row, "outcome": "refused", "reason": violation}
-    if not any(row[key] for key in COUNT_KEYS):
+    if not any(row[key] for key in COUNT_KEYS) and not state_changes(plan):
         return {**row, "outcome": "unchanged"}
+    collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
     if reporting(sink) and supports_json_into(engine):
         with ResourceProgress(unit, sink) as progress:
             code = streamed(unit, unit_dir, "apply", "-input=false", f"-json-into={progress.path}",
-                            str(plan_file.resolve()), sink=sink, log_lines=log_lines)
+                            str(plan_file.resolve()), sink=sink, log_lines=log_lines, collector=collector)
     elif reporting(sink):
         code = streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve()), sink=sink,
-                        log_lines=log_lines)
+                        log_lines=log_lines, collector=collector)
     else:
         code = streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve()))
     if code != 0:
-        return {**row, "outcome": "apply failed"}
+        return {**row, "outcome": "apply failed", **excerpt_row(collector, sink)}
     return {**row, "outcome": "applied"}
 
 
@@ -523,12 +689,16 @@ def fresh_unit(root: Path, unit: str, expect: dict, engine: str, sink: object = 
     except Exception:
         emit(sink, "terragrunt.unit.failed", {"unit": unit, "reason": "plan_failed"})
         raise
+    excerpt = row.pop("excerpt", None)
     if row["outcome"] in ("applied", "unchanged"):
         emit(sink, "terragrunt.unit.completed", {"unit": unit, "resources_added": row.get("add", 0),
                                                  "change": row.get("change", 0), "replace": row.get("replace", 0),
-                                                 "destroy": row.get("destroy", 0)})
+                                                 "destroy": row.get("destroy", 0), "outcome": row["outcome"]})
     else:
-        emit(sink, "terragrunt.unit.failed", {"unit": unit, "reason": FAILURE_REASONS.get(row["outcome"], "plan_failed")})
+        failed = {"unit": unit, "reason": FAILURE_REASONS.get(row["outcome"], "plan_failed")}
+        if isinstance(excerpt, dict):
+            failed |= {"error_excerpt": excerpt["text"], "error_excerpt_shortened": excerpt["shortened"]}
+        emit(sink, "terragrunt.unit.failed", failed)
     return row
 
 

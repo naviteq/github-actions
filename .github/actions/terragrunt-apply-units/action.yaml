@@ -86,7 +86,7 @@ inputs:
     required: false
     default: ""
   console_log_lines:
-    description: For run fresh, whether each output line is also sent as a log.line event; empty means true once console_url is set
+    description: For run fresh, whether each output line is also sent as a log.line event and a failed unit's first error block as its error_excerpt; empty means true once console_url is set
     required: false
     default: ""
   console_mask_env:
