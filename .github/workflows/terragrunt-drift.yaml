@@ -91,6 +91,11 @@ on:
         required: false
         type: string
         default: ""
+      provider_mirror_ca_file:
+        description: PEM file, relative to the repository root, with the CA behind an https provider_mirror_url whose certificate the runner does not trust, e.g. a private in-cluster CA
+        required: false
+        type: string
+        default: ""
       dependency_outputs_from_state:
         description: Read the outputs of a dependency outside the run straight from its S3 state, without init; turn off for OpenTofu state encryption
         required: false
@@ -171,7 +176,7 @@ permissions: {}
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@9f73eb928cbf51b460c48c821e30ca968b0b1026
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@383d5f24eaf8d151befc4dc474665c49182d5211
     permissions:
       contents: read
       id-token: write
@@ -199,6 +204,7 @@ jobs:
       provider_cache_persist: ${{ inputs.provider_cache_persist }}
       provider_cache_registries: ${{ inputs.provider_cache_registries }}
       provider_mirror_url: ${{ inputs.provider_mirror_url }}
+      provider_mirror_ca_file: ${{ inputs.provider_mirror_ca_file }}
       dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
       diff_mask: ${{ inputs.diff_mask }}
       diff_secret_units: ${{ inputs.diff_secret_units }}
@@ -228,7 +234,7 @@ jobs:
 
       - name: Reconcile the drift issues
         id: drift
-        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@9f73eb928cbf51b460c48c821e30ca968b0b1026
+        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@383d5f24eaf8d151befc4dc474665c49182d5211
         with:
           changes: ${{ needs.plan.outputs.changes }}
           counts_dir: counts

@@ -9,6 +9,10 @@ inputs:
     description: Provider network mirror base URL, https://<host>/v1/mirror/ for boring-registry, or http:// for an in-cluster Service; empty does nothing
     required: false
     default: ""
+  ca_file:
+    description: PEM file, relative to the workspace, with the CA that signed the mirror's certificate; appended to the system roots and exported as SSL_CERT_FILE
+    required: false
+    default: ""
   engine:
     description: Engine the job runs, tofu or terraform; picks the registry the probe asks about
     required: false
@@ -29,6 +33,8 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
         MIRROR_URL: ${{ inputs.url }}
         ENGINE: ${{ inputs.engine }}
+        CA_FILE: ${{ inputs.ca_file }}
       run: |
         python3 "${ACTION_PATH}/provider_mirror.py" --url "${MIRROR_URL}" --engine "${ENGINE}" \
-          --config-file "${RUNNER_TEMP}/terragrunt-provider-mirror.tfrc"
+          --config-file "${RUNNER_TEMP}/terragrunt-provider-mirror.tfrc" --ca-file "${CA_FILE}" \
+          --bundle-file "${RUNNER_TEMP}/terragrunt-provider-mirror-ca.pem"

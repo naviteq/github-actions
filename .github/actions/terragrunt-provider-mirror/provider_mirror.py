@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -33,6 +34,9 @@ PROBE_TIMEOUT = 5
 URL_RE = re.compile(r"^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$")
 PROVIDER_INSTALLATION_RE = re.compile(r"^\s*\"?provider_installation\"?\s*[{:=]", re.MULTILINE)
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+# Debian/Ubuntu, RHEL, Alpine/macOS: the first that exists is the system trust the bundle extends.
+SYSTEM_BUNDLES = ("/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem")
+PEM_MARKER = "-----BEGIN CERTIFICATE-----"
 
 
 class MirrorError(Exception):
@@ -51,11 +55,12 @@ def probe_url(base: str, engine: str) -> str:
     return f"{base}{ENGINE_REGISTRY.get(engine, PUBLIC_REGISTRIES[0])}/{PROBE_PROVIDER}/index.json"
 
 
-def probe(url: str, timeout: float = PROBE_TIMEOUT) -> str | None:
+def probe(url: str, timeout: float = PROBE_TIMEOUT, cafile: str | None = None) -> str | None:
     """None when the mirror lists versions for the probe provider, else why it did not."""
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    context = ssl.create_default_context(cafile=cafile) if cafile else None
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:  # noqa: S310
             body = response.read(1 << 20)
     except urllib.error.HTTPError as err:
         return f"HTTP {err.code}"
@@ -119,6 +124,16 @@ def render(url: str, base: str = "") -> str:
     return f"{base}\n{block}" if base else block
 
 
+def build_bundle(ca: Path, out: Path) -> Path | None:
+    """out with the system roots followed by ca, so SSL_CERT_FILE extends the trust instead of replacing it."""
+    system = next((Path(path) for path in SYSTEM_BUNDLES if Path(path).is_file()), None)
+    parts = [system.read_text(encoding="utf-8")] if system else []
+    parts.append(ca.read_text(encoding="utf-8"))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(part.rstrip("\n") for part in parts) + "\n", encoding="utf-8")
+    return system
+
+
 def append(path: str | None, line: str) -> None:
     if path:
         with open(path, "a", encoding="utf-8") as handle:
@@ -130,6 +145,8 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None, home:
     parser.add_argument("--url", default="")
     parser.add_argument("--engine", default="tofu")
     parser.add_argument("--config-file", required=True)
+    parser.add_argument("--ca-file", default="")
+    parser.add_argument("--bundle-file", default="")
     args = parser.parse_args(argv)
     env = dict(os.environ) if env is None else env
     home = Path.home() if home is None else home
@@ -159,8 +176,19 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None, home:
               "through it; terraform and tofu log a non-fatal 'Invalid URL for provider installation source' "
               "on each init and leave installs to the cache server.")
 
+    bundle = None
+    if args.ca_file.strip():
+        ca = Path(env.get("GITHUB_WORKSPACE", ".")) / args.ca_file.strip()
+        if not ca.is_file() or PEM_MARKER not in ca.read_text(encoding="utf-8", errors="replace"):
+            print(f"::error title=Bad provider_mirror_ca_file::{ca} is not a PEM certificate file.")
+            return 1
+        bundle = Path(args.bundle_file or Path(args.config_file).with_suffix(".ca.pem"))
+        if build_bundle(ca, bundle) is None:
+            print(f"::warning title=No system CA bundle::None of {', '.join(SYSTEM_BUNDLES)} exists; "
+                  f"{bundle} trusts the mirror's CA alone.")
+
     target = probe_url(url, args.engine)
-    reason = probe(target)
+    reason = probe(target, cafile=str(bundle) if bundle else None)
     if reason:
         return skip("Provider mirror unreachable", f"{target} did not answer ({reason}).")
 
@@ -175,6 +203,8 @@ def main(argv: list[str] | None = None, env: dict[str, str] | None = None, home:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render(url, base_text), encoding="utf-8")
     append(env.get("GITHUB_ENV"), f"TF_CLI_CONFIG_FILE={out.resolve()}")
+    if bundle:
+        append(env.get("GITHUB_ENV"), f"SSL_CERT_FILE={bundle.resolve()}")
     append(env.get("GITHUB_OUTPUT"), "enabled=true")
     carried = f", carrying over {base}" if base else ""
     print(f"Providers from {', '.join(PUBLIC_REGISTRIES)} come through {url}{carried}")

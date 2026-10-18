@@ -95,6 +95,11 @@ on:
         required: false
         type: string
         default: ""
+      provider_mirror_ca_file:
+        description: PEM file, relative to the repository root, with the CA behind an https provider_mirror_url whose certificate the runner does not trust, e.g. a private in-cluster CA
+        required: false
+        type: string
+        default: ""
       dependency_outputs_from_state:
         description: Read the outputs of a dependency outside the run straight from its S3 state, without init; turn off for OpenTofu state encryption
         required: false
@@ -178,7 +183,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@9f73eb928cbf51b460c48c821e30ca968b0b1026
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@383d5f24eaf8d151befc4dc474665c49182d5211
     permissions:
       contents: read
       id-token: write
@@ -206,6 +211,7 @@ jobs:
       provider_cache_persist: ${{ inputs.provider_cache_persist }}
       provider_cache_registries: ${{ inputs.provider_cache_registries }}
       provider_mirror_url: ${{ inputs.provider_mirror_url }}
+      provider_mirror_ca_file: ${{ inputs.provider_mirror_ca_file }}
       dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
     secrets: inherit
 
@@ -246,7 +252,7 @@ jobs:
 
       - name: Open the issue that gates the destroy
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@9f73eb928cbf51b460c48c821e30ca968b0b1026
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@383d5f24eaf8d151befc4dc474665c49182d5211
         with:
           command: request
           sha: ${{ github.sha }}
