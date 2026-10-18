@@ -1,0 +1,60 @@
+---
+name: Catalog token
+description: >
+  Ask the Runestra Console for a short-lived, read-only token for the catalog and
+  terraform-modules repositories, proving the job with its own Actions OIDC identity, and
+  keep git authenticated with it for the whole job. With console_url empty it does nothing.
+
+inputs:
+  console_url:
+    description: Console origin, https only; empty turns the action into a no-op
+    required: false
+    default: ""
+  console_audience:
+    description: Audience of the Actions OIDC token the Console accepts
+    required: false
+    default: ""
+  console_run_id:
+    description: Console run id, as the dispatch passed it
+    required: false
+    default: ""
+  fail_on_error:
+    description: Fail the step when no token was obtained; false leaves the decision to the caller, who reads status
+    required: false
+    default: "true"
+  catalog_repository:
+    description: owner/name of the catalog repository the token may be used for
+    required: false
+    default: naviteq-ltd/infrastructure-catalog
+  modules_repository:
+    description: owner/name of the terraform-modules repository the token may be used for
+    required: false
+    default: naviteq-ltd/terraform-modules
+  refresh_after_seconds:
+    description: Age at which the git credential helper asks the Console for a new token
+    required: false
+    default: "2700"
+
+outputs:
+  status:
+    description: ok, skipped, refused, scope_lost or unavailable
+    value: ${{ steps.configure.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Configure git with a brokered catalog token
+      id: configure
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CONSOLE_URL: ${{ inputs.console_url }}
+        CONSOLE_AUDIENCE: ${{ inputs.console_audience }}
+        CONSOLE_RUN_ID: ${{ inputs.console_run_id }}
+        FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
+        CATALOG_REPOSITORY: ${{ inputs.catalog_repository }}
+        MODULES_REPOSITORY: ${{ inputs.modules_repository }}
+        REFRESH_AFTER_SECONDS: ${{ inputs.refresh_after_seconds }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/catalog_token.py" configure

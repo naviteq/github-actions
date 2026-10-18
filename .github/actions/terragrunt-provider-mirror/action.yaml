@@ -1,0 +1,34 @@
+---
+name: Terragrunt provider mirror
+description: >
+  Send provider downloads from the two public registries through a provider network mirror,
+  when it answers a probe; otherwise warn and leave the downloads direct.
+
+inputs:
+  url:
+    description: Provider network mirror base URL, https://<host>/v1/mirror/ for boring-registry, or http:// for an in-cluster Service; empty does nothing
+    required: false
+    default: ""
+  engine:
+    description: Engine the job runs, tofu or terraform; picks the registry the probe asks about
+    required: false
+    default: tofu
+
+outputs:
+  enabled:
+    description: true when TF_CLI_CONFIG_FILE now points at a config that uses the mirror
+    value: ${{ steps.mirror.outputs.enabled }}
+
+runs:
+  using: composite
+  steps:
+    - name: Probe the mirror and write the CLI config
+      id: mirror
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        MIRROR_URL: ${{ inputs.url }}
+        ENGINE: ${{ inputs.engine }}
+      run: |
+        python3 "${ACTION_PATH}/provider_mirror.py" --url "${MIRROR_URL}" --engine "${ENGINE}" \
+          --config-file "${RUNNER_TEMP}/terragrunt-provider-mirror.tfrc"

@@ -1,0 +1,220 @@
+---
+# Brings an environment up from empty state: each unit is planned after its dependencies
+# exist, checked against a policy, and applied, with no saved plan. → docs/terragrunt-apply-fresh.md
+name: Terragrunt apply fresh
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: Directory holding the stack and its units, relative to the repository root
+        required: true
+        type: string
+      aws_region:
+        description: Region the aws_iam_role secret is assumed in
+        required: true
+        type: string
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      expect:
+        description: JSON expectations policy every unit's plan is checked against; the default refuses a replace and a destroy
+        required: false
+        type: string
+        default: '{"allow_replace": false, "allow_destroy": false}'
+      parallelism:
+        description: How many units of one dependency level run at once
+        required: false
+        type: string
+        default: "8"
+      filter:
+        description: Terragrunt --filter expression limiting the units; empty applies every unit
+        required: false
+        type: string
+        default: ""
+      terragrunt_version:
+        description: Terragrunt version; read from the repository's .terragrunt-version when empty
+        required: false
+        type: string
+        default: ""
+      opentofu_version:
+        description: OpenTofu version; read from the repository's .opentofu-version when empty
+        required: false
+        type: string
+        default: ""
+      console_url:
+        description: Runestra Console origin; when set, catalog access comes from the Console broker and progress events go to it
+        required: false
+        type: string
+        default: ""
+      console_audience:
+        description: Audience of the Actions OIDC token the Console accepts
+        required: false
+        type: string
+        default: ""
+      console_run_id:
+        description: The Console's run id, as the dispatch passed it
+        required: false
+        type: string
+        default: ""
+    secrets:
+      aws_iam_role:
+        description: AWS role assumed through OIDC; empty configures no AWS credentials, for a stack with local state
+        required: false
+      runestra_client_id:
+        description: Runestra registry client id, exchanged for a registry token
+        required: false
+      runestra_client_secret:
+        description: Runestra registry client secret
+        required: false
+      naviteq_github_app_id:
+        description: Deprecated fallback for naviteq_github_client_id, read only when the client ID is empty
+        required: false
+      naviteq_github_client_id:
+        description: GitHub App client ID; with the key, mints a read-only token for private git sources when console_url is empty
+        required: false
+      naviteq_github_app_key:
+        description: Private key of that GitHub App
+        required: false
+      terragrunt_extra_env:
+        description: KEY=VALUE lines exported with masked values; also masked in every event sent to the Console
+        required: false
+    outputs:
+      applied:
+        description: The units that were applied, one per line
+        value: ${{ jobs.apply.outputs.applied }}
+      changes:
+        description: JSON list of each reached unit's counts and outcome
+        value: ${{ jobs.apply.outputs.changes }}
+
+permissions: {}
+
+# One bootstrap at a time per repository and directory; a queued one waits, never cancels.
+concurrency:
+  group: terragrunt-apply-fresh-${{ github.repository }}-${{ inputs.working_directory }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Plan, check and apply each unit
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      HAS_AWS_ROLE: ${{ secrets.aws_iam_role != '' }}
+      HAS_REGISTRY_AUTH: ${{ secrets.runestra_client_id != '' }}
+      HAS_GITHUB_APP: ${{ secrets.naviteq_github_client_id != '' || secrets.naviteq_github_app_id != '' }}
+      HAS_EXTRA_ENV: ${{ secrets.terragrunt_extra_env != '' }}
+      TG_NO_CAS: "1"
+      # → see docs/terragrunt-apply-fresh.md
+      TG_BACKEND_BOOTSTRAP: "true"
+    outputs:
+      applied: ${{ steps.fresh.outputs.applied }}
+      changes: ${{ steps.fresh.outputs.changes }}
+    steps:
+      # No persisted header in Console mode: it would pre-empt the broker's credential helper.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: ${{ inputs.console_url == '' }}
+
+      - name: Install Terragrunt and OpenTofu
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@edb3f3930b53a628f2790f0f387655f1fabe3cca
+        with:
+          terragrunt_version: ${{ inputs.terragrunt_version }}
+          opentofu_version: ${{ inputs.opentofu_version }}
+
+      # Four hours outlasts a full bootstrap; the session ceiling is six. → docs/terragrunt-apply-fresh.md
+      - name: Configure AWS credentials
+        if: env.HAS_AWS_ROLE == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.aws_iam_role }}
+          aws-region: ${{ inputs.aws_region }}
+          role-duration-seconds: 14400
+          role-session-name: gh-terragrunt-apply-fresh-${{ github.run_id }}
+
+      - name: Exchange the registry client credentials for a token
+        if: env.HAS_REGISTRY_AUTH == 'true'
+        uses: naviteq/github-actions/.github/actions/registry-token@edb3f3930b53a628f2790f0f387655f1fabe3cca
+        with:
+          client_id: ${{ secrets.runestra_client_id }}
+          client_secret: ${{ secrets.runestra_client_secret }}
+
+      - name: Get a catalog token from the Console broker
+        if: inputs.console_url != ''
+        uses: naviteq/github-actions/.github/actions/catalog-token@edb3f3930b53a628f2790f0f387655f1fabe3cca
+        with:
+          console_url: ${{ inputs.console_url }}
+          console_audience: ${{ inputs.console_audience }}
+          console_run_id: ${{ inputs.console_run_id }}
+
+      - name: Generate a GitHub App token for the private git sources
+        id: app-token
+        if: env.HAS_GITHUB_APP == 'true' && inputs.console_url == ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.naviteq_github_client_id || secrets.naviteq_github_app_id }}
+          private-key: ${{ secrets.naviteq_github_app_key }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            ${{ github.event.repository.name }}
+            infrastructure-catalog
+            terraform-modules
+          permission-contents: read
+
+      - name: Rewrite git@github.com to an authenticated https remote
+        if: env.HAS_GITHUB_APP == 'true' && inputs.console_url == ''
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          for form in "git@github.com:" "ssh://git@github.com/"; do
+            git config --global --add url."https://x-access-token:${TOKEN}@github.com/".insteadOf "${form}"
+          done
+
+      - name: Export the terragrunt_extra_env keys
+        if: env.HAS_EXTRA_ENV == 'true'
+        env:
+          SECRET_ENV: ${{ secrets.terragrunt_extra_env }}
+        run: |
+          set -euo pipefail
+          while IFS='=' read -r key value; do
+            case "${key}" in "" | \#*) continue ;; esac
+            [ -z "${value}" ] || echo "::add-mask::${value}"
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done <<< "${SECRET_ENV}"
+
+      # Explicit, so a failure to resolve the pinned stack source reads as itself.
+      - name: Generate the stack
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        run: terragrunt stack generate --non-interactive --working-dir "${WORKING_DIRECTORY}"
+
+      - name: Select the units to apply, in run order
+        id: select
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@edb3f3930b53a628f2790f0f387655f1fabe3cca
+        with:
+          working_directory: ${{ inputs.working_directory }}
+          filter: ${{ inputs.filter }}
+          verb: apply
+          participle: applied
+          queue_as: apply
+
+      # No saved plan: each unit is planned after its dependencies exist. → docs/terragrunt-apply-fresh.md
+      - name: Apply
+        id: fresh
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@edb3f3930b53a628f2790f0f387655f1fabe3cca
+        with:
+          command: run
+          phase: fresh
+          units: ${{ steps.select.outputs.units }}
+          working_directory: ${{ inputs.working_directory }}
+          engine: tofu
+          parallelism: ${{ inputs.parallelism }}
+          expect_json: ${{ inputs.expect }}
+          console_url: ${{ inputs.console_url }}
+          console_audience: ${{ inputs.console_audience }}
+          console_run_id: ${{ inputs.console_run_id }}
+          console_mask_env: ${{ secrets.terragrunt_extra_env }}
