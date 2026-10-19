@@ -73,6 +73,26 @@ inputs:
     description: For run fresh and destroy, how many units of one dependency level run at once
     required: false
     default: "4"
+  console_url:
+    description: For run fresh, the Runestra Console origin events are posted to; empty sends nothing and changes nothing
+    required: false
+    default: ""
+  console_audience:
+    description: For run fresh, the audience of the Actions OIDC token the Console's ingest accepts
+    required: false
+    default: ""
+  console_run_id:
+    description: For run fresh, the Console's run id
+    required: false
+    default: ""
+  console_log_lines:
+    description: For run fresh, whether each output line is also sent as a log.line event and a failed unit's first error block as its error_excerpt; empty means true once console_url is set
+    required: false
+    default: ""
+  console_mask_env:
+    description: For run fresh, KEY=value lines (the terragrunt_extra_env secret) whose values are masked in every event sent to the Console
+    required: false
+    default: ""
 
 outputs:
   marker:
@@ -140,6 +160,11 @@ runs:
         PLANS_DIR: ${{ inputs.plans_dir }}
         ENGINE: ${{ inputs.engine }}
         PARALLELISM: ${{ inputs.parallelism }}
+        CONSOLE_URL: ${{ inputs.console_url }}
+        CONSOLE_AUDIENCE: ${{ inputs.console_audience }}
+        CONSOLE_RUN_ID: ${{ inputs.console_run_id }}
+        CONSOLE_LOG_LINES: ${{ inputs.console_log_lines }}
+        CONSOLE_MASK_ENV: ${{ inputs.console_mask_env }}
       run: |
         set -euo pipefail
         script="${ACTION_PATH}/apply_units.py"

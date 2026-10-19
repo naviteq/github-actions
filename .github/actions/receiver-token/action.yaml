@@ -1,0 +1,27 @@
+---
+name: Receiver token
+description: >
+  Write the Runestra Console's health-receiver token into an existing AWS Secrets Manager
+  entry with put-secret-value. Best effort: the token is masked first, a refused write warns
+  and the step never fails; with either input empty it does nothing.
+
+inputs:
+  token:
+    description: Console health-receiver token, 32-128 characters of A-Za-z0-9_-
+    required: false
+    default: ""
+  secret_id:
+    description: Secrets Manager secret id (leading slash) whose value is replaced; the entry must already exist
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Write the token to Secrets Manager
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        RECEIVER_TOKEN: ${{ inputs.token }}
+        SECRET_ID: ${{ inputs.secret_id }}
+      run: python3 "${ACTION_PATH}/receiver_token.py"
