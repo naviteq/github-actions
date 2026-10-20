@@ -44,7 +44,7 @@ inputs:
 
 outputs:
   changes:
-    description: JSON list of per-unit counts (unit, add, change, replace, destroy, deleted) and changeset hash
+    description: JSON list of per-unit counts (unit, add, change, replace, destroy, outputs, state_changes, deleted) and changeset hash
     value: ${{ steps.report.outputs.changes }}
   has_changes:
     description: true when any unit would change anything

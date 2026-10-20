@@ -76,8 +76,23 @@ on:
         required: false
         type: boolean
         default: true
+      provider_cache_persist:
+        description: Keep the provider cache in the Actions cache between jobs; false downloads each job's providers once and shares them between its units
+        required: false
+        type: boolean
+        default: true
       provider_cache_registries:
         description: Extra provider registry hostnames to cache, comma-separated, besides the two public ones
+        required: false
+        type: string
+        default: ""
+      provider_mirror_url:
+        description: Provider network mirror for the two public registries' providers, https://<host>/v1/mirror/ for boring-registry (http:// reaches Terragrunt's provider cache only); probed first, and downloads stay direct with a warning when it does not answer
+        required: false
+        type: string
+        default: ""
+      provider_mirror_ca_file:
+        description: PEM file, relative to the repository root, with the CA behind an https provider_mirror_url whose certificate the runner does not trust, e.g. a private in-cluster CA
         required: false
         type: string
         default: ""
@@ -161,7 +176,7 @@ permissions: {}
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@3a8d88494ca5a3d1981eff268a9106d163fb1067
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@4e355a934592b953882d1e64355f71f18a3db873
     permissions:
       contents: read
       id-token: write
@@ -186,7 +201,10 @@ jobs:
       pr_comment: false
       artifact_name: terragrunt-drift-${{ github.run_id }}-${{ github.run_attempt }}
       provider_cache: ${{ inputs.provider_cache }}
+      provider_cache_persist: ${{ inputs.provider_cache_persist }}
       provider_cache_registries: ${{ inputs.provider_cache_registries }}
+      provider_mirror_url: ${{ inputs.provider_mirror_url }}
+      provider_mirror_ca_file: ${{ inputs.provider_mirror_ca_file }}
       dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
       diff_mask: ${{ inputs.diff_mask }}
       diff_secret_units: ${{ inputs.diff_secret_units }}
@@ -216,7 +234,7 @@ jobs:
 
       - name: Reconcile the drift issues
         id: drift
-        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@3a8d88494ca5a3d1981eff268a9106d163fb1067
+        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@4e355a934592b953882d1e64355f71f18a3db873
         with:
           changes: ${{ needs.plan.outputs.changes }}
           counts_dir: counts

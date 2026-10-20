@@ -44,16 +44,28 @@ runs:
           *) echo "::error title=Unknown mode::mode is '${MODE}'; use restore or save."; exit 1 ;;
         esac
 
-    # A prefix hit is safe: Terragrunt re-downloads any source whose version changed. → docs/terragrunt-validate-lint.md
+    # The same digests unpack compares, so an exact hit restores every unit.
+    - name: Fingerprint the configuration
+      id: digest
+      if: inputs.mode == 'restore'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+      run: |
+        python3 "${ACTION_PATH}/module_cache.py" digest --working-directory "${WORKING_DIRECTORY}" \
+          --repository "${GITHUB_WORKSPACE}"
+
+    # A prefix hit restores only the units whose configuration is unchanged. → see docs/terragrunt-validate-lint.md
     - name: Restore the module sources
       id: restore
       if: inputs.mode == 'restore'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ runner.temp }}/terragrunt-modules
-        key: terragrunt-modules-${{ runner.os }}-${{ hashFiles(format('{0}/**/*.hcl', inputs.working_directory), format('!{0}/**/.terragrunt-cache/**', inputs.working_directory)) }}
+        key: terragrunt-modules-v2-${{ runner.os }}-${{ steps.digest.outputs.digest }}
         restore-keys: |
-          terragrunt-modules-${{ runner.os }}-
+          terragrunt-modules-v2-${{ runner.os }}-
 
     - name: Put the sources where Terragrunt looks for them
       if: inputs.mode == 'restore'
@@ -64,7 +76,7 @@ runs:
         LAYOUT: ${{ inputs.layout }}
       run: |
         python3 "${ACTION_PATH}/module_cache.py" unpack --working-directory "${WORKING_DIRECTORY}" \
-          --store "${RUNNER_TEMP}/terragrunt-modules" --layout "${LAYOUT}"
+          --repository "${GITHUB_WORKSPACE}" --store "${RUNNER_TEMP}/terragrunt-modules" --layout "${LAYOUT}"
 
     # A generated provider block can hold a token read with get_env().
     - name: Scrub the sources and move them into the store
@@ -76,7 +88,7 @@ runs:
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
       run: |
         python3 "${ACTION_PATH}/module_cache.py" pack --working-directory "${WORKING_DIRECTORY}" \
-          --store "${RUNNER_TEMP}/terragrunt-modules"
+          --repository "${GITHUB_WORKSPACE}" --store "${RUNNER_TEMP}/terragrunt-modules"
 
     # An empty entry would become the newest prefix match for every pull request.
     - name: Save the module sources

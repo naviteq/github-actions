@@ -49,6 +49,13 @@ def count_actions(plan: dict) -> dict[str, int]:
     return counts
 
 
+def state_changes(plan: dict) -> int:
+    """Resources the plan imports, moves or forgets: no count shows them, but the apply changes state.
+    Same as terragrunt-apply-units', which applies a unit that has any."""
+    return sum(1 for c in plan.get("resource_changes") or [] if c.get("previous_address")
+               or (c.get("change") or {}).get("importing") or "forget" in (c.get("change") or {}).get("actions", []))
+
+
 def action_of(actions: list[str]) -> str | None:
     """One word per change, as the apply compares them; None for no-op and read."""
     if "create" in actions and "delete" in actions:
@@ -339,6 +346,9 @@ def output_lines(name: str, change: dict, patterns: list[str]) -> list[list[str]
     was = ABSENT if action == "create" else change.get("before")
     now = ABSENT if action == "delete" else change.get("after")
     if not shown(ch, (name,), was, now):
+        # A deleted output that held null or an empty collection has nothing after it to print.
+        if now is ABSENT:
+            return [line("-", 0, f"{name} = {literal(was)}")]
         return [line("~", 0, f"{name} = {literal(now)}")]
     return attribute(ch, name, (name,), (name,), was, now, 0)
 
@@ -446,7 +456,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
         changed = diffs(plan, patterns) if not secret(unit) else {}
         detail[unit] = [{**found, "lines": changed.get(found["address"], [])} for found in resources(plan)]
-        rows.append({"unit": unit, **count_actions(plan), "changeset": changeset(resources(plan))})
+        rows.append({"unit": unit, **count_actions(plan), "state_changes": state_changes(plan),
+                     "changeset": changeset(resources(plan))})
         plans.append(f"{unit}\t{plan_file}")
 
     deleted = _lines(args.deleted)
@@ -457,7 +468,8 @@ def main(argv: list[str] | None = None) -> int:
         rows.append({"unit": unit, "deleted": True, **found.get(unit, {"error": "no destroy plan"})})
 
     failed = [row["unit"] for row in rows if row.get("error")]
-    has_changes = any(row.get(key) for row in rows for key in ("add", "change", "replace", "destroy", "outputs"))
+    has_changes = any(row.get(key) for row in rows
+                      for key in ("add", "change", "replace", "destroy", "outputs", "state_changes"))
     report = table(rows)
     print(report, end="")
 
