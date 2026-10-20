@@ -88,8 +88,23 @@ on:
         required: false
         type: boolean
         default: true
+      provider_cache_persist:
+        description: Keep the provider cache in the Actions cache between jobs; false downloads each job's providers once and shares them between its units
+        required: false
+        type: boolean
+        default: true
       provider_cache_registries:
         description: Extra provider registry hostnames to cache, comma-separated, besides the two public ones
+        required: false
+        type: string
+        default: ""
+      provider_mirror_url:
+        description: Provider network mirror for the two public registries' providers, https://<host>/v1/mirror/ for boring-registry (http:// reaches Terragrunt's provider cache only); probed first, and downloads stay direct with a warning when it does not answer
+        required: false
+        type: string
+        default: ""
+      provider_mirror_ca_file:
+        description: PEM file, relative to the repository root, with the CA behind an https provider_mirror_url whose certificate the runner does not trust, e.g. a private in-cluster CA
         required: false
         type: string
         default: ""
@@ -184,7 +199,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@3a8d88494ca5a3d1981eff268a9106d163fb1067
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@725cadf6ccbceb180c9ba151758d4313f8e54e8e
     permissions:
       contents: read
       id-token: write
@@ -210,7 +225,10 @@ jobs:
       artifact_name: terragrunt-replan-pr${{ inputs.pr }}-${{ github.run_id }}-${{ github.run_attempt }}
       artifact_retention_days: ${{ inputs.artifact_retention_days }}
       provider_cache: ${{ inputs.provider_cache }}
+      provider_cache_persist: ${{ inputs.provider_cache_persist }}
       provider_cache_registries: ${{ inputs.provider_cache_registries }}
+      provider_mirror_url: ${{ inputs.provider_mirror_url }}
+      provider_mirror_ca_file: ${{ inputs.provider_mirror_ca_file }}
       dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
     secrets: inherit
 
@@ -259,7 +277,7 @@ jobs:
       - name: Read the apply profiles
         id: config
         if: inputs.config_file != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@3a8d88494ca5a3d1981eff268a9106d163fb1067
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@725cadf6ccbceb180c9ba151758d4313f8e54e8e
         with:
           config_file: ${{ inputs.config_file }}
           mode: apply
@@ -282,14 +300,14 @@ jobs:
         id: apply-profiles
         if: steps.config.outcome == 'success'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@3a8d88494ca5a3d1981eff268a9106d163fb1067
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@725cadf6ccbceb180c9ba151758d4313f8e54e8e
         with:
           profiles: ${{ steps.config.outputs.profiles }}
           units: ${{ steps.planned.outputs.units }}
 
       - name: Open the issue that gates the apply
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@3a8d88494ca5a3d1981eff268a9106d163fb1067
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@725cadf6ccbceb180c9ba151758d4313f8e54e8e
         with:
           command: request
           action: apply

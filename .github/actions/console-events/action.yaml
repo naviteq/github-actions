@@ -1,0 +1,44 @@
+---
+name: Console events
+description: >
+  Post a file of events to the Runestra Console's NDJSON channel as this job, wrapping each
+  line in the run envelope. Delivery problems are warnings, never failures; with console_url
+  empty it does nothing.
+
+inputs:
+  console_url:
+    description: Console origin, https only; empty turns the action into a no-op
+    required: false
+    default: ""
+  console_audience:
+    description: Audience of the Actions OIDC token the Console accepts
+    required: false
+    default: ""
+  console_run_id:
+    description: Console run id, as the dispatch passed it
+    required: false
+    default: ""
+  events_file:
+    description: Path of a file with one JSON object per line, each carrying type and payload
+    required: false
+    default: ""
+  mask_env:
+    description: KEY=value lines (the terragrunt_extra_env secret) whose values are masked in every event sent
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Post the events
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CONSOLE_URL: ${{ inputs.console_url }}
+        CONSOLE_AUDIENCE: ${{ inputs.console_audience }}
+        CONSOLE_RUN_ID: ${{ inputs.console_run_id }}
+        EVENTS_FILE: ${{ inputs.events_file }}
+        CONSOLE_MASK_ENV: ${{ inputs.mask_env }}
+      run: |
+        set -euo pipefail
+        python3 "${ACTION_PATH}/console_events.py" post --file "${EVENTS_FILE}"

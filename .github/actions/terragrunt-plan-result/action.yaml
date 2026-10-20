@@ -48,7 +48,7 @@ inputs:
 
 outputs:
   changes:
-    description: JSON list of per-unit counts (unit, profile, add, change, replace, destroy, deleted, changeset)
+    description: JSON list of per-unit counts (unit, profile, add, change, replace, destroy, outputs, state_changes, deleted, changeset)
     value: ${{ steps.result.outputs.changes }}
   has_changes:
     description: true when any unit would change anything
