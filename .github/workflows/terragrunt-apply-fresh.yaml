@@ -143,7 +143,7 @@ jobs:
           persist-credentials: ${{ inputs.console_url == '' }}
 
       - name: Install Terragrunt and OpenTofu
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c2fc7329e9182246e8ab12923dede3b6c2a57cee
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@18424eae68ffbcb6f8d3c964025787d1dc5eed73
         with:
           terragrunt_version: ${{ inputs.terragrunt_version }}
           opentofu_version: ${{ inputs.opentofu_version }}
@@ -160,14 +160,14 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@c2fc7329e9182246e8ab12923dede3b6c2a57cee
+        uses: naviteq/github-actions/.github/actions/registry-token@18424eae68ffbcb6f8d3c964025787d1dc5eed73
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
       - name: Get a catalog token from the Console broker
         if: inputs.console_url != ''
-        uses: naviteq/github-actions/.github/actions/catalog-token@c2fc7329e9182246e8ab12923dede3b6c2a57cee
+        uses: naviteq/github-actions/.github/actions/catalog-token@18424eae68ffbcb6f8d3c964025787d1dc5eed73
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
@@ -217,7 +217,7 @@ jobs:
       - name: Select the units to apply, in run order
         id: select
         if: inputs.mode == 'apply'
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@c2fc7329e9182246e8ab12923dede3b6c2a57cee
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@18424eae68ffbcb6f8d3c964025787d1dc5eed73
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -229,7 +229,7 @@ jobs:
       - name: Apply
         id: fresh
         if: inputs.mode == 'apply'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c2fc7329e9182246e8ab12923dede3b6c2a57cee
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@18424eae68ffbcb6f8d3c964025787d1dc5eed73
         with:
           command: run
           phase: fresh
@@ -246,7 +246,7 @@ jobs:
       - name: Select the units to destroy, in destroy order
         id: select-destroy
         if: inputs.mode == 'destroy'
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@c2fc7329e9182246e8ab12923dede3b6c2a57cee
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@18424eae68ffbcb6f8d3c964025787d1dc5eed73
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -258,7 +258,7 @@ jobs:
       - name: Destroy
         id: destroy
         if: inputs.mode == 'destroy'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c2fc7329e9182246e8ab12923dede3b6c2a57cee
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@18424eae68ffbcb6f8d3c964025787d1dc5eed73
         with:
           command: run
           phase: destroy
@@ -276,7 +276,7 @@ jobs:
       - name: Store the receiver token
         if: success() && inputs.mode == 'apply' && env.HAS_RECEIVER_TOKEN == 'true' && inputs.receiver_secret_id != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/receiver-token@c2fc7329e9182246e8ab12923dede3b6c2a57cee
+        uses: naviteq/github-actions/.github/actions/receiver-token@18424eae68ffbcb6f8d3c964025787d1dc5eed73
         with:
           token: ${{ secrets.runestra_receiver_token }}
           secret_id: ${{ inputs.receiver_secret_id }}
