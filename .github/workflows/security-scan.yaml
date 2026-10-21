@@ -163,7 +163,7 @@ on:
         required: false
         type: string
         # renovate: datasource=pypi depName=checkov
-        default: 3.3.29
+        default: 3.3.30
       download_artifact:
         description: Artifact downloaded into the workspace before scanning. Used to scan another job's output.
         required: false
