@@ -330,7 +330,7 @@ jobs:
       # → docs/terragrunt-plan.md#config-file
       - name: Read the config file
         id: config
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           config_file: ${{ inputs.config_file }}
           mode: plan
@@ -363,14 +363,14 @@ jobs:
       # → see docs/console-integration.md
       - name: Brokered catalog token from the Console
         if: inputs.console_url != ''
-        uses: naviteq/github-actions/.github/actions/catalog-token@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/catalog-token@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
           console_run_id: ${{ inputs.console_run_id }}
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -398,7 +398,7 @@ jobs:
 
       - name: Resolve the registry token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/registry-token@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           token: ${{ secrets.runestra_registry_token }}
           client_id: ${{ secrets.runestra_client_id }}
@@ -418,7 +418,7 @@ jobs:
       # → docs/terragrunt-provider-mirror.md
       - name: Send provider downloads through the mirror
         if: env.WARM_CACHE == 'true' && inputs.provider_mirror_url != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-provider-mirror@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-provider-mirror@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           url: ${{ inputs.provider_mirror_url }}
           ca_file: ${{ inputs.provider_mirror_ca_file }}
@@ -455,7 +455,7 @@ jobs:
 
       - name: Select the units and show their run order
         id: units
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -467,7 +467,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           profiles: ${{ steps.config.outputs.profiles }}
           units: ${{ steps.units.outputs.units }}
@@ -478,7 +478,7 @@ jobs:
       # which need state this job cannot read. → docs/terragrunt-plan.md
       - name: Warm the provider cache
         if: env.WARM_CACHE == 'true' && steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -547,14 +547,14 @@ jobs:
       # → see docs/console-integration.md
       - name: Brokered catalog token from the Console
         if: inputs.console_url != ''
-        uses: naviteq/github-actions/.github/actions/catalog-token@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/catalog-token@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
           console_run_id: ${{ inputs.console_run_id }}
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -581,7 +581,7 @@ jobs:
 
       - name: Resolve the registry token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/registry-token@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           token: ${{ secrets.runestra_registry_token }}
           client_id: ${{ secrets.runestra_client_id }}
@@ -620,7 +620,7 @@ jobs:
       # The OIDC subject carries the profile's Environment, which the tenancy's trust rule matches. → docs/terragrunt-plan.md
       - name: Configure OCI credentials and remote-state access
         if: matrix.leg.oci_region != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           region: ${{ matrix.leg.oci_region }}
           oidc_domain_url: ${{ secrets.oci_oidc_domain_url }}
@@ -633,7 +633,7 @@ jobs:
       # → docs/terragrunt-provider-mirror.md
       - name: Send provider downloads through the mirror
         if: inputs.provider_mirror_url != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-provider-mirror@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-provider-mirror@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           url: ${{ inputs.provider_mirror_url }}
           ca_file: ${{ inputs.provider_mirror_ca_file }}
@@ -669,7 +669,7 @@ jobs:
       # Restore only: a planned unit's .terragrunt-cache holds its plaintext tfplan. → docs/terragrunt-plan.md
       - name: Restore the module sources
         if: inputs.module_cache && matrix.leg.units != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           mode: restore
           working_directory: ${{ inputs.working_directory }}
@@ -732,7 +732,7 @@ jobs:
       - name: Count the planned changes
         id: report
         if: ${{ !cancelled() }}
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-report@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
@@ -750,7 +750,7 @@ jobs:
           success() && inputs.cost_estimate && !inputs.destroy && env.HAS_INFRACOST == 'true'
           && steps.report.outputs.plans != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-cost@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-cost@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         env:
           INFRACOST_API_KEY: ${{ secrets.infracost_api_key }}
         with:
@@ -781,7 +781,7 @@ jobs:
       # A destroy runs `destroy`, never a plan file, so its plans are not kept. → docs/terragrunt-destroy.md
       - name: Ensure age
         if: success() && inputs.plan_recipient != '' && !inputs.destroy && steps.report.outputs.plans != ''
-        uses: naviteq/github-actions/.github/actions/ensure-tool@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/ensure-tool@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           tool: age
           version: 1.3.2
@@ -870,7 +870,7 @@ jobs:
 
       - name: Merge the counts and hand the plans over
         id: result
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@a7d0b0ba8f83c8d8843721f2cb27b191c7bb6925
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@eadaf29b04ef4f353609ea256b92c1bb3826fd85
         with:
           counts_dir: counts
           plans_dir: >-
