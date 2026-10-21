@@ -10,6 +10,7 @@ Stdlib only. See docs/console-integration.md.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -18,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +39,12 @@ BACKOFF_CAP = 15.0
 REQUEST_TIMEOUT = 30.0
 TRUNCATION_MARKER = "...[truncated]"
 FINAL_STATUSES = (401, 403, 413, 422)
+AUTH_STATUSES = (401, 403)
+LOG_LINE = "log.line"
+RETRY_PAUSE = 30.0
+CLOSE_ROUNDS = 2
+BUFFER_CAP_EVENTS = 5000
+BUFFER_CAP_BYTES = 8 * 1024 * 1024
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 _sleep = time.sleep
@@ -185,16 +193,32 @@ def fit_line(envelope: dict) -> bytes | None:
     return None
 
 
+def _body(entries: list[tuple[str, bytes]]) -> bytes:
+    return b"\n".join(line for _, line in entries) + b"\n"
+
+
+def _plural(count: int) -> str:
+    return f"{count} event" if count == 1 else f"{count} events"
+
+
 class EventSink:
-    """Buffers envelopes and posts them in batches; every method is safe to call blind."""
+    """Buffers envelopes and posts them in batches; every method is safe to call blind.
+
+    A batch the Console could not take goes back to the head of the buffer; when the buffer
+    is full, `log.line` events are shed oldest first and structured events are always kept.
+    """
 
     def __init__(self, console_url: str, audience: str, run_id: str, *, batch_size: int = 50,
                  flush_seconds: float = 5.0, masker: SecretMasker | None = None) -> None:
         self.masker = masker if masker is not None else SecretMasker()
         self.enabled = bool(console_url and audience and run_id)
         self.counts = {"sent": 0, "refused": 0, "dropped": 0}
-        self._buffer: list[bytes] = []
+        self._buffer: list[tuple[str, bytes]] = []
         self._buffered_since = 0.0
+        self._retry_at = 0.0
+        self._shed_count = 0
+        self._failure = ""
+        self._status = 0
         self._batch_size = max(batch_size, 1)
         self._flush_seconds = flush_seconds
         self._audience = audience
@@ -236,13 +260,14 @@ class EventSink:
                 "payload": self.masker.mask_payload(payload) if isinstance(payload, dict) else {},
             })
             if line is None:
-                self.counts["dropped"] += 1
-                self._warn_once("oversize", "an event over the line cap was dropped")
+                self._lose([(event_type, b"")], "dropped", "it is over the line cap")
                 return False
             if not self._buffer:
                 self._buffered_since = _monotonic()
-            self._buffer.append(line)
-            if len(self._buffer) >= self._batch_size or _monotonic() - self._buffered_since >= self._flush_seconds:
+            self._buffer.append((event_type, line))
+            self._shed()
+            due = len(self._buffer) >= self._batch_size or _monotonic() - self._buffered_since >= self._flush_seconds
+            if due and _monotonic() >= self._retry_at:
                 self.flush()
             return True
         except Exception:  # telemetry must not fail an apply
@@ -254,19 +279,104 @@ class EventSink:
         return self.masker.mask(text)
 
     def flush(self) -> None:
-        if not self._buffer:
-            return
-        batch, self._buffer = self._buffer, []
+        """Post the buffer in batches until it is empty or the Console stops taking them."""
         try:
-            if self._post(b"\n".join(batch) + b"\n"):
-                self.counts["sent"] += len(batch)
-            else:
-                self.counts["dropped"] += len(batch)
-        except Exception:
-            self.counts["dropped"] += len(batch)
+            while self._buffer:
+                batch = self._buffer[:self._batch_size]
+                del self._buffer[:len(batch)]
+                if not self._deliver(batch):
+                    break
+            self._report_shed()
+        except Exception:  # telemetry must not fail an apply
+            pass
 
     def close(self) -> None:
-        self.flush()
+        """Flush everything left, ignoring the pause; what the Console still refuses is dropped and named."""
+        try:
+            for _ in range(CLOSE_ROUNDS):
+                if not self._buffer:
+                    break
+                self._retry_at = 0.0
+                self.flush()
+            if self._buffer:
+                left, self._buffer = self._buffer, []
+                self._lose(left, "dropped", f"the job ended before the Console took them ({self._status_text()})")
+            self._report_shed()
+        except Exception:
+            pass
+
+    def summary(self) -> str:
+        return f"sent={self.counts['sent']} refused={self.counts['refused']} dropped={self.counts['dropped']}"
+
+    def _deliver(self, batch: list[tuple[str, bytes]]) -> bool:
+        """False after a retryable failure, with the batch back at the head of the buffer."""
+        if self._try_post(batch):
+            self.counts["sent"] += len(batch)
+            return True
+        if self._failure == "retry":
+            self._hold(batch)
+            return False
+        if self._failure != "refused" or len(batch) == 1 or self._status in AUTH_STATUSES:
+            self._lose(batch, *self._loss())
+            return True
+        structured = [entry for entry in batch if entry[0] != LOG_LINE]
+        self._lose([entry for entry in batch if entry[0] == LOG_LINE], *self._loss())
+        for index, entry in enumerate(structured):
+            if self._try_post([entry]):
+                self.counts["sent"] += 1
+            elif self._failure == "retry":
+                self._hold(structured[index:])
+                return False
+            else:
+                self._lose([entry], *self._loss())
+        return True
+
+    def _try_post(self, batch: list[tuple[str, bytes]]) -> bool:
+        try:
+            return self._post(_body(batch))
+        except Exception:
+            self._failure, self._status = "error", 0
+            return False
+
+    def _loss(self) -> tuple[str, str]:
+        if self._failure == "refused":
+            return "refused", f"the Console refused them with HTTP {self._status}"
+        if self._failure == "unbound":
+            return "dropped", "the run is not bound on the Console"
+        return "dropped", "posting failed unexpectedly"
+
+    def _status_text(self) -> str:
+        return f"last HTTP {self._status}" if self._status else "no response"
+
+    def _hold(self, entries: list[tuple[str, bytes]]) -> None:
+        self._buffer[:0] = entries
+        self._retry_at = _monotonic() + RETRY_PAUSE
+        print(f"console-events: the Console did not accept a batch ({self._status_text()}); "
+              f"{_plural(len(self._buffer))} held, next try in {RETRY_PAUSE:.0f} s", file=sys.stderr, flush=True)
+        self._shed()
+
+    def _shed(self) -> None:
+        size = sum(len(line) for _, line in self._buffer)
+        while len(self._buffer) > BUFFER_CAP_EVENTS or size > BUFFER_CAP_BYTES:
+            index = next((i for i, (kind, _) in enumerate(self._buffer) if kind == LOG_LINE), None)
+            if index is None:
+                return
+            size -= len(self._buffer.pop(index)[1])
+            self._shed_count += 1
+            self.counts["dropped"] += 1
+
+    def _report_shed(self) -> None:
+        if self._shed_count:
+            count, self._shed_count = self._shed_count, 0
+            _warning(f"{_plural(count)} dropped ({LOG_LINE} x{count}): the buffer was full while the Console "
+                     "did not accept batches; log lines go first")
+
+    def _lose(self, entries: list[tuple[str, bytes]], how: str, reason: str) -> None:
+        if not entries:
+            return
+        self.counts[how] += len(entries)
+        kinds = ", ".join(f"{kind} x{count}" for kind, count in Counter(kind for kind, _ in entries).items())
+        _warning(f"{_plural(len(entries))} {how} ({kinds}): {reason}")
 
     def _warn_once(self, key: str, message: str) -> None:
         if key not in self._warned:
@@ -287,25 +397,26 @@ class EventSink:
                 req = urllib.request.Request(self._endpoint, data=body, method="POST", headers={
                     "Authorization": f"Bearer {self._bearer()}", "Content-Type": "application/x-ndjson"})
                 status, _ = _request(req)
-            except (urllib.error.URLError, OSError, RuntimeError, ValueError):
+            except (urllib.error.URLError, OSError, http.client.HTTPException, RuntimeError, ValueError):
                 status = 0
+            self._status = status
             if 200 <= status < 300:
                 self._not_found_since = None
                 return True
             if status in FINAL_STATUSES or (400 <= status < 500 and status not in (404, 408, 429)):
-                self._warn_once(f"http:{status}", f"the Console refused a batch with HTTP {status}")
+                self._failure = "refused"
                 return False
             if status == 404:
                 now = _monotonic()
                 if self._not_found_since is None:
                     self._not_found_since = now
                 if now - self._not_found_since + delay > NOT_FOUND_WINDOW:
-                    self._warn_once("http:404", "the run is not bound on the Console; a batch was dropped")
+                    self._failure = "unbound"
                     return False
             else:
                 failures += 1
                 if failures >= RETRY_ATTEMPTS:
-                    self._warn_once("delivery", "the Console did not accept a batch; it was dropped")
+                    self._failure = "retry"
                     return False
             _sleep(delay)
             delay = min(delay * 2, BACKOFF_CAP)
@@ -334,8 +445,7 @@ def cmd_post(path: str, env: dict[str, str]) -> int:
             continue
         sink.emit(event_type, payload)
     sink.close()
-    print(f"::notice title=console-events::sent={sink.counts['sent']} refused={sink.counts['refused']} "
-          f"dropped={sink.counts['dropped']}", flush=True)
+    print(f"::notice title=console-events::{sink.summary()}", flush=True)
     return 0
 
 

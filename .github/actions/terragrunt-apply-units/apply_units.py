@@ -411,6 +411,9 @@ TERRAGRUNT_PREFIX = re.compile(r"^\s*(?:(?:\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+)?(?P<s
 BOX_GUTTER = re.compile(r"^\s*([\u2577\u2502\u2575])\s?")
 ERROR_LINE = re.compile(r"\s*Error:")
 DIAGNOSTIC = re.compile(r"\s*(?:Error|Warning):")
+INIT_TAG = re.compile(r"^\s*(?:\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+)?INFO\s+(?:tofu|terraform):")
+INIT_SOURCE = re.compile(r"^\s*(?:\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+)?INFO\s+Downloading Terraform configurations from ")
+COMMAND_WORD = re.compile(r"[a-z][a-z0-9-]{0,31}")
 ERROR_EXCERPT_MAX_LINES = 100
 
 
@@ -576,6 +579,20 @@ class ErrorExcerptCollector:
             return None
 
 
+def command_of(args: tuple[str, ...]) -> str | None:
+    """The engine command a streamed() call invokes (its first non-flag word), or None outside COMMAND_WORD."""
+    word = next((arg for arg in args if not arg.startswith("-")), "")
+    return word if COMMAND_WORD.fullmatch(word) else None
+
+
+def line_command(line: str, command: str | None) -> str | None:
+    """`init` for terragrunt's auto-init output, else the invoked command. → docs/console-integration.md"""
+    if command is None:
+        return None
+    plain = ANSI_SEQUENCE.sub("", line)
+    return "init" if INIT_TAG.match(plain) or INIT_SOURCE.match(plain) else command
+
+
 def streamed(unit: str, cwd: Path, *args: str, sink: object = None, log_lines: bool = False,
              collector: ErrorExcerptCollector | None = None, env: dict[str, str] | None = None) -> int:
     """terragrunt run in one unit, its output prefixed so parallel units stay readable; env adds to this call only."""
@@ -583,6 +600,7 @@ def streamed(unit: str, cwd: Path, *args: str, sink: object = None, log_lines: b
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                env={**os.environ, **env} if env else None)
     assert process.stdout is not None
+    command = command_of(args)
     for line in process.stdout:
         with _PRINT:
             print(f"[{unit}] {line}", end="", flush=True)
@@ -591,7 +609,9 @@ def streamed(unit: str, cwd: Path, *args: str, sink: object = None, log_lines: b
         if log_lines and reporting(sink) and line.strip():
             masked = sink.mask(line.rstrip("\r\n")) if hasattr(sink, "mask") else line.rstrip("\r\n")
             text = masked.encode("utf-8", "replace")[:LOG_LINE_CAP].decode("utf-8", "ignore")
-            emit(sink, "log.line", {"stream": "stdout", "level": "info", "text": text})
+            payload = {"stream": "stdout", "level": "info", "text": text, "unit": unit}
+            tag = line_command(line, command)
+            emit(sink, "log.line", {**payload, "command": tag} if tag else payload)
     return process.wait()
 
 
@@ -1034,6 +1054,8 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 if sink is not None:
                     sink.close()
+                    if callable(getattr(sink, "summary", None)):
+                        print(f"::notice title=console-events::{sink.summary()}", flush=True)
             report = levels_report(args.phase, rows, order)
             print(report, end="")
             if os.environ.get("GITHUB_STEP_SUMMARY"):
