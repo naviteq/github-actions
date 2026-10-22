@@ -148,7 +148,7 @@ jobs:
           persist-credentials: ${{ inputs.console_url == '' }}
 
       - name: Install Terragrunt and OpenTofu
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@90250931c44683aa64e75cefca751711924220b0
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@beea952399ee1f3045fba9b9288be4f2f3afab5f
         with:
           terragrunt_version: ${{ inputs.terragrunt_version }}
           opentofu_version: ${{ inputs.opentofu_version }}
@@ -165,14 +165,14 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@90250931c44683aa64e75cefca751711924220b0
+        uses: naviteq/github-actions/.github/actions/registry-token@beea952399ee1f3045fba9b9288be4f2f3afab5f
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
       - name: Get a catalog token from the Console broker
         if: inputs.console_url != ''
-        uses: naviteq/github-actions/.github/actions/catalog-token@90250931c44683aa64e75cefca751711924220b0
+        uses: naviteq/github-actions/.github/actions/catalog-token@beea952399ee1f3045fba9b9288be4f2f3afab5f
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
@@ -222,7 +222,7 @@ jobs:
       - name: Select the units to apply, in run order
         id: select
         if: inputs.mode == 'apply'
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@90250931c44683aa64e75cefca751711924220b0
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@beea952399ee1f3045fba9b9288be4f2f3afab5f
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -234,7 +234,7 @@ jobs:
       - name: Apply
         id: fresh
         if: inputs.mode == 'apply'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@90250931c44683aa64e75cefca751711924220b0
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@beea952399ee1f3045fba9b9288be4f2f3afab5f
         with:
           command: run
           phase: fresh
@@ -251,7 +251,7 @@ jobs:
       - name: Select the units to destroy, in destroy order
         id: select-destroy
         if: inputs.mode == 'destroy'
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@90250931c44683aa64e75cefca751711924220b0
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@beea952399ee1f3045fba9b9288be4f2f3afab5f
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -263,7 +263,7 @@ jobs:
       - name: Destroy
         id: destroy
         if: inputs.mode == 'destroy'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@90250931c44683aa64e75cefca751711924220b0
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@beea952399ee1f3045fba9b9288be4f2f3afab5f
         with:
           command: run
           phase: destroy
@@ -281,7 +281,7 @@ jobs:
       - name: Store the receiver token
         if: success() && inputs.mode == 'apply' && env.HAS_RECEIVER_TOKEN == 'true' && inputs.receiver_secret_id != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/receiver-token@90250931c44683aa64e75cefca751711924220b0
+        uses: naviteq/github-actions/.github/actions/receiver-token@beea952399ee1f3045fba9b9288be4f2f3afab5f
         with:
           token: ${{ secrets.runestra_receiver_token }}
           secret_id: ${{ inputs.receiver_secret_id }}
@@ -290,7 +290,7 @@ jobs:
       - name: Store the registry credential
         if: success() && inputs.mode == 'apply' && env.HAS_REGISTRY_AUTH == 'true' && inputs.registry_secret_id != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/registry-credential@90250931c44683aa64e75cefca751711924220b0
+        uses: naviteq/github-actions/.github/actions/registry-credential@beea952399ee1f3045fba9b9288be4f2f3afab5f
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
