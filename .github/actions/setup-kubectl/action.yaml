@@ -49,7 +49,7 @@ runs:
         echo "version=${version}" >> "$GITHUB_OUTPUT"
 
     - name: Ensure kubectl ${{ steps.resolve.outputs.version }}
-      uses: naviteq/github-actions/.github/actions/ensure-tool@9aea61d8dfa4478700597ea0cd36e0fbfe232254
+      uses: naviteq/github-actions/.github/actions/ensure-tool@90250931c44683aa64e75cefca751711924220b0
       with:
         tool: kubectl
         version: ${{ steps.resolve.outputs.version }}
