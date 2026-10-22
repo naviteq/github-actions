@@ -1,0 +1,34 @@
+---
+name: Registry credential
+description: >
+  Store the Runestra registry client credential in AWS Secrets Manager as JSON with client_id and
+  client_secret. Best effort: both values are masked first, the secret is created when absent and
+  overwritten only when its value differs, a refused write warns and the step never fails; with any
+  input empty it does nothing.
+
+inputs:
+  client_id:
+    description: Runestra registry client id
+    required: false
+    default: ""
+  client_secret:
+    description: Runestra registry client secret
+    required: false
+    default: ""
+  secret_id:
+    description: Secrets Manager secret id (leading slash) that holds the credential; created when absent
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Store the credential in Secrets Manager
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CLIENT_ID: ${{ inputs.client_id }}
+        CLIENT_SECRET: ${{ inputs.client_secret }}
+        SECRET_ID: ${{ inputs.secret_id }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+      run: python3 "${ACTION_PATH}/registry_credential.py"
