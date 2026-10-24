@@ -20,7 +20,7 @@ on:
         type: string
         default: ubuntu-24.04
       expect:
-        description: JSON expectations policy every unit's plan is checked against; the default refuses a replace and a destroy
+        description: JSON expectations policy every unit's plan is checked against; the default refuses a replace and a destroy, and allow_replace_types lists resource types a unit may replace
         required: false
         type: string
         default: '{"allow_replace": false, "allow_destroy": false}'
@@ -163,7 +163,7 @@ jobs:
           persist-credentials: ${{ inputs.console_url == '' }}
 
       - name: Install Terragrunt and OpenTofu
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           terragrunt_version: ${{ inputs.terragrunt_version }}
           opentofu_version: ${{ inputs.opentofu_version }}
@@ -180,14 +180,14 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/registry-token@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
       - name: Get a catalog token from the Console broker
         if: inputs.console_url != ''
-        uses: naviteq/github-actions/.github/actions/catalog-token@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/catalog-token@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
@@ -238,7 +238,7 @@ jobs:
       # Opt-in: safe only while the caller is the state's one writer. → docs/terragrunt-apply-fresh.md
       - name: Clear state locks a killed run left behind
         if: inputs.clear_stale_locks && env.HAS_AWS_ROLE == 'true'
-        uses: naviteq/github-actions/.github/actions/clear-state-locks@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/clear-state-locks@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           working_directory: ${{ inputs.working_directory }}
           aws_region: ${{ inputs.aws_region }}
@@ -246,7 +246,7 @@ jobs:
       - name: Select the units to apply, in run order
         id: select
         if: inputs.mode == 'apply'
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -258,7 +258,7 @@ jobs:
       - name: Apply
         id: fresh
         if: inputs.mode == 'apply'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           command: run
           phase: fresh
@@ -276,7 +276,7 @@ jobs:
       - name: Snapshot the ECS services
         if: ${{ !cancelled() && inputs.mode == 'apply' && inputs.ecs_stack_path != '' && steps.generate.outcome == 'success' }}
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/ecs-service-health@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/ecs-service-health@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           mode: snapshot
           ecs_stack_path: ${{ inputs.ecs_stack_path }}
@@ -289,7 +289,7 @@ jobs:
       - name: Select the units to destroy, in destroy order
         id: select-destroy
         if: inputs.mode == 'destroy'
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -301,7 +301,7 @@ jobs:
       - name: Empty the ECR repositories the destroy removes
         if: inputs.mode == 'destroy' && inputs.empty_ecr_repositories && env.HAS_AWS_ROLE == 'true'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/empty-ecr-repositories@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/empty-ecr-repositories@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           working_directory: ${{ inputs.working_directory }}
           aws_region: ${{ inputs.aws_region }}
@@ -310,7 +310,7 @@ jobs:
       - name: Destroy
         id: destroy
         if: inputs.mode == 'destroy'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           command: run
           phase: destroy
@@ -326,9 +326,9 @@ jobs:
 
       # ECS's own account of the services that did not settle. → docs/terragrunt-apply-fresh.md
       - name: Ask ECS why a service did not settle
-        if: failure() && inputs.ecs_stack_path != '' && (steps.fresh.outcome == 'failure' || steps.destroy.outcome == 'failure')
+        if: failure() && inputs.ecs_stack_path != '' && (steps.fresh.outputs.change_failed == 'true' || steps.destroy.outputs.change_failed == 'true')
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/ecs-service-health@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/ecs-service-health@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           mode: diagnostics
           ecs_stack_path: ${{ inputs.ecs_stack_path }}
@@ -341,7 +341,7 @@ jobs:
       - name: Store the receiver token
         if: success() && inputs.mode == 'apply' && env.HAS_RECEIVER_TOKEN == 'true' && inputs.receiver_secret_id != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/receiver-token@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/receiver-token@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           token: ${{ secrets.runestra_receiver_token }}
           secret_id: ${{ inputs.receiver_secret_id }}
@@ -350,7 +350,7 @@ jobs:
       - name: Store the registry credential
         if: success() && inputs.mode == 'apply' && env.HAS_REGISTRY_AUTH == 'true' && inputs.registry_secret_id != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/registry-credential@c592de1f7e02ddb5850beed7962bd60b39bc8c37
+        uses: naviteq/github-actions/.github/actions/registry-credential@b621860faef28519aae54d6a90a12898ead02c7c
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
