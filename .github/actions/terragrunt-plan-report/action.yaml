@@ -25,6 +25,10 @@ inputs:
     description: Log file of the destroy-plan run for the deleted units
     required: false
     default: ""
+  plan_log:
+    description: Log file of the units' plan run; a unit with no plan whose log says its state lock was not acquired is reported as such
+    required: false
+    default: ""
   kept:
     description: Units a destroy run left out for prevent_destroy, one per line; reported as kept, not missing
     required: false
@@ -66,6 +70,7 @@ runs:
         UNITS: ${{ inputs.units }}
         DELETED: ${{ inputs.deleted }}
         DESTROY_LOG: ${{ inputs.destroy_log }}
+        PLAN_LOG: ${{ inputs.plan_log }}
         RESOURCES_FILE: ${{ inputs.resources_file }}
         KEPT: ${{ inputs.kept }}
         MASK: ${{ inputs.mask }}
@@ -74,5 +79,6 @@ runs:
         set -euo pipefail
         python3 "${ACTION_PATH}/report.py" --working-directory "${WORKING_DIRECTORY}" \
           --engine "${ENGINE}" --units "${UNITS}" --deleted "${DELETED}" --destroy-log "${DESTROY_LOG}" \
+          --plan-log "${PLAN_LOG}" \
           --resources-file "${RESOURCES_FILE}" --kept "${KEPT}" --secret-units "${SECRET_UNITS}" \
           ${MASK:+--mask "${MASK}"}
