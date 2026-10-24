@@ -130,6 +130,9 @@ outputs:
   changes:
     description: For run fresh and destroy, JSON list of each reached unit's counts and outcome
     value: ${{ steps.units.outputs.changes }}
+  change_failed:
+    description: For run fresh and destroy, true when a unit failed while applying or destroying; false after a refusal or a failed plan
+    value: ${{ steps.units.outputs.change_failed }}
   applied:
     description: For run fresh, the units applied, one per line
     value: ${{ steps.units.outputs.applied }}

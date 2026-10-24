@@ -48,7 +48,7 @@ def action_of(actions: list[str]) -> str | None:
 
 
 def resources(plan: dict) -> list[dict[str, str]]:
-    """Same as terragrunt-plan-report's: address and action per changing resource and root output."""
+    """Same as terragrunt-plan-report's: address and action per changing resource and root output, and each resource's type."""
     found = []
     for name, change in (plan.get("output_changes") or {}).items():
         action = action_of(change.get("actions", []))
@@ -57,7 +57,7 @@ def resources(plan: dict) -> list[dict[str, str]]:
     for change in plan.get("resource_changes") or []:
         action = action_of(change.get("change", {}).get("actions", []))
         if action:
-            found.append({"address": change.get("address", ""), "action": action})
+            found.append({"address": change.get("address", ""), "action": action, "type": change.get("type") or ""})
     return sorted(found, key=lambda r: r["address"])
 
 
@@ -132,19 +132,31 @@ def check_plans(metadata: dict, marker: dict | None, artifact: dict | None, comm
 
 def check_policy(expect: dict) -> None:
     """Typos in a policy fail before anything is planned."""
-    known = {"allow_replace", "allow_destroy", "units", "require_changes", "max_monthly_cost_delta"}
+    known = {"allow_replace", "allow_replace_types", "allow_destroy", "units", "require_changes",
+             "max_monthly_cost_delta"}
     unknown = sorted(set(expect) - known)
     if unknown:
         raise Refused(f"expect has unknown keys: {', '.join(unknown)}")
+    types = expect.get("allow_replace_types", [])
+    if not isinstance(types, list) or not all(isinstance(kind, str) and kind.strip() for kind in types):
+        raise Refused("expect.allow_replace_types must be a list of resource type names")
     for name, counts in (expect.get("units") or {}).items():
         bad = sorted(set(counts) - set(COUNT_KEYS))
         if bad:
             raise Refused(f"expect.units.{name} has unknown counts: {', '.join(bad)}")
 
 
+def replaces_listed_types(unit: dict, expect: dict) -> bool:
+    """Whether allow_replace_types names the type of every resource the unit replaces; a row without types is unknown."""
+    allowed = set(expect.get("allow_replace_types") or ())
+    types = unit.get("replaced_types")
+    return bool(allowed) and isinstance(types, list) and len(types) == unit.get("replace") \
+        and all(kind and kind in allowed for kind in types)
+
+
 def unit_violation(unit: dict, expect: dict) -> str:
     """Why one unit's counts break the policy; empty when they do not."""
-    if unit.get("replace") and not expect.get("allow_replace", False):
+    if unit.get("replace") and not expect.get("allow_replace", False) and not replaces_listed_types(unit, expect):
         return f"{unit['unit']} would replace {unit['replace']} resources and allow_replace is off"
     if unit.get("destroy") and not expect.get("allow_destroy", False):
         return f"{unit['unit']} would destroy {unit['destroy']} resources and allow_destroy is off"
@@ -327,6 +339,12 @@ def run_clean(root: Path, units: list[dict]) -> None:
             raise Refused(f"{unit['unit']} could not be planned after the apply")
     if dirty:
         raise Refused("still not converged after the apply: " + ", ".join(dirty))
+
+
+def plan_row(unit: str, found: list[dict[str, str]]) -> dict:
+    """A unit's counts and, when it replaces resources, their types for allow_replace_types."""
+    replaced = [r.get("type", "") for r in found if r["action"] == "replace" and not r["address"].startswith("output.")]
+    return {"unit": unit, **counts_of(found), **({"replaced_types": sorted(replaced)} if replaced else {})}
 
 
 def counts_of(found: list[dict[str, str]]) -> dict[str, int]:
@@ -745,7 +763,7 @@ def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object =
     shown = subprocess.run([engine, "show", "-json", plan_file.name], cwd=plan_file.parent,
                            capture_output=True, text=True, check=True)
     plan = json.loads(shown.stdout)
-    row = {"unit": unit, **counts_of(resources(plan))}
+    row = plan_row(unit, resources(plan))
     violation = unit_violation(row, expect)
     if violation:
         return {**row, "outcome": "refused", "reason": violation}
@@ -971,6 +989,7 @@ def dependencies_of(unit: str, deps: dict[str, set[str]]) -> set[str]:
 APPLY_PHASE = "Apply the stack"
 DESTROY_PHASE = "Destroy the stack"
 SETTLED = {"applied", "destroyed", "unchanged", "protected", "kept"}
+CHANGE_FAILURES = {"apply failed", "destroy failed"}
 
 
 def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: str, parallelism: int,
@@ -1099,7 +1118,8 @@ def main(argv: list[str] | None = None) -> int:
                     out.write(report)
             outcome = PHASES[args.phase][1]
             applied = [row["unit"] for row in rows if row["outcome"] == outcome]
-            write_outputs(changes=json.dumps(rows, separators=(",", ":")))
+            write_outputs(changes=json.dumps(rows, separators=(",", ":")),
+                          change_failed=str(any(row["outcome"] in CHANGE_FAILURES for row in rows)).lower())
             if os.environ.get("GITHUB_OUTPUT"):
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
                     out.write(f"{outcome}<<APPLY_UNITS_EOF\n" + "".join(u + "\n" for u in applied) + "APPLY_UNITS_EOF\n")
