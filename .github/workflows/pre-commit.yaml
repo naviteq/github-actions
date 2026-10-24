@@ -23,6 +23,21 @@ on:
         required: false
         type: string
         default: "--all-files"
+      changed_files_only:
+        description: >
+          On a pull request to the default branch, replace `--all-files` in `flags` with the
+          files it changes against that branch. Anything else runs `flags` as given. See docs/pre-commit.md.
+        required: false
+        type: boolean
+        default: false
+      all_files_when_changed:
+        description: >
+          With changed_files_only, an extended regular expression matched against every
+          path the pull request changes. Any match keeps `--all-files`, as a change to
+          `.pre-commit-config.yaml` always does.
+        required: false
+        type: string
+        default: ""
       extra_pre_command:
         description: >
           Extra command to run before pre-commit, eval'd in the same shell. Keep it to
@@ -65,6 +80,12 @@ on:
       pre_commit_resolved:
         description: Version pre-commit reported after the decision
         value: ${{ jobs.pre-commit.outputs.pre_commit_resolved }}
+      scope:
+        description: changed when the run checked only the files the pull request changes, flags when it ran flags as given
+        value: ${{ jobs.pre-commit.outputs.scope }}
+      changed_file_count:
+        description: Number of paths in the range the narrowed run checked, empty unless scope is changed
+        value: ${{ jobs.pre-commit.outputs.changed_file_count }}
 
 permissions: {}
 
@@ -78,14 +99,21 @@ jobs:
       outcome: ${{ steps.run.outcome }}
       pre_commit_source: ${{ steps.ensure.outputs.source }}
       pre_commit_resolved: ${{ steps.ensure.outputs.resolved }}
+      scope: ${{ steps.scope.outputs.scope }}
+      changed_file_count: ${{ steps.scope.outputs.count }}
+    env:
+      # Only a pull request to the default branch has that branch's tip as HEAD^1. → docs/pre-commit.md
+      NARROW: ${{ inputs.changed_files_only && github.event_name == 'pull_request' && github.base_ref == github.event.repository.default_branch }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: ${{ env.NARROW == 'true' && 2 || 1 }}
 
       # No setup-python: a baked pre-commit runs on the image's own Python. → docs/pre-commit.md
       - name: Ensure pre-commit ${{ inputs.pre_commit_version }}
         id: ensure
-        uses: naviteq/github-actions/.github/actions/ensure-tool@1882ce8a0dac75ff7586a34350a1389e7dde7b7a
+        uses: naviteq/github-actions/.github/actions/ensure-tool@d91ca39146ae72b064322b5e4010917745e18214
         with:
           tool: pre-commit
           version: ${{ inputs.pre_commit_version }}
@@ -123,6 +151,44 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ runner.arch }}-py${{ steps.report.outputs.python }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
+      - name: Select the files to check
+        id: scope
+        shell: bash
+        env:
+          FLAGS: ${{ inputs.flags }}
+          ALL_FILES_WHEN_CHANGED: ${{ inputs.all_files_when_changed }}
+        run: |
+          set -euo pipefail
+          scope=flags
+          count=""
+          if [ "${NARROW}" = "true" ] && [ -z "$(git rev-parse -q --verify HEAD^2 || true)" ]; then
+            echo "::warning title=pre-commit::HEAD is not the pull request's merge commit, so HEAD^1 is not the default branch; flags run as given."
+            NARROW=false
+          fi
+          if [ "${NARROW}" = "true" ] && [[ " ${FLAGS} " == *" --all-files "* ]]; then
+            from=HEAD^1
+            to=HEAD
+            changed="$(git diff --name-only --no-renames "${from}" "${to}")"
+            patterns=(-e '^\.pre-commit-config\.yaml$')
+            if [ -n "${ALL_FILES_WHEN_CHANGED}" ]; then
+              patterns+=(-e "${ALL_FILES_WHEN_CHANGED}")
+            fi
+            trigger="$(grep -E -m1 "${patterns[@]}" <<<"${changed}")" || [ $? -eq 1 ]
+            if [ -n "${trigger}" ]; then
+              echo "${trigger} changed, so every file is checked." | tee -a "${GITHUB_STEP_SUMMARY}"
+            else
+              FLAGS="${FLAGS/--all-files/--from-ref ${from} --to-ref ${to}}"
+              scope=changed
+              count="$(grep -c . <<<"${changed}" || true)"
+              echo "Checking only the ${count} file(s) this pull request changes." | tee -a "${GITHUB_STEP_SUMMARY}"
+            fi
+          fi
+          {
+            echo "scope=${scope}"
+            echo "count=${count}"
+            echo "flags=${FLAGS}"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Run pre-commit
         continue-on-error: ${{ inputs.allow_failure }}
         id: run
@@ -135,4 +201,4 @@ jobs:
         run: |
           set -e
           eval "${{ inputs.extra_pre_command }}"
-          pre-commit run ${{ inputs.flags }}
+          pre-commit run ${{ steps.scope.outputs.flags }}

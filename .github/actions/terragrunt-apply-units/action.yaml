@@ -73,6 +73,14 @@ inputs:
     description: For run fresh and destroy, how many units of one dependency level run at once
     required: false
     default: "4"
+  state_lock:
+    description: For run, also lock the state for the plans that apply nothing (check, the pre-apply plan, clean), and give every command lock_timeout to take the lock
+    required: false
+    default: "false"
+  lock_timeout:
+    description: For run with state_lock, how long each command waits for the state lock before its unit fails
+    required: false
+    default: 5m
   console_url:
     description: For run fresh, the Runestra Console origin events are posted to; empty sends nothing and changes nothing
     required: false
@@ -160,6 +168,8 @@ runs:
         PLANS_DIR: ${{ inputs.plans_dir }}
         ENGINE: ${{ inputs.engine }}
         PARALLELISM: ${{ inputs.parallelism }}
+        STATE_LOCK: ${{ inputs.state_lock }}
+        LOCK_TIMEOUT: ${{ inputs.lock_timeout }}
         CONSOLE_URL: ${{ inputs.console_url }}
         CONSOLE_AUDIENCE: ${{ inputs.console_audience }}
         CONSOLE_RUN_ID: ${{ inputs.console_run_id }}

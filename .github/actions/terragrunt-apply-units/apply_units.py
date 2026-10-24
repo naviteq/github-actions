@@ -231,10 +231,44 @@ def find_newest(unit_dir: Path, name: str) -> Path | None:
     return found[-1] if found else None
 
 
+LOCK_ERROR = "Error acquiring the state lock"
+
+
+def lock_timeout() -> str:
+    """lock_timeout under the state_lock input; empty leaves every command line as it was. → docs/terragrunt-apply.md"""
+    if os.environ.get("STATE_LOCK", "").strip().lower() != "true":
+        return ""
+    return os.environ.get("LOCK_TIMEOUT", "").strip() or "5m"
+
+
+def plan_lock() -> list[str]:
+    """For a plan that applies nothing: unlocked, or locked with a bounded wait under state_lock."""
+    timeout = lock_timeout()
+    return ["-lock=true", f"-lock-timeout={timeout}"] if timeout else ["-lock=false"]
+
+
+def write_lock() -> list[str]:
+    """For an apply, a destroy or the plan they run: the engine's own locking, with a bounded wait under state_lock."""
+    timeout = lock_timeout()
+    return [f"-lock-timeout={timeout}"] if timeout else []
+
+
 def terragrunt(unit_dir: Path, *args: str) -> int:
+    """One command in one unit; a state lock it could not take refuses here, so every caller names the lock."""
     print(f"::group::{unit_dir}: {' '.join(args)}", flush=True)
-    code = subprocess.run(["terragrunt", "run", "--non-interactive", "--", *args], cwd=unit_dir, check=False).returncode
+    process = subprocess.Popen(["terragrunt", "run", "--non-interactive", "--", *args], cwd=unit_dir,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    assert process.stdout is not None
+    locked_out = False
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        locked_out = locked_out or LOCK_ERROR in line
+    code = process.wait()
     print("::endgroup::", flush=True)
+    if code != 0 and locked_out:
+        waited = f" within {lock_timeout()}" if lock_timeout() else ""
+        raise Refused(f"{unit_dir}: the state lock was not acquired{waited}, something else holds it. Nothing was "
+                      "force-unlocked, and no unit after it was touched")
     return code
 
 
@@ -244,7 +278,7 @@ def run_check(root: Path, units: list[dict], engine: str, destroy: bool = False)
     for unit in units:
         unit_dir = root / unit["unit"]
         mode = ["-destroy"] if destroy else []
-        if terragrunt(unit_dir, "plan", *mode, "-lock=false", "-input=false", "-out=tfplan-check") != 0:
+        if terragrunt(unit_dir, "plan", *mode, *plan_lock(), "-input=false", "-out=tfplan-check") != 0:
             raise Refused(f"{unit['unit']} could not be planned again")
         plan_file = find_newest(unit_dir, "tfplan-check")
         if plan_file is None:
@@ -267,9 +301,9 @@ def run_apply(root: Path, units: list[dict], plans_dir: Path) -> None:
             raise Refused(f"{unit['unit']} has no decrypted plan at {plan_file}")
         # A saved plan never refreshes, so files written at plan time (an archive_file zip) are missing on this runner.
         # A full plan, not -refresh-only: that one plans no creates, so a not-yet-created resource reads as null.
-        if terragrunt(root / unit["unit"], "plan", "-lock=false", "-input=false") != 0:
+        if terragrunt(root / unit["unit"], "plan", *plan_lock(), "-input=false") != 0:
             raise Refused(f"{unit['unit']} could not be planned before its apply; the units after it were not touched")
-        if terragrunt(root / unit["unit"], "apply", "-input=false", str(plan_file.resolve())) != 0:
+        if terragrunt(root / unit["unit"], "apply", *write_lock(), "-input=false", str(plan_file.resolve())) != 0:
             raise Refused(f"{unit['unit']} failed to apply; the units after it were not touched")
         print(f"{unit['unit']}: applied")
 
@@ -277,7 +311,7 @@ def run_apply(root: Path, units: list[dict], plans_dir: Path) -> None:
 def run_destroy(root: Path, units: list[dict]) -> None:
     """In the order planned, dependents first; `destroy`, not the plan file, so destroy hooks run."""
     for unit in units:
-        if terragrunt(root / unit["unit"], "destroy", "-auto-approve", "-input=false") != 0:
+        if terragrunt(root / unit["unit"], "destroy", "-auto-approve", *write_lock(), "-input=false") != 0:
             raise Refused(f"{unit['unit']} failed to destroy; the units after it were not touched")
         print(f"{unit['unit']}: destroyed")
 
@@ -286,7 +320,7 @@ def run_clean(root: Path, units: list[dict]) -> None:
     """After an automatic apply, a second plan must change nothing."""
     dirty = []
     for unit in units:
-        code = terragrunt(root / unit["unit"], "plan", "-lock=false", "-input=false", "-detailed-exitcode")
+        code = terragrunt(root / unit["unit"], "plan", *plan_lock(), "-input=false", "-detailed-exitcode")
         if code == 2:
             dirty.append(unit["unit"])
         elif code != 0:
@@ -702,8 +736,8 @@ def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object =
     """Plan one unit now, check the plan against the policy, then apply exactly that plan."""
     unit_dir = root / unit
     collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
-    if streamed(unit, unit_dir, "plan", "-input=false", "-out=tfplan-fresh", sink=sink, log_lines=log_lines,
-                collector=collector) != 0:
+    if streamed(unit, unit_dir, "plan", *write_lock(), "-input=false", "-out=tfplan-fresh", sink=sink,
+                log_lines=log_lines, collector=collector) != 0:
         return {"unit": unit, "outcome": "plan failed", **excerpt_row(collector, sink)}
     plan_file = find_newest(unit_dir, "tfplan-fresh")
     if plan_file is None:
@@ -720,13 +754,13 @@ def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object =
     collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
     if reporting(sink) and supports_json_into(engine):
         with ResourceProgress(unit, sink) as progress:
-            code = streamed(unit, unit_dir, "apply", "-input=false", f"-json-into={progress.path}",
+            code = streamed(unit, unit_dir, "apply", *write_lock(), "-input=false", f"-json-into={progress.path}",
                             str(plan_file.resolve()), sink=sink, log_lines=log_lines, collector=collector)
     elif reporting(sink):
-        code = streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve()), sink=sink,
+        code = streamed(unit, unit_dir, "apply", *write_lock(), "-input=false", str(plan_file.resolve()), sink=sink,
                         log_lines=log_lines, collector=collector)
     else:
-        code = streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve()))
+        code = streamed(unit, unit_dir, "apply", *write_lock(), "-input=false", str(plan_file.resolve()))
     if code != 0:
         return {**row, "outcome": "apply failed", **excerpt_row(collector, sink)}
     return {**row, "outcome": "applied"}
@@ -845,7 +879,7 @@ def destroy_unit(root: Path, unit: str, expect: dict, engine: str, sink: object 
     """Plan one unit's destruction, check it, then destroy: applying the saved plan would skip `destroy` hooks."""
     unit_dir = root / unit
     collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
-    if streamed(unit, unit_dir, "plan", "-destroy", "-input=false", "-out=tfplan-destroy", sink=sink,
+    if streamed(unit, unit_dir, "plan", "-destroy", *write_lock(), "-input=false", "-out=tfplan-destroy", sink=sink,
                 log_lines=log_lines, collector=collector) != 0:
         if is_protected(unit_dir):
             return {"unit": unit, "outcome": "protected", "reason": "protected by prevent_destroy"}
@@ -864,8 +898,9 @@ def destroy_unit(root: Path, unit: str, expect: dict, engine: str, sink: object 
     collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
     report_file = hook_report_path() if reporting(sink) else None
     try:
-        code = streamed(unit, unit_dir, "destroy", "-auto-approve", "-input=false", sink=sink, log_lines=log_lines,
-                        collector=collector, env={HOOK_REPORT_VARIABLE: str(report_file)} if report_file else None)
+        code = streamed(unit, unit_dir, "destroy", "-auto-approve", *write_lock(), "-input=false", sink=sink,
+                        log_lines=log_lines, collector=collector,
+                        env={HOOK_REPORT_VARIABLE: str(report_file)} if report_file else None)
     finally:
         if report_file is not None:
             forward_hook_reports(unit, report_file, sink)

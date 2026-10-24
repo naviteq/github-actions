@@ -1,0 +1,28 @@
+---
+name: Clear state locks
+description: >
+  Delete the OpenTofu .tflock objects a killed run left behind under the working directory's state
+  prefix, in the regional state bucket and in the global one. Best effort: each removal warns with
+  the key, a refused call warns and the step never fails. Safe only where nothing else can hold a
+  lock on that prefix.
+
+inputs:
+  working_directory:
+    description: Directory holding the stack and its units, relative to the repository root
+    required: false
+    default: ""
+  aws_region:
+    description: AWS region of the regional state bucket; the global bucket is always read in us-east-1
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Delete the stale state locks
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        AWS_REGION: ${{ inputs.aws_region }}
+      run: python3 "${ACTION_PATH}/clear_state_locks.py"

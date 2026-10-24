@@ -280,7 +280,7 @@ jobs:
       - &ghcr_login
         name: Login to GitHub Container Registry
         if: inputs.docker_push && inputs.registry == 'ghcr.io' && inputs.aws_region == ''
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ inputs.username != '' && inputs.username || github.actor }}
@@ -290,7 +290,7 @@ jobs:
         name: Login to Oracle Container Registry (OCIR)
         # → see docs/docker-build.md
         if: inputs.docker_push && endsWith(inputs.registry, 'ocir.io') && inputs.username != ''
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ inputs.registry }}
           username: ${{ inputs.username }}
@@ -299,7 +299,7 @@ jobs:
       - &registry_login
         name: Login to registry (using username and token)
         if: inputs.docker_push && inputs.registry != '' && inputs.registry != 'ghcr.io' && !endsWith(inputs.registry, 'ocir.io') && inputs.username != ''
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ${{ inputs.registry }}
           username: ${{ inputs.username }}

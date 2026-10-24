@@ -113,6 +113,16 @@ on:
         required: false
         type: boolean
         default: true
+      state_lock:
+        description: Hold the state lock while planning, waiting up to lock_timeout for it, instead of planning unlocked; the role then needs write on the lock object
+        required: false
+        type: boolean
+        default: false
+      lock_timeout:
+        description: With state_lock, how long a plan waits for the state lock before its unit fails, as the engine's -lock-timeout reads it
+        required: false
+        type: string
+        default: 5m
       approvers:
         description: Comma-separated GitHub logins allowed to approve; empty reads vars.TERRAGRUNT_APPLY_APPROVERS
         required: false
@@ -199,7 +209,7 @@ concurrency:
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@1882ce8a0dac75ff7586a34350a1389e7dde7b7a
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@d91ca39146ae72b064322b5e4010917745e18214
     permissions:
       contents: read
       id-token: write
@@ -230,6 +240,8 @@ jobs:
       provider_mirror_url: ${{ inputs.provider_mirror_url }}
       provider_mirror_ca_file: ${{ inputs.provider_mirror_ca_file }}
       dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
+      state_lock: ${{ inputs.state_lock }}
+      lock_timeout: ${{ inputs.lock_timeout }}
     secrets: inherit
 
   request:
@@ -277,7 +289,7 @@ jobs:
       - name: Read the apply profiles
         id: config
         if: inputs.config_file != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@1882ce8a0dac75ff7586a34350a1389e7dde7b7a
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@d91ca39146ae72b064322b5e4010917745e18214
         with:
           config_file: ${{ inputs.config_file }}
           mode: apply
@@ -300,14 +312,14 @@ jobs:
         id: apply-profiles
         if: steps.config.outcome == 'success'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@1882ce8a0dac75ff7586a34350a1389e7dde7b7a
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@d91ca39146ae72b064322b5e4010917745e18214
         with:
           profiles: ${{ steps.config.outputs.profiles }}
           units: ${{ steps.planned.outputs.units }}
 
       - name: Open the issue that gates the apply
         id: request
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@1882ce8a0dac75ff7586a34350a1389e7dde7b7a
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@d91ca39146ae72b064322b5e4010917745e18214
         with:
           command: request
           action: apply

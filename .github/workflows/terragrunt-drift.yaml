@@ -101,6 +101,16 @@ on:
         required: false
         type: boolean
         default: true
+      state_lock:
+        description: Hold the state lock while planning, waiting up to lock_timeout for it, instead of planning unlocked; the role then needs write on the lock object
+        required: false
+        type: boolean
+        default: false
+      lock_timeout:
+        description: With state_lock, how long a plan waits for the state lock before its unit fails, as the engine's -lock-timeout reads it
+        required: false
+        type: string
+        default: 5m
       diff_mask:
         description: Attribute name globs whose values never show in the published diffs, comma-separated; empty uses the default list
         required: false
@@ -176,7 +186,7 @@ permissions: {}
 
 jobs:
   plan:
-    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@1882ce8a0dac75ff7586a34350a1389e7dde7b7a
+    uses: naviteq/github-actions/.github/workflows/terragrunt-plan.yaml@d91ca39146ae72b064322b5e4010917745e18214
     permissions:
       contents: read
       id-token: write
@@ -206,6 +216,8 @@ jobs:
       provider_mirror_url: ${{ inputs.provider_mirror_url }}
       provider_mirror_ca_file: ${{ inputs.provider_mirror_ca_file }}
       dependency_outputs_from_state: ${{ inputs.dependency_outputs_from_state }}
+      state_lock: ${{ inputs.state_lock }}
+      lock_timeout: ${{ inputs.lock_timeout }}
       diff_mask: ${{ inputs.diff_mask }}
       diff_secret_units: ${{ inputs.diff_secret_units }}
     secrets: inherit
@@ -234,7 +246,7 @@ jobs:
 
       - name: Reconcile the drift issues
         id: drift
-        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@1882ce8a0dac75ff7586a34350a1389e7dde7b7a
+        uses: naviteq/github-actions/.github/actions/terragrunt-drift-issues@d91ca39146ae72b064322b5e4010917745e18214
         with:
           changes: ${{ needs.plan.outputs.changes }}
           counts_dir: counts

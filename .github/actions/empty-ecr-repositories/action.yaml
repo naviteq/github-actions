@@ -1,0 +1,28 @@
+---
+name: Empty ECR repositories
+description: >
+  Delete every image in the ECR repositories the generated ecr units under the working directory
+  manage, in batches of 100, so a destroy with force_delete off can delete the repositories. Names
+  come only from each unit's own outputs. Best effort: a missing repository is skipped, a refused
+  call warns and the step never fails.
+
+inputs:
+  working_directory:
+    description: Directory holding the generated stack and its units, relative to the repository root
+    required: false
+    default: ""
+  aws_region:
+    description: AWS region of the private repositories; public repositories are always reached in us-east-1
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Delete the images in the ECR repositories
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        AWS_REGION: ${{ inputs.aws_region }}
+      run: python3 "${ACTION_PATH}/empty_ecr_repositories.py"
