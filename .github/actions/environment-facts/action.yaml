@@ -74,7 +74,7 @@ runs:
   using: composite
   steps:
     - name: Ensure yq
-      uses: naviteq/github-actions/.github/actions/ensure-tool@af2887fcd79cbea0d2f8e7a791e8e4f9a3c0a08b
+      uses: naviteq/github-actions/.github/actions/ensure-tool@d2e967269af8aaac729eeda68ff5746d61a636c7
       with:
         tool: yq
         version: 4.54.1
