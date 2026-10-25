@@ -1,0 +1,50 @@
+---
+name: Registry credential OCI
+description: >
+  Store the Runestra registry client credential in OCI Vault as JSON with client_id and client_secret,
+  under a flat secret name. Best effort: both values are masked first, the secret is created when
+  absent, updated only when its value differs (no new secret version when equal) and never written
+  when it is not ACTIVE; a refused call warns with metadata-only diagnostics and the step never
+  fails; with any required input empty it does nothing.
+
+inputs:
+  client_id:
+    description: Runestra registry client id
+    required: false
+    default: ""
+  client_secret:
+    description: Runestra registry client secret
+    required: false
+    default: ""
+  secret_name:
+    description: Flat OCI Vault secret name (A-Za-z0-9._-) that holds the credential; created when absent
+    required: false
+    default: ""
+  vault_ocid:
+    description: OCID of the shared vault; empty means the vault the stack's own vault unit created
+    required: false
+    default: ""
+  vault_unit_dir:
+    description: Generated vault unit directory, read for its vault_id output only when vault_ocid is empty
+    required: false
+    default: ""
+  region:
+    description: The environment's OCI region (where the vault lives), not the tenancy home region
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Store the credential in OCI Vault
+      shell: bash
+      run: python3 "${ACTION_PATH}/registry_credential_oci.py"
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CLIENT_ID: ${{ inputs.client_id }}
+        CLIENT_SECRET: ${{ inputs.client_secret }}
+        SECRET_NAME: ${{ inputs.secret_name }}
+        VAULT_OCID: ${{ inputs.vault_ocid }}
+        VAULT_UNIT_DIR: ${{ inputs.vault_unit_dir }}
+        OCI_REGION: ${{ inputs.region }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
