@@ -11,9 +11,10 @@ on:
         required: true
         type: string
       aws_region:
-        description: Region the aws_iam_role secret is assumed in
-        required: true
+        description: Region the aws_iam_role secret is assumed in; empty for cloud oci, which assumes no AWS role
+        required: false
         type: string
+        default: ""
       runner:
         description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
         required: false
@@ -89,6 +90,46 @@ on:
         required: false
         type: boolean
         default: false
+      cloud:
+        description: aws or oci; oci signs in to OCI, keeps state with the Customer Secret Key and never bootstraps the backend
+        required: false
+        type: string
+        default: aws
+      oci_tenancy_ocid:
+        description: With cloud oci, the tenancy OCID the session must belong to, from the Console's manifest
+        required: false
+        type: string
+        default: ""
+      oci_home_region:
+        description: With cloud oci, the tenancy's home region, where the identity domain serves the token exchange
+        required: false
+        type: string
+        default: ""
+      oci_domain_url:
+        description: With cloud oci, the identity domain URL the manifest records, also the token audience
+        required: false
+        type: string
+        default: ""
+      oci_client_id:
+        description: With cloud oci, the OAuth client ID of the connection's Confidential Application, from the manifest
+        required: false
+        type: string
+        default: ""
+      oci_namespace:
+        description: With cloud oci, the tenancy's Object Storage namespace the manifest records
+        required: false
+        type: string
+        default: ""
+      oci_stack_path:
+        description: With cloud oci, the oci/oke stack directory whose .boilerplate.yml gives the Kubernetes version
+        required: false
+        type: string
+        default: ""
+      prerequisite_directory:
+        description: A unit directory, relative to the repository root, applied before the stack's units in apply mode, for a unit that lives outside the working directory
+        required: false
+        type: string
+        default: ""
     secrets:
       aws_iam_role:
         description: AWS role assumed through OIDC; empty configures no AWS credentials, for a stack with local state
@@ -113,6 +154,15 @@ on:
         required: false
       runestra_receiver_token:
         description: Console health-receiver token; written to the existing Secrets Manager entry receiver_secret_id after a successful apply, best effort
+        required: false
+      oci_oidc_client_secret:
+        description: With cloud oci, the Confidential Application's client secret the connection's stack sealed into the repository
+        required: false
+      oci_s3_access_key_id:
+        description: With cloud oci, the state Customer Secret Key ID the connection's stack sealed into the repository
+        required: false
+      oci_s3_secret_access_key:
+        description: With cloud oci, the state Customer Secret Key secret the connection's stack sealed into the repository
         required: false
     outputs:
       applied:
@@ -146,8 +196,6 @@ jobs:
       HAS_EXTRA_ENV: ${{ secrets.terragrunt_extra_env != '' }}
       HAS_RECEIVER_TOKEN: ${{ secrets.runestra_receiver_token != '' }}
       TG_NO_CAS: "1"
-      # → see docs/terragrunt-apply-fresh.md
-      TG_BACKEND_BOOTSTRAP: "true"
     outputs:
       applied: ${{ steps.fresh.outputs.applied }}
       destroyed: ${{ steps.destroy.outputs.destroyed }}
@@ -157,20 +205,52 @@ jobs:
         if: inputs.mode != 'apply' && inputs.mode != 'destroy'
         run: echo "::error title=Unknown mode::mode must be apply or destroy" && exit 1
 
+      - name: Refuse an unknown cloud
+        if: inputs.cloud != 'aws' && inputs.cloud != 'oci'
+        run: echo "::error title=Unknown cloud::cloud must be aws or oci" && exit 1
+
+      # Unset, not false, on OCI: the connection's stack owns the bucket. → see docs/terragrunt-apply-fresh.md
+      - name: Enable backend bootstrap
+        if: inputs.cloud != 'oci'
+        run: echo "TG_BACKEND_BOOTSTRAP=true" >> "$GITHUB_ENV"
+
+      - name: Require the OCI facts
+        if: inputs.cloud == 'oci'
+        env:
+          TENANCY: ${{ inputs.oci_tenancy_ocid }}
+          HOME_REGION: ${{ inputs.oci_home_region }}
+          DOMAIN_URL: ${{ inputs.oci_domain_url }}
+          CLIENT_ID: ${{ inputs.oci_client_id }}
+          NAMESPACE: ${{ inputs.oci_namespace }}
+          STACK_PATH: ${{ inputs.oci_stack_path }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${TENANCY}" ] || missing+=" oci_tenancy_ocid"
+          [ -n "${HOME_REGION}" ] || missing+=" oci_home_region"
+          [ -n "${DOMAIN_URL}" ] || missing+=" oci_domain_url"
+          [ -n "${CLIENT_ID}" ] || missing+=" oci_client_id"
+          [ -n "${NAMESPACE}" ] || missing+=" oci_namespace"
+          [ -n "${STACK_PATH}" ] || missing+=" oci_stack_path"
+          if [ -n "${missing}" ]; then
+            echo "::error title=Empty OCI facts::cloud oci needs these inputs, and they are empty:${missing}"
+            exit 1
+          fi
+
       # No persisted header in Console mode: it would pre-empt the broker's credential helper.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: ${{ inputs.console_url == '' }}
 
       - name: Install Terragrunt and OpenTofu
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           terragrunt_version: ${{ inputs.terragrunt_version }}
           opentofu_version: ${{ inputs.opentofu_version }}
 
       # Four hours outlasts a full bootstrap; the session ceiling is six. → docs/terragrunt-apply-fresh.md
       - name: Configure AWS credentials
-        if: env.HAS_AWS_ROLE == 'true'
+        if: env.HAS_AWS_ROLE == 'true' && inputs.cloud != 'oci'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ secrets.aws_iam_role }}
@@ -180,18 +260,60 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/registry-token@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
       - name: Get a catalog token from the Console broker
         if: inputs.console_url != ''
-        uses: naviteq/github-actions/.github/actions/catalog-token@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/catalog-token@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
           console_run_id: ${{ inputs.console_run_id }}
+
+      - name: Read the environment facts
+        id: facts
+        if: inputs.cloud == 'oci'
+        uses: naviteq/github-actions/.github/actions/environment-facts@50ca231fed84e2915e71a5d1ee00777f3859d22d
+        with:
+          cloud: oci
+          environment_path: ${{ inputs.oci_stack_path }}
+          summary: "false"
+
+      # Apply and destroy alike: the pre-destroy hooks shell out to kubectl. → see docs/validate-oke.md
+      - name: Install kubectl
+        if: inputs.cloud == 'oci'
+        uses: naviteq/github-actions/.github/actions/setup-kubectl@50ca231fed84e2915e71a5d1ee00777f3859d22d
+        with:
+          version: ${{ steps.facts.outputs.kubernetes_version }}
+
+      # CLI, session in the home region, namespace and the state key. → see docs/terragrunt-plan.md
+      - name: Sign in to OCI
+        if: inputs.cloud == 'oci'
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@50ca231fed84e2915e71a5d1ee00777f3859d22d
+        with:
+          region: ${{ inputs.oci_home_region }}
+          oidc_domain_url: ${{ inputs.oci_domain_url }}
+          oidc_client_id: ${{ inputs.oci_client_id }}
+          oidc_client_secret: ${{ secrets.oci_oidc_client_secret }}
+          tenancy_ocid: ${{ inputs.oci_tenancy_ocid }}
+          s3_access_key_id: ${{ secrets.oci_s3_access_key_id }}
+          s3_secret_access_key: ${{ secrets.oci_s3_secret_access_key }}
+          namespace: ${{ inputs.oci_namespace }}
+
+      # The session token lives about an hour; a detached loop renews it.
+      # → see docs/refresh-oci-session.md
+      - name: Keep the OCI session alive
+        if: inputs.cloud == 'oci'
+        uses: naviteq/github-actions/.github/actions/refresh-oci-session@50ca231fed84e2915e71a5d1ee00777f3859d22d
+        with:
+          mode: start
+          oidc_domain_url: ${{ inputs.oci_domain_url }}
+          oidc_client_id: ${{ inputs.oci_client_id }}
+          oidc_client_secret: ${{ secrets.oci_oidc_client_secret }}
+          interval_seconds: "1200"
 
       - name: Generate a GitHub App token for the private git sources
         id: app-token
@@ -237,16 +359,41 @@ jobs:
 
       # Opt-in: safe only while the caller is the state's one writer. → docs/terragrunt-apply-fresh.md
       - name: Clear state locks a killed run left behind
-        if: inputs.clear_stale_locks && env.HAS_AWS_ROLE == 'true'
-        uses: naviteq/github-actions/.github/actions/clear-state-locks@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        if: inputs.clear_stale_locks && env.HAS_AWS_ROLE == 'true' && inputs.cloud != 'oci'
+        uses: naviteq/github-actions/.github/actions/clear-state-locks@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           working_directory: ${{ inputs.working_directory }}
           aws_region: ${{ inputs.aws_region }}
 
+      # No run events, so the Console's unit list is not re-seeded.
+      # → see docs/terragrunt-apply-fresh.md
+      - name: Select the prerequisite unit
+        id: select-prerequisite
+        if: inputs.mode == 'apply' && inputs.prerequisite_directory != ''
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@50ca231fed84e2915e71a5d1ee00777f3859d22d
+        with:
+          working_directory: ${{ inputs.prerequisite_directory }}
+          verb: apply before the stack
+          participle: applied
+          queue_as: apply
+
+      - name: Apply the prerequisite unit
+        id: prerequisite
+        if: inputs.mode == 'apply' && inputs.prerequisite_directory != ''
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@50ca231fed84e2915e71a5d1ee00777f3859d22d
+        with:
+          command: run
+          phase: fresh
+          units: ${{ steps.select-prerequisite.outputs.units }}
+          working_directory: ${{ inputs.prerequisite_directory }}
+          engine: tofu
+          parallelism: "1"
+          expect_json: '{"allow_replace": false, "allow_destroy": false}'
+
       - name: Select the units to apply, in run order
         id: select
         if: inputs.mode == 'apply'
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -258,7 +405,7 @@ jobs:
       - name: Apply
         id: fresh
         if: inputs.mode == 'apply'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           command: run
           phase: fresh
@@ -276,7 +423,7 @@ jobs:
       - name: Snapshot the ECS services
         if: ${{ !cancelled() && inputs.mode == 'apply' && inputs.ecs_stack_path != '' && steps.generate.outcome == 'success' }}
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/ecs-service-health@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/ecs-service-health@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           mode: snapshot
           ecs_stack_path: ${{ inputs.ecs_stack_path }}
@@ -286,10 +433,21 @@ jobs:
           console_audience: ${{ inputs.console_audience }}
           console_run_id: ${{ inputs.console_run_id }}
 
+      # Best effort: the loop's token is at most 20 minutes old. → see docs/terragrunt-apply-fresh.md
+      - name: Renew the OCI session before destroy
+        if: inputs.cloud == 'oci' && inputs.mode == 'destroy'
+        continue-on-error: true
+        uses: naviteq/github-actions/.github/actions/refresh-oci-session@50ca231fed84e2915e71a5d1ee00777f3859d22d
+        with:
+          mode: once
+          oidc_domain_url: ${{ inputs.oci_domain_url }}
+          oidc_client_id: ${{ inputs.oci_client_id }}
+          oidc_client_secret: ${{ secrets.oci_oidc_client_secret }}
+
       - name: Select the units to destroy, in destroy order
         id: select-destroy
         if: inputs.mode == 'destroy'
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -301,7 +459,7 @@ jobs:
       - name: Empty the ECR repositories the destroy removes
         if: inputs.mode == 'destroy' && inputs.empty_ecr_repositories && env.HAS_AWS_ROLE == 'true'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/empty-ecr-repositories@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/empty-ecr-repositories@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           working_directory: ${{ inputs.working_directory }}
           aws_region: ${{ inputs.aws_region }}
@@ -310,7 +468,7 @@ jobs:
       - name: Destroy
         id: destroy
         if: inputs.mode == 'destroy'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           command: run
           phase: destroy
@@ -328,7 +486,7 @@ jobs:
       - name: Ask ECS why a service did not settle
         if: failure() && inputs.ecs_stack_path != '' && (steps.fresh.outputs.change_failed == 'true' || steps.destroy.outputs.change_failed == 'true')
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/ecs-service-health@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/ecs-service-health@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           mode: diagnostics
           ecs_stack_path: ${{ inputs.ecs_stack_path }}
@@ -341,7 +499,7 @@ jobs:
       - name: Store the receiver token
         if: success() && inputs.mode == 'apply' && env.HAS_RECEIVER_TOKEN == 'true' && inputs.receiver_secret_id != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/receiver-token@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/receiver-token@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           token: ${{ secrets.runestra_receiver_token }}
           secret_id: ${{ inputs.receiver_secret_id }}
@@ -350,8 +508,16 @@ jobs:
       - name: Store the registry credential
         if: success() && inputs.mode == 'apply' && env.HAS_REGISTRY_AUTH == 'true' && inputs.registry_secret_id != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/registry-credential@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+        uses: naviteq/github-actions/.github/actions/registry-credential@50ca231fed84e2915e71a5d1ee00777f3859d22d
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
           secret_id: ${{ inputs.registry_secret_id }}
+
+      # A detached loop's output never reaches the log; this prints what it did.
+      - name: Report the OCI session refreshes
+        if: always() && inputs.cloud == 'oci'
+        continue-on-error: true
+        uses: naviteq/github-actions/.github/actions/refresh-oci-session@50ca231fed84e2915e71a5d1ee00777f3859d22d
+        with:
+          mode: report

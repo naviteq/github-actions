@@ -27,6 +27,12 @@ inputs:
   s3_secret_access_key:
     description: Customer Secret Key secret for the S3-compatible state backend
     required: true
+  namespace:
+    description: >-
+      The Object Storage namespace, a tenancy fact the caller already holds; set, it skips the CLI lookup
+      and the read objectstorage-namespaces grant that the Console's connection policy does not give
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -55,10 +61,10 @@ runs:
         fi
 
     - name: Install the OCI CLI
-      uses: naviteq/github-actions/.github/actions/setup-oci-cli@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+      uses: naviteq/github-actions/.github/actions/setup-oci-cli@50ca231fed84e2915e71a5d1ee00777f3859d22d
 
     - name: Configure OCI credentials
-      uses: naviteq/github-actions/.github/actions/configure-oci-credentials@a63d29ebd7e98cd600b3c069fc4ec35ad99f28a3
+      uses: naviteq/github-actions/.github/actions/configure-oci-credentials@50ca231fed84e2915e71a5d1ee00777f3859d22d
       with:
         region: ${{ inputs.region }}
         auth_method: github-oidc
@@ -70,7 +76,19 @@ runs:
     # The remote_state endpoint is namespace-scoped; the namespace is a tenancy fact, not a secret.
     - name: Resolve the Object Storage namespace
       shell: bash
-      run: echo "OCI_NAMESPACE=$(oci os ns get --query data --raw-output)" >> "$GITHUB_ENV"
+      env:
+        NAMESPACE: ${{ inputs.namespace }}
+      run: |
+        if [ -z "${NAMESPACE}" ]; then
+          echo "OCI_NAMESPACE=$(oci os ns get --query data --raw-output)" >> "$GITHUB_ENV"
+          exit 0
+        fi
+        pattern='^[a-z0-9]{1,64}$'
+        if ! [[ "${NAMESPACE}" =~ ${pattern} ]]; then
+          echo "::error title=Malformed OCI namespace::namespace must be 1 to 64 lowercase letters or digits."
+          exit 1
+        fi
+        echo "OCI_NAMESPACE=${NAMESPACE}" >> "$GITHUB_ENV"
 
     # The S3 backend speaks SigV4 and cannot use the session token. → docs/terragrunt-plan.md
     - name: Configure remote-state credentials

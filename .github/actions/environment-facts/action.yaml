@@ -1,0 +1,138 @@
+---
+name: Environment facts
+description: >
+  Read a scaffolded environment's .boilerplate.yml and answer what standing it
+  up needs: region, endpoint, whether a tailnet is required, and which directory
+  to apply. Both clouds answer the same keys. Optionally repoints the GitOps
+  revision at the branch under test. See docs/validate-oke.md.
+
+inputs:
+  environment_path:
+    description: The environment in this repository, e.g. terragrunt/demo/eu-frankfurt-1/oke
+    required: true
+  cloud:
+    description: Which var-file shape this is — oci, aws or ecs
+    required: false
+    default: oci
+  set_revision:
+    description: Repoint project_repo_revision at this revision; left alone when empty
+    required: false
+    default: ""
+  summary:
+    description: Write the versions under test into the job summary
+    required: false
+    default: "true"
+
+outputs:
+  region:
+    description: The region the environment lives in
+    value: ${{ steps.facts.outputs.region }}
+  home_region:
+    description: The tenancy's home region, where the token exchange is served
+    value: ${{ steps.facts.outputs.home_region }}
+  cluster_name:
+    description: The cluster name
+    value: ${{ steps.facts.outputs.cluster_name }}
+  dns_zone:
+    description: The hosted zone the environment publishes into
+    value: ${{ steps.facts.outputs.dns_zone }}
+  environment:
+    description: The environment name the var-file records
+    value: ${{ steps.facts.outputs.environment }}
+  kube_endpoint:
+    description: PUBLIC_ENDPOINT or PRIVATE_ENDPOINT
+    value: ${{ steps.facts.outputs.kube_endpoint }}
+  needs_tailnet:
+    description: Whether a runner has to join the tailnet to reach the API server
+    value: ${{ steps.facts.outputs.needs_tailnet }}
+  tailscale_enabled:
+    description: Whether the environment stands up a subnet router of its own
+    value: ${{ steps.facts.outputs.tailscale_enabled }}
+  kubernetes_version:
+    description: The Kubernetes version the environment pins
+    value: ${{ steps.facts.outputs.kubernetes_version }}
+  apply_path:
+    description: The directory to run --all from; the environment root, so its global units are queued too
+    value: ${{ steps.facts.outputs.apply_path }}
+  vault_ocid:
+    description: The vault ESO reads from, empty when the stack provisions its own
+    value: ${{ steps.facts.outputs.vault_ocid }}
+  vault_compartment_ocid:
+    description: The compartment holding that vault, empty when it is the environment's own
+    value: ${{ steps.facts.outputs.vault_compartment_ocid }}
+  compartment_name:
+    description: The compartment the environment provisions for itself
+    value: ${{ steps.facts.outputs.compartment_name }}
+  compartment_ocid:
+    description: The compartment the environment applies into, empty when it creates its own by name
+    value: ${{ steps.facts.outputs.compartment_ocid }}
+  parent_compartment_ocid:
+    description: Where a compartment created by name is looked up; also where the shared vault lives
+    value: ${{ steps.facts.outputs.parent_compartment_ocid }}
+
+runs:
+  using: composite
+  steps:
+    - name: Ensure yq
+      uses: naviteq/github-actions/.github/actions/ensure-tool@50ca231fed84e2915e71a5d1ee00777f3859d22d
+      with:
+        tool: yq
+        version: 4.54.1
+
+    - name: Read the var-file
+      id: facts
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        ENVIRONMENT_PATH: ${{ inputs.environment_path }}
+        CLOUD: ${{ inputs.cloud }}
+        REVISION: ${{ inputs.set_revision }}
+        SUMMARY: ${{ inputs.summary }}
+      run: |
+        set -euo pipefail
+
+        script="${ACTION_PATH}/environment_facts.py"
+
+        var_file="${ENVIRONMENT_PATH}/.boilerplate.yml"
+        if [ ! -f "${var_file}" ]; then
+          echo "::error title=No var-file::Expected ${var_file}. Is environment_path right?"
+          exit 1
+        fi
+
+        json="$(mktemp)"
+        yq -o json '.' "${var_file}" > "${json}"
+
+        args=""
+        [ "${SUMMARY}" = "true" ] && args="--summary"
+        # shellcheck disable=SC2086
+        python3 "${script}" facts \
+          --var-file "${json}" \
+          --environment-path "${ENVIRONMENT_PATH}" \
+          --cloud "${CLOUD}" \
+          --revision "${REVISION}" ${args}
+
+    - name: Repoint the GitOps revision at the branch under test
+      if: inputs.set_revision != ''
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        ENVIRONMENT_PATH: ${{ inputs.environment_path }}
+        CLUSTER_NAME: ${{ steps.facts.outputs.cluster_name }}
+        REVISION: ${{ inputs.set_revision }}
+      run: |
+        set -euo pipefail
+        script="${ACTION_PATH}/environment_facts.py"
+        # Uncommitted, in this checkout only: the committed value stays `main`
+        # so no dead branch reference survives the merge.
+        python3 "${script}" set-revision \
+          --stack-file "${ENVIRONMENT_PATH}/terragrunt.stack.hcl" \
+          --revision "${REVISION}"
+
+        # The manifest declares the same revision a second time, and that is the
+        # one Argo CD resolves. → see docs/validate-eks.md
+        manifest="argo/${CLUSTER_NAME}/cluster-services.yaml"
+        if [ -f "${manifest}" ]; then
+          python3 "${script}" set-gitops-revision --manifest "${manifest}" --revision "${REVISION}"
+        else
+          echo "::warning title=No ApplicationSet::${manifest} does not exist, so the run reads its day-2 values from wherever the cluster already points."
+        fi
