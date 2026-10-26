@@ -1,0 +1,61 @@
+name: Compartment report (OCI)
+description: >
+  List what an environment's own OCI compartment still holds after its destroy and post it to the
+  Runestra Console as one teardown.hook.reported event, OCIDs included. Items pending deletion are
+  accepted residue, a compartment the environment was given is not listed, and the step never fails.
+
+inputs:
+  compartment_ocid:
+    description: The compartment the environment applies into when it was given one; non-empty means not owned, so nothing is listed
+    required: false
+    default: ""
+  compartment_name:
+    description: The compartment the environment created for itself, matched exactly among the parent's active children
+    required: false
+    default: ""
+  parent_compartment_ocid:
+    description: Where compartment_name is looked up; the shared vault there is never listed
+    required: false
+    default: ""
+  regions:
+    description: Regions to search, space separated, such as the environment's and the home region
+    required: false
+    default: ""
+  timeout_seconds:
+    description: How long to keep listing while something remains, since OCI deletes asynchronously
+    required: false
+    default: "300"
+  interval_seconds:
+    description: Seconds between listings
+    required: false
+    default: "30"
+  console_url:
+    description: Console origin, https only; empty turns the action into a no-op
+    required: false
+    default: ""
+  console_audience:
+    description: Audience of the Actions OIDC token the Console accepts
+    required: false
+    default: ""
+  console_run_id:
+    description: Console run id, as the dispatch passed it
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Report what the compartment still holds to the Console
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        COMPARTMENT_OCID: ${{ inputs.compartment_ocid }}
+        COMPARTMENT_NAME: ${{ inputs.compartment_name }}
+        PARENT_COMPARTMENT_OCID: ${{ inputs.parent_compartment_ocid }}
+        REGIONS: ${{ inputs.regions }}
+        TIMEOUT_SECONDS: ${{ inputs.timeout_seconds }}
+        INTERVAL_SECONDS: ${{ inputs.interval_seconds }}
+        CONSOLE_URL: ${{ inputs.console_url }}
+        CONSOLE_AUDIENCE: ${{ inputs.console_audience }}
+        CONSOLE_RUN_ID: ${{ inputs.console_run_id }}
+      run: python3 "${ACTION_PATH}/compartment_report_oci.py"
