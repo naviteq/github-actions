@@ -120,7 +120,7 @@ runs:
     - name: Render the comment and the Slack message
       id: result
       if: steps.find.outputs.pr != ''
-      uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@0e9746c8f1099a4cdb34896221c2e1c23ad5deb7
+      uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@8e4476e99b8391faf4c29f3fe9b8fb06c337326e
       with:
         report_in: ${{ runner.temp }}/terragrunt-plan-fork-report
         context_json: >-
