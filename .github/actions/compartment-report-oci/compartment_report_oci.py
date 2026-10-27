@@ -4,10 +4,10 @@
 Best effort: every path exits 0, and a listing that could not be made posts a reason instead of
 failing the step. The compartment the environment created is resolved by name among the parent's
 ACTIVE children, in Python; OCI Search lists it per region until it is empty or the time is up.
-Gone items are dropped, items pending deletion (a vault and its keys) are accepted residue counted
-in the step summary, and the rest is posted with its OCID as one teardown.hook.reported event
-through the console-events EventSink. The CLI's output is never printed. It lives beside its
-action because the public mirror copies actions only.
+Gone items are dropped, items pending deletion (a vault and its keys) and the secrets of a vault
+pending deletion or gone are accepted residue counted in the step summary, and the rest is posted
+with its OCID as one teardown.hook.reported event through the console-events EventSink. The CLI's
+output is never printed. It lives beside its action because the public mirror copies actions only.
 → docs/compartment-report-oci.md
 
     COMPARTMENT_NAME=acme-dev PARENT_COMPARTMENT_OCID=ocid1.tenancy.oc1..aaaa \\
@@ -43,6 +43,9 @@ MAX_INTERVAL = 300
 
 GONE = frozenset({"DELETED", "TERMINATED"})
 ACCEPTED_RESIDUE = frozenset({"PENDING_DELETION", "SCHEDULING_DELETION"})
+VAULT_TYPE = "Vault"
+SECRET_TYPE = "VaultSecret"
+SECRET_OF_GOING_VAULT = "ACTIVE, its vault pending deletion"
 DEFAULT_KIND = "oci_resource"
 # OCI Search resource types, as the search answers them; anything else is oci_resource.
 KIND_BY_TYPE = {
@@ -63,6 +66,7 @@ KIND_BY_TYPE = {
 }
 
 COMPARTMENT_OCID_RE = re.compile(r"ocid1\.compartment\.oc[0-9]+\.[a-z0-9-]*\.[a-z0-9]+")
+VAULT_OCID_RE = re.compile(r"ocid1\.vault\.oc[0-9]+\.[a-z0-9-]*\.[a-z0-9]+")
 PARENT_OCID_RE = re.compile(r"ocid1\.(?:compartment|tenancy)\.oc[0-9]+\.[a-z0-9-]*\.[a-z0-9]+")
 REGION_RE = re.compile(r"[a-z]{2,}(?:-[a-z0-9]+)+")
 ERROR_CODE_RE = re.compile(r'"code":\s*"([A-Za-z]+)"')
@@ -187,10 +191,10 @@ def search(region: str, ocid: str) -> list[dict]:
     return items
 
 
-def listing(regions: list[str], ocid: str) -> list[dict]:
-    """The items of every region, each identifier once."""
+def listing(regions: list[str], ocid: str) -> list[tuple[str, dict]]:
+    """(region, item) for the items of every region, each identifier once."""
     seen: set[str] = set()
-    merged: list[dict] = []
+    merged: list[tuple[str, dict]] = []
     for region in regions:
         try:
             found = search(region, ocid)
@@ -200,19 +204,78 @@ def listing(regions: list[str], ocid: str) -> list[dict]:
             key = str(entry.get("identifier") or "") or json.dumps(entry, sort_keys=True)
             if key not in seen:
                 seen.add(key)
-                merged.append(entry)
+                merged.append((region, entry))
     return merged
 
 
-def classify(items: list[dict]) -> tuple[list[dict], Counter, Counter]:
+def state_of(entry: dict) -> str:
+    return str(entry.get("lifecycle-state") or "").upper()
+
+
+class VaultLookup:
+    """Which vault holds each secret, and a vault's state, each asked of OCI at most once per run."""
+
+    def __init__(self, ocid: str) -> None:
+        self.ocid = ocid
+        self.vault_of: dict[str, dict[str, str]] = {}
+        self.state_of_vault: dict[str, str] = {}
+
+    def vaults(self, region: str) -> dict[str, str]:
+        """{secret id: vault id} of the compartment's secrets in `region`; empty when OCI refused."""
+        if region not in self.vault_of:
+            try:
+                answer = oci(["vault", "secret", "list", "--compartment-id", self.ocid, "--all", "--region", region])
+            except ListingFailed:
+                answer = {}
+            data = answer.get("data", []) if isinstance(answer, dict) else []
+            self.vault_of[region] = {
+                str(entry.get("id") or ""): str(entry.get("vault-id") or "")
+                for entry in data if isinstance(entry, dict)
+            } if isinstance(data, list) else {}
+        return self.vault_of[region]
+
+    def state(self, vault: str, region: str) -> str:
+        """The vault's lifecycle state; empty when it is not a vault OCID or OCI refused."""
+        if vault not in self.state_of_vault:
+            state = ""
+            if VAULT_OCID_RE.fullmatch(vault):
+                try:
+                    answer = oci(["kms", "management", "vault", "get", "--vault-id", vault, "--region", region])
+                    data = answer.get("data", {}) if isinstance(answer, dict) else {}
+                    state = state_of(data) if isinstance(data, dict) else ""
+                except ListingFailed:
+                    state = ""
+            self.state_of_vault[vault] = state
+        return self.state_of_vault[vault]
+
+
+def secrets_of_going_vaults(found: list[tuple[str, dict]], lookup: VaultLookup) -> set[str]:
+    """Live secrets whose vault is pending deletion or gone; a secret whose vault is unknown stays."""
+    listed = {str(entry.get("identifier") or ""): state_of(entry) for _, entry in found
+              if entry.get("resource-type") == VAULT_TYPE}
+    going: set[str] = set()
+    for region, entry in found:
+        secret = str(entry.get("identifier") or "")
+        if entry.get("resource-type") != SECRET_TYPE or not secret or state_of(entry) in GONE | ACCEPTED_RESIDUE:
+            continue
+        vault = lookup.vaults(region).get(secret, "")
+        if vault and (listed.get(vault) or lookup.state(vault, region)) in GONE | ACCEPTED_RESIDUE:
+            going.add(secret)
+    return going
+
+
+def classify(items: list[dict], going: frozenset[str] = frozenset()) -> tuple[list[dict], Counter, Counter]:
     """(remaining {kind, id} items, remaining by type and state, accepted residue by type and state)."""
     remaining: list[dict] = []
     left: Counter = Counter()
     residue: Counter = Counter()
     for entry in items:
         kind = str(entry.get("resource-type") or "?")
-        state = str(entry.get("lifecycle-state") or "").upper()
+        state = state_of(entry)
         if state in GONE:
+            continue
+        if str(entry.get("identifier") or "") in going:
+            residue[(kind, SECRET_OF_GOING_VAULT)] += 1
             continue
         if state in ACCEPTED_RESIDUE:
             residue[(kind, state)] += 1
@@ -248,8 +311,11 @@ def sweep(regions: list[str], ocid: str) -> tuple[list[dict], Counter, Counter]:
     timeout = seconds("TIMEOUT_SECONDS", DEFAULT_TIMEOUT, MAX_TIMEOUT)
     interval = seconds("INTERVAL_SECONDS", DEFAULT_INTERVAL, MAX_INTERVAL)
     deadline = _monotonic() + timeout
+    lookup = VaultLookup(ocid)
     while True:
-        remaining, left, residue = classify(listing(regions, ocid))
+        found = listing(regions, ocid)
+        going = frozenset(secrets_of_going_vaults(found, lookup))
+        remaining, left, residue = classify([entry for _, entry in found], going)
         if not remaining or _monotonic() >= deadline:
             return remaining, left, residue
         _sleep(interval)

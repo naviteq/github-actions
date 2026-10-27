@@ -1,8 +1,9 @@
 name: Compartment report (OCI)
 description: >
   List what an environment's own OCI compartment still holds after its destroy and post it to the
-  Runestra Console as one teardown.hook.reported event, OCIDs included. Items pending deletion are
-  accepted residue, a compartment the environment was given is not listed, and the step never fails.
+  Runestra Console as one teardown.hook.reported event, OCIDs included. Items pending deletion and
+  the secrets of a vault pending deletion are accepted residue, a compartment the environment was
+  given is not listed, and the step never fails.
 
 inputs:
   compartment_ocid:
