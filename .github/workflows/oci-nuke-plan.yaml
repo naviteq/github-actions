@@ -428,7 +428,7 @@ jobs:
         if: ${{ steps.pause.outputs.skip != 'true' && steps.baked_probe.outputs.baked != 'true' }}
         # Resolves only while naviteq-ltd/oci-nuke keeps Actions access set to
         # "Accessible from repositories in the organization"; a 404 means that.
-        uses: naviteq-ltd/oci-nuke@85f5d611cf1bf81e143443996b4abde80431534b # v3.0.0
+        uses: naviteq-ltd/oci-nuke@659c81716ee154eddc6bca6ffb19ba2e1a0261d0 # v3.0.1
         with:
           # The SHA pins the action's code; `version` picks the release it
           # installs. Two versions, and bumping one does not move the other.
