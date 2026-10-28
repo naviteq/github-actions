@@ -69,12 +69,18 @@ outputs:
   parent_compartment_ocid:
     description: Where a compartment created by name is looked up; also where the shared vault lives
     value: ${{ steps.facts.outputs.parent_compartment_ocid }}
+  tier:
+    description: The tier the var-file records, empty when it records none
+    value: ${{ steps.facts.outputs.tier }}
+  network_cidr:
+    description: The VPC or VCN range, empty on ecs
+    value: ${{ steps.facts.outputs.network_cidr }}
 
 runs:
   using: composite
   steps:
     - name: Ensure yq
-      uses: naviteq/github-actions/.github/actions/ensure-tool@bf28a61502e8d5513f3b857605bc01d68dd21f64
+      uses: naviteq/github-actions/.github/actions/ensure-tool@2e6ec34c53e99c90cc9cd53c5178ee6222e8166f
       with:
         tool: yq
         version: 4.54.1
