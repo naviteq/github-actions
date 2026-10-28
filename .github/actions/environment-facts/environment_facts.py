@@ -55,6 +55,8 @@ def facts(variables: dict, environment_path: str, cloud: str = "oci") -> dict[st
         # The zone the environment publishes into, so a run can find the names
         # a client would use rather than the load balancer's own.
         "dns_zone": variables.get("domainZone", ""),
+        # Names the subnet router's tier tag.
+        "tier": variables.get("tier", ""),
     }
     resolved.update({"oci": _oci, "aws": _aws, "ecs": _ecs}[cloud](variables))
     return resolved
@@ -81,6 +83,7 @@ def _oci(variables: dict) -> dict[str, str]:
         # environment creates its own. → docs/validate-oke.md
         "compartment_ocid": variables.get("compartmentOcid", ""),
         "parent_compartment_ocid": variables.get("parentCompartmentOcid", ""),
+        "network_cidr": variables.get("vcnCidr", ""),
     }
 
 
@@ -103,6 +106,8 @@ def _aws(variables: dict) -> dict[str, str]:
         "compartment_name": "",
         "compartment_ocid": "",
         "parent_compartment_ocid": "",
+        # The range a tailnet grant has to cover to reach the cluster.
+        "network_cidr": variables.get("vpcCidr", ""),
     }
 
 
@@ -121,6 +126,7 @@ def _ecs(variables: dict) -> dict[str, str]:
         "compartment_name": "",
         "compartment_ocid": "",
         "parent_compartment_ocid": "",
+        "network_cidr": "",
     }
 
 
