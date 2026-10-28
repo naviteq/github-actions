@@ -992,8 +992,45 @@ SETTLED = {"applied", "destroyed", "unchanged", "protected", "kept"}
 CHANGE_FAILURES = {"apply failed", "destroy failed"}
 
 
+GLOBAL_REGION = "us-east-1"
+
+
+def key_missing(region_dir: str) -> bool:
+    """Whether `alias/terraform-states-<dir>` is plainly absent; any other answer reads as present."""
+    region = GLOBAL_REGION if region_dir == "global" else region_dir
+    args = ["aws", "kms", "describe-key", "--key-id", f"alias/terraform-states-{region_dir}",
+            "--region", region, "--query", "KeyMetadata.KeyId", "--output", "text"]
+    try:
+        done = subprocess.run(args, capture_output=True, text=True, check=False, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode != 0 and "NotFoundException" in done.stderr
+
+
+def unsettled_units(order: list[str]) -> frozenset[str]:
+    """Units of a region that never got its state key: they hold no state and their destroy cannot run."""
+    missing: dict[str, bool] = {}
+    found = set()
+    for unit in order:
+        parts = unit.split("/")
+        if len(parts) < 2 or parts[1] == "state-backend":
+            continue
+        if parts[0] not in missing:
+            missing[parts[0]] = key_missing(parts[0])
+        if missing[parts[0]]:
+            found.add(unit)
+    return frozenset(found)
+
+
+def absent_unit(unit: str, sink: object = None) -> dict:
+    """A destroy unit whose state backend was never set up holds no state, so there is nothing to remove."""
+    emit(sink, "terragrunt.unit.started", {"unit": unit})
+    emit(sink, "terragrunt.unit.completed", {"unit": unit, "destroy": 0, "outcome": "unchanged"})
+    return {"unit": unit, "outcome": "unchanged", "reason": "its state backend was never set up; nothing to remove"}
+
+
 def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: str, parallelism: int,
-               sink: object = None, log_lines: bool = False) -> list[dict]:
+               sink: object = None, log_lines: bool = False, absent: frozenset[str] = frozenset()) -> list[dict]:
     """Level by level, dependencies first for fresh and last for destroy; a level that fails anywhere is the last one run.
 
     Like `run --all destroy`, a destroy keeps every prevent_destroy unit and everything it depends on.
@@ -1001,7 +1038,11 @@ def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: s
     check_policy(expect)
     if "max_monthly_cost_delta" in expect:
         raise Refused("max_monthly_cost_delta needs saved plans with a cost estimate; the fresh and destroy phases have none")
-    worker = PHASES[phase][0]
+    inner = PHASES[phase][0]
+
+    def worker(root: Path, unit: str, *args: object, **kwargs: object) -> dict:
+        return absent_unit(unit, kwargs.get("sink")) if unit in absent else inner(root, unit, *args, **kwargs)
+
     report = reporting(sink)
     name = DESTROY_PHASE if phase == "destroy" else APPLY_PHASE
     started = time.monotonic()
@@ -1089,6 +1130,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--working-directory", default=".")
     run.add_argument("--plans-dir", default="")
     run.add_argument("--engine", default="tofu")
+    run.add_argument("--skip-unsettled-state", action="store_true",
+                     help="Destroy: report units whose region has no state key as unchanged")
     args = parser.parse_args(argv)
 
     try:
@@ -1105,7 +1148,8 @@ def main(argv: list[str] | None = None) -> int:
             sink = build_sink()
             try:
                 rows = run_levels(args.phase, Path(args.working_directory), order, expect, args.engine,
-                                  args.parallelism, sink=sink, log_lines=log_lines_wanted())
+                                  args.parallelism, sink=sink, log_lines=log_lines_wanted(),
+                                  absent=unsettled_units(order) if args.skip_unsettled_state else frozenset())
             finally:
                 if sink is not None:
                     sink.close()
