@@ -57,6 +57,10 @@ inputs:
     description: For run, this job's units, one per line
     required: false
     default: ""
+  skip_unsettled_state:
+    description: For run destroy on AWS, report the units of a region with no alias/terraform-states-<region> key as unchanged instead of planning them
+    required: false
+    default: "false"
   working_directory:
     description: For run, the directory the units are relative to
     required: false
@@ -167,6 +171,7 @@ runs:
         SECOND_APPROVER_COST: ${{ inputs.second_approver_cost }}
         COMMENTS_FILE: ${{ inputs.comments_file }}
         UNITS: ${{ inputs.units }}
+        SKIP_UNSETTLED_STATE: ${{ inputs.skip_unsettled_state }}
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
         PLANS_DIR: ${{ inputs.plans_dir }}
         ENGINE: ${{ inputs.engine }}
@@ -192,6 +197,7 @@ runs:
           run)
             python3 "${script}" run --phase "${PHASE}" --metadata "${METADATA}" --units "${UNITS}" \
               --working-directory "${WORKING_DIRECTORY}" --plans-dir "${PLANS_DIR}" --engine "${ENGINE}" \
-              --expect-json "${EXPECT_JSON}" --parallelism "${PARALLELISM}" ;;
+              --expect-json "${EXPECT_JSON}" --parallelism "${PARALLELISM}" \
+              $([ "${SKIP_UNSETTLED_STATE}" != "true" ] || echo --skip-unsettled-state) ;;
           *) echo "::error title=Unknown command::${COMMAND}"; exit 1 ;;
         esac
