@@ -61,10 +61,10 @@ runs:
         fi
 
     - name: Install the OCI CLI
-      uses: naviteq/github-actions/.github/actions/setup-oci-cli@a85dc701db987f679c9c07c928319145c6291eb0
+      uses: naviteq/github-actions/.github/actions/setup-oci-cli@3ccb37cd5b970be33308c416fff5b839a9e11d31
 
     - name: Configure OCI credentials
-      uses: naviteq/github-actions/.github/actions/configure-oci-credentials@a85dc701db987f679c9c07c928319145c6291eb0
+      uses: naviteq/github-actions/.github/actions/configure-oci-credentials@3ccb37cd5b970be33308c416fff5b839a9e11d31
       with:
         region: ${{ inputs.region }}
         auth_method: github-oidc

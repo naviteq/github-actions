@@ -31,6 +31,11 @@ on:
         type: string
         required: false
         default: ""
+      dependency_update:
+        description: Run helm dependency update before lint and package; false packages the dependencies already in charts/
+        type: boolean
+        required: false
+        default: true
       lint_enabled:
         description: Run helm lint before package
         type: boolean
@@ -123,7 +128,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@a85dc701db987f679c9c07c928319145c6291eb0
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@3ccb37cd5b970be33308c416fff5b839a9e11d31
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ghcr_registry }}
@@ -131,6 +136,7 @@ jobs:
           push_chart: ${{ inputs.push_chart }}
           bump_version_in_git: ${{ inputs.bump_version_in_git }}
           bump_version_git_branch: ${{ inputs.bump_version_git_branch }}
+          dependency_update: ${{ inputs.dependency_update }}
           lint_enabled: ${{ inputs.lint_enabled }}
           lint_values_file: ${{ inputs.lint_values_file }}
           chart_version: ${{ inputs.chart_version }}
