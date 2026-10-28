@@ -24,6 +24,10 @@ inputs:
     description: Optional branch name for bump commit target (defaults to current ref name)
     required: false
     default: ""
+  dependency_update:
+    description: Run helm dependency update before lint and package; "false" packages the dependencies already in charts/
+    required: false
+    default: "true"
   lint_enabled:
     description: Run helm lint before package
     required: false
@@ -94,7 +98,7 @@ runs:
   steps:
     # → see docs/helm-release-oci.md
     - name: Ensure Helm
-      uses: naviteq/github-actions/.github/actions/ensure-tool@a85dc701db987f679c9c07c928319145c6291eb0
+      uses: naviteq/github-actions/.github/actions/ensure-tool@c06110ba3cc807fa1cd994a05f81218c56398dc6
       with:
         tool: helm
         version: 4.3.0
@@ -117,6 +121,7 @@ runs:
         fi
 
     - name: Update Helm dependencies
+      if: ${{ inputs.dependency_update == 'true' }}
       shell: bash
       working-directory: ${{ inputs.chart_path }}
       run: helm dependency update
