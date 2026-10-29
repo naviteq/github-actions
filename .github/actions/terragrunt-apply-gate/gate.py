@@ -17,12 +17,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 MARKER = "terragrunt-apply"
+MARKER_JSON = re.compile(r"<!-- terragrunt-apply: (\{.*?\}) -->")
 COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
 
 
@@ -499,11 +501,41 @@ def cmd_decide(args: argparse.Namespace) -> int:
     return 0
 
 
+def superseded(issues: list[dict], plan_run_id: object, artifact_id: object) -> list[int]:
+    """Open apply issues of an earlier attempt of this plan run: a re-run deletes their artifact."""
+    found = []
+    for issue in issues:
+        match = MARKER_JSON.search(issue.get("body") or "")
+        marker = json.loads(match.group(1)) if match else {}
+        if marker.get("action", "apply") == "apply" and marker.get("plan_run_id") == plan_run_id \
+                and str(marker.get("artifact_id")) != str(artifact_id) and not issue.get("pull_request"):
+            found.append(issue["number"])
+    return sorted(found)
+
+
+def close_superseded(args: argparse.Namespace, metadata: dict, text: str) -> None:
+    """Close what an earlier attempt of this re-plan opened, so nobody approves a deleted artifact. → docs/terragrunt-replan.md"""
+    issues = gh(f"repos/{args.repo}/issues?labels={args.label}&state=open&per_page=100") or []
+    for number in superseded(issues, metadata["plan_run_id"], args.artifact_id):  # type: ignore[arg-type]
+        try:
+            gh(f"repos/{args.repo}/issues/{number}/labels/{args.label}:pending", "--method", "DELETE")
+        except subprocess.CalledProcessError:
+            pass
+        gh(f"repos/{args.repo}/issues/{number}/labels", "--method", "POST",
+           payload={"labels": [f"{args.label}:superseded"]})
+        gh(f"repos/{args.repo}/issues/{number}/comments", "--method", "POST", payload={"body": text})
+        gh(f"repos/{args.repo}/issues/{number}", "--method", "PATCH",
+           payload={"state": "closed", "state_reason": "not_planned"})
+        print(f"closed issue #{number}, superseded")
+
+
 def request_apply(args: argparse.Namespace, metadata: dict) -> int:
     """The approval issue for plans made again after the merge, since the base moved under the PR's."""
     pr = int(args.pr) if args.pr else None
+    rerun = "its plan run was run again, which replaced this issue's plan artifact"
     if not metadata.get("has_changes"):
         print("Nothing to apply: the re-plan changes nothing.")
+        close_superseded(args, metadata, f"⏭️ **Superseded:** {rerun}, and the new plan changes nothing.")
         if pr:
             comment_on_pr(args, pr, "✅ Planned again after the merge: nothing to apply.")
         write_outputs(state="no-changes", issue="")
@@ -519,6 +551,7 @@ def request_apply(args: argparse.Namespace, metadata: dict) -> int:
     title = f"PR #{pr} (re-planned)" if pr else f"{metadata['commit'][:7]} (re-planned)"
     if only_by_hand(metadata, by_hand):
         number = open_issue(args, f"Terragrunt apply by hand: {title}", body, "by-hand")
+        close_superseded(args, metadata, f"⏭️ **Superseded by #{number}:** {rerun}.")
         if pr:
             comment_on_pr(args, pr, f"✋ Planned again after the merge. CI does not apply its units; apply them by "
                           f"hand, see #{number}.")
@@ -526,6 +559,7 @@ def request_apply(args: argparse.Namespace, metadata: dict) -> int:
         return 0
     two = ("two-approvers",) if second_approver_reason(metadata, threshold) else ()
     number = open_issue(args, f"Terragrunt apply: {title}", body, "pending", two)
+    close_superseded(args, metadata, f"⏭️ **Superseded by #{number}:** {rerun}.")
     if pr:
         comment_on_pr(args, pr, f"🚦 Planned again after the merge. Applying waits for approval in #{number}.")
     write_outputs(state="pending", issue=number)
