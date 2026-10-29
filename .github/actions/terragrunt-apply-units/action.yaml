@@ -70,7 +70,7 @@ inputs:
     required: false
     default: ""
   engine:
-    description: For run check, fresh and destroy, the engine binary that reads plans
+    description: For run check, apply, fresh and destroy, the engine binary that reads plans
     required: false
     default: tofu
   parallelism:

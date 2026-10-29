@@ -75,7 +75,7 @@ on:
         required: false
         type: string
         # renovate: datasource=pypi depName=checkov
-        default: 3.3.30
+        default: 3.4.0
       download_artifact:
         description: Artifact to download into the workspace before scanning. Used to scan another job's output.
         required: false
@@ -369,7 +369,7 @@ jobs:
       # Native CLI, not bridgecrewio/checkov-action: that one pulls a 188 MB image per job → see docs/security-scan.md
       - name: Set up Checkov
         if: ${{ inputs.full_scan || steps.resolved.outputs.has_changes == 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-checkov@eb8340decaffc83fcc9066477e0c0327385bb3d6
+        uses: naviteq/github-actions/.github/actions/setup-checkov@9b6fa0b506462852c27d833f3cb1e0809d4444a0
         with:
           version: ${{ inputs.checkov_version }}
 

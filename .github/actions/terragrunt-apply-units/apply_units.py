@@ -284,37 +284,56 @@ def terragrunt(unit_dir: Path, *args: str) -> int:
     return code
 
 
+def converged(plan: dict) -> bool:
+    """A plan with nothing left to do: no resource, output or state change. → docs/terragrunt-apply.md"""
+    return not resources(plan) and not state_changes(plan)
+
+
+def shown_plan(root: Path, unit: str, name: str, engine: str) -> dict:
+    """The plan a unit just saved as name, as the engine shows it."""
+    plan_file = find_newest(root / unit, name)
+    if plan_file is None:
+        raise Refused(f"{unit} left no plan to compare")
+    shown = subprocess.run([engine, "show", "-json", plan_file.name], cwd=plan_file.parent,
+                           capture_output=True, text=True, check=True)
+    return json.loads(shown.stdout)
+
+
 def run_check(root: Path, units: list[dict], engine: str, destroy: bool = False) -> None:
-    """Re-plan every unit before anything is applied or destroyed; any difference is drift."""
+    """Re-plan every unit before anything is applied or destroyed; any difference is drift, unless nothing is left to do."""
     drifted = []
     for unit in units:
         unit_dir = root / unit["unit"]
         mode = ["-destroy"] if destroy else []
         if terragrunt(unit_dir, "plan", *mode, *plan_lock(), "-input=false", "-out=tfplan-check") != 0:
             raise Refused(f"{unit['unit']} could not be planned again")
-        plan_file = find_newest(unit_dir, "tfplan-check")
-        if plan_file is None:
-            raise Refused(f"{unit['unit']} left no plan to compare")
-        shown = subprocess.run([engine, "show", "-json", plan_file.name], cwd=plan_file.parent,
-                               capture_output=True, text=True, check=True)
-        now = changeset(resources(json.loads(shown.stdout)))
-        print(f"{unit['unit']}: {'unchanged' if now == unit['changeset'] else 'DRIFTED'} since the plan")
-        if now != unit["changeset"]:
+        plan = shown_plan(root, unit["unit"], "tfplan-check", engine)
+        now = changeset(resources(plan))
+        if now == unit["changeset"]:
+            print(f"{unit['unit']}: unchanged since the plan")
+        elif converged(plan):
+            print(f"{unit['unit']}: already applied, nothing left to do")
+        else:
+            print(f"{unit['unit']}: DRIFTED since the plan")
             drifted.append(unit["unit"])
     if drifted:
         raise Refused("these units would now change differently than planned: " + ", ".join(drifted)
                       + ". Re-plan them")
 
 
-def run_apply(root: Path, units: list[dict], plans_dir: Path) -> None:
+def run_apply(root: Path, units: list[dict], plans_dir: Path, engine: str) -> None:
     for unit in units:
         plan_file = plans_dir / unit["file"].removesuffix(".age")
         if not plan_file.is_file():
             raise Refused(f"{unit['unit']} has no decrypted plan at {plan_file}")
         # A saved plan never refreshes, so files written at plan time (an archive_file zip) are missing on this runner.
         # A full plan, not -refresh-only: that one plans no creates, so a not-yet-created resource reads as null.
-        if terragrunt(root / unit["unit"], "plan", *plan_lock(), "-input=false") != 0:
+        if terragrunt(root / unit["unit"], "plan", *plan_lock(), "-input=false", "-out=tfplan-pre") != 0:
             raise Refused(f"{unit['unit']} could not be planned before its apply; the units after it were not touched")
+        # Its saved plan would fail as stale. → docs/terragrunt-apply.md
+        if converged(shown_plan(root, unit["unit"], "tfplan-pre", engine)):
+            print(f"{unit['unit']}: already applied, skipped")
+            continue
         if terragrunt(root / unit["unit"], "apply", *write_lock(), "-input=false", str(plan_file.resolve())) != 0:
             raise Refused(f"{unit['unit']} failed to apply; the units after it were not touched")
         print(f"{unit['unit']}: applied")
@@ -1215,7 +1234,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.phase == "apply" and metadata.get("destroy"):
             run_destroy(root, units)
         elif args.phase == "apply":
-            run_apply(root, units, Path(args.plans_dir))
+            run_apply(root, units, Path(args.plans_dir), args.engine)
         else:
             run_clean(root, units)
         return 0
