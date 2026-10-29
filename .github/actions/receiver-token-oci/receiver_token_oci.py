@@ -68,6 +68,7 @@ def main() -> int:
                                          vault, region, subject=SUBJECT, title=TITLE, description=DESCRIPTION)
         if outcome != "skipped":
             oci_vault.report(f"Receiver token {outcome} in OCI Vault: {secret_name}")
+            oci_vault.set_output("result", outcome)
     except Exception as error:  # noqa: BLE001 - best effort, never fail the apply
         oci_vault.warn(f"Receiver token was not stored: unexpected {type(error).__name__}", TITLE)
     return 0

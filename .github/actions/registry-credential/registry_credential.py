@@ -50,6 +50,17 @@ def summary(line: str) -> None:
         pass
 
 
+def set_output(name: str, value: str) -> None:
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as file:
+            file.write(f"{name}={value}\n")
+    except OSError:
+        pass
+
+
 def report(line: str) -> None:
     print(line, flush=True)
     summary(line)
@@ -136,16 +147,19 @@ def store(secret_id: str, credential: dict[str, str], repository: str) -> None:
     if state == "absent":
         if write(["create-secret", "--name", secret_id, "--tags", tag_list(repository)], payload):
             report("Registry credential created")
+            set_output("result", "created")
         else:
             warn(f"Registry credential was not stored: Secrets Manager refused to create {secret_id}")
         return
     if unchanged(secret_id, credential):
         report("Registry credential unchanged")
+        set_output("result", "unchanged")
         return
     if not write(["put-secret-value", "--secret-id", secret_id], payload):
         warn(f"Registry credential was not stored: Secrets Manager refused the write to {secret_id}")
         return
     report("Registry credential updated")
+    set_output("result", "updated")
     previous = tags.get(REPOSITORY_TAG, "")
     if previous and repository and previous != repository:
         line = (f"Registry credential at {secret_id} was last written by another repository ({previous}); "

@@ -63,6 +63,17 @@ def summary(line: str) -> None:
         pass
 
 
+def set_output(name: str, value: str) -> None:
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as file:
+            file.write(f"{name}={value}\n")
+    except OSError:
+        pass
+
+
 def report(line: str) -> None:
     print(line, flush=True)
     summary(line)

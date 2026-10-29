@@ -33,10 +33,16 @@ inputs:
     required: false
     default: ""
 
+outputs:
+  result:
+    description: created, updated or unchanged when the value was stored; empty when the step skipped or warned
+    value: ${{ steps.store.outputs.result }}
+
 runs:
   using: composite
   steps:
     - name: Store the credential in OCI Vault
+      id: store
       shell: bash
       run: python3 "${ACTION_PATH}/registry_credential_oci.py"
       env:

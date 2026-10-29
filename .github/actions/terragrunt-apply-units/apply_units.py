@@ -665,8 +665,23 @@ def line_command(line: str, command: str | None) -> str | None:
     return "init" if INIT_TAG.match(plain) or INIT_SOURCE.match(plain) else command
 
 
+STALE_PLAN = "Saved plan is stale"
+MAX_REPLANS = 2
+
+
+class StaleWatch:
+    """Whether a run's output said the saved plan went stale. → docs/terragrunt-apply-fresh.md"""
+
+    def __init__(self) -> None:
+        self.seen = False
+
+    def feed(self, line: str) -> None:
+        self.seen = self.seen or STALE_PLAN in line
+
+
 def streamed(unit: str, cwd: Path, *args: str, sink: object = None, log_lines: bool = False,
-             collector: ErrorExcerptCollector | None = None, env: dict[str, str] | None = None) -> int:
+             collector: ErrorExcerptCollector | None = None, env: dict[str, str] | None = None,
+             watch: StaleWatch | None = None) -> int:
     """terragrunt run in one unit, its output prefixed so parallel units stay readable; env adds to this call only."""
     process = subprocess.Popen(["terragrunt", "run", "--non-interactive", "--", *args], cwd=cwd,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -678,6 +693,8 @@ def streamed(unit: str, cwd: Path, *args: str, sink: object = None, log_lines: b
             print(f"[{unit}] {line}", end="", flush=True)
         if collector is not None:
             collector.feed(line)
+        if watch is not None:
+            watch.feed(line)
         if log_lines and reporting(sink) and line.strip():
             masked = sink.mask(line.rstrip("\r\n")) if hasattr(sink, "mask") else line.rstrip("\r\n")
             text = masked.encode("utf-8", "replace")[:LOG_LINE_CAP].decode("utf-8", "ignore")
@@ -770,6 +787,21 @@ def excerpt_row(collector: ErrorExcerptCollector | None, sink: object) -> dict:
 
 def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object = None,
                 log_lines: bool = False) -> dict:
+    """fresh_attempt, planned again (checks included) when the apply says its saved plan is stale, at most MAX_REPLANS times."""
+    for replans in range(MAX_REPLANS + 1):
+        watch = StaleWatch()
+        row = fresh_attempt(root, unit, expect, engine, sink, log_lines, watch)
+        if row["outcome"] != "apply failed" or not watch.seen:
+            return row
+        if replans == MAX_REPLANS:
+            print(f"[{unit}] saved plan still stale after {MAX_REPLANS} re-plans, giving up", flush=True)
+            return row
+        print(f"[{unit}] saved plan is stale, re-planning (re-plan {replans + 1} of {MAX_REPLANS})", flush=True)
+    return row
+
+
+def fresh_attempt(root: Path, unit: str, expect: dict, engine: str, sink: object, log_lines: bool,
+                  watch: StaleWatch) -> dict:
     """Plan one unit now, check the plan against the policy, then apply exactly that plan."""
     unit_dir = root / unit
     collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
@@ -792,12 +824,12 @@ def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object =
     if reporting(sink) and supports_json_into(engine):
         with ResourceProgress(unit, sink) as progress:
             code = streamed(unit, unit_dir, "apply", *write_lock(), "-input=false", f"-json-into={progress.path}",
-                            str(plan_file.resolve()), sink=sink, log_lines=log_lines, collector=collector)
+                            str(plan_file.resolve()), sink=sink, log_lines=log_lines, collector=collector, watch=watch)
     elif reporting(sink):
         code = streamed(unit, unit_dir, "apply", *write_lock(), "-input=false", str(plan_file.resolve()), sink=sink,
-                        log_lines=log_lines, collector=collector)
+                        log_lines=log_lines, collector=collector, watch=watch)
     else:
-        code = streamed(unit, unit_dir, "apply", *write_lock(), "-input=false", str(plan_file.resolve()))
+        code = streamed(unit, unit_dir, "apply", *write_lock(), "-input=false", str(plan_file.resolve()), watch=watch)
     if code != 0:
         return {**row, "outcome": "apply failed", **excerpt_row(collector, sink)}
     return {**row, "outcome": "applied"}
