@@ -278,7 +278,7 @@ jobs:
           fi
 
       - name: Install Terragrunt and OpenTofu
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           terragrunt_version: ${{ inputs.terragrunt_version }}
           opentofu_version: ${{ inputs.opentofu_version }}
@@ -295,14 +295,14 @@ jobs:
 
       - name: Exchange the registry client credentials for a token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/registry-token@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
 
       - name: Get a catalog token from the Console broker
         if: inputs.console_url != ''
-        uses: naviteq/github-actions/.github/actions/catalog-token@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/catalog-token@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
@@ -313,7 +313,7 @@ jobs:
       - name: Read the environment facts
         id: facts
         if: inputs.cloud == 'oci' || inputs.eks_stack_path != ''
-        uses: naviteq/github-actions/.github/actions/environment-facts@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/environment-facts@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           cloud: ${{ inputs.cloud }}
           environment_path: ${{ inputs.cloud == 'oci' && inputs.oci_stack_path || inputs.eks_stack_path }}
@@ -322,14 +322,14 @@ jobs:
       # Apply and destroy alike: the pre-destroy hooks shell out to kubectl. → see docs/validate-oke.md
       - name: Install kubectl
         if: inputs.cloud == 'oci'
-        uses: naviteq/github-actions/.github/actions/setup-kubectl@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/setup-kubectl@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           version: ${{ steps.facts.outputs.kubernetes_version }}
 
       # CLI, session in the home region, namespace and the state key. → see docs/terragrunt-plan.md
       - name: Sign in to OCI
         if: inputs.cloud == 'oci'
-        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           region: ${{ inputs.oci_home_region }}
           oidc_domain_url: ${{ inputs.oci_domain_url }}
@@ -344,7 +344,7 @@ jobs:
       # → see docs/refresh-oci-session.md
       - name: Keep the OCI session alive
         if: inputs.cloud == 'oci'
-        uses: naviteq/github-actions/.github/actions/refresh-oci-session@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/refresh-oci-session@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           mode: start
           oidc_domain_url: ${{ inputs.oci_domain_url }}
@@ -441,7 +441,7 @@ jobs:
       - name: Post the failed tailnet join
         if: failure() && steps.join.outcome == 'failure' && inputs.console_url != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/console-events@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/console-events@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
@@ -509,7 +509,7 @@ jobs:
       - name: Set up the state backend
         id: state_backend
         if: inputs.mode == 'apply' && inputs.cloud != 'oci' && steps.backend_units.outputs.has_units == 'true'
-        uses: naviteq/github-actions/.github/actions/state-backend@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/state-backend@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           working_directory: ${{ inputs.working_directory }}
           catalog_sha: ${{ inputs.catalog_sha }}
@@ -533,7 +533,7 @@ jobs:
       # Opt-in: safe only while the caller is the state's one writer. → docs/terragrunt-apply-fresh.md
       - name: Clear state locks a killed run left behind
         if: inputs.clear_stale_locks && (env.HAS_AWS_ROLE == 'true' || inputs.cloud == 'oci')
-        uses: naviteq/github-actions/.github/actions/clear-state-locks@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/clear-state-locks@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           working_directory: ${{ inputs.working_directory }}
           aws_region: ${{ inputs.aws_region }}
@@ -544,7 +544,7 @@ jobs:
       - name: Select the prerequisite unit
         id: select-prerequisite
         if: inputs.mode == 'apply' && inputs.prerequisite_directory != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           working_directory: ${{ inputs.prerequisite_directory }}
           verb: apply before the stack
@@ -554,7 +554,7 @@ jobs:
       - name: Apply the prerequisite unit
         id: prerequisite
         if: inputs.mode == 'apply' && inputs.prerequisite_directory != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         env:
           TAILSCALE_OAUTH_CLIENT_ID: ${{ steps.facts.outputs.tailscale_enabled == 'true' && secrets.tailscale_provider_oauth_client_id || '' }}
           TAILSCALE_OAUTH_CLIENT_SECRET: ${{ steps.facts.outputs.tailscale_enabled == 'true' && secrets.tailscale_provider_oauth_secret || '' }}
@@ -570,7 +570,7 @@ jobs:
       - name: Select the units to apply, in run order
         id: select
         if: inputs.mode == 'apply'
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -582,7 +582,7 @@ jobs:
       - name: Apply
         id: fresh
         if: inputs.mode == 'apply'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         env:
           TAILSCALE_OAUTH_CLIENT_ID: ${{ steps.facts.outputs.tailscale_enabled == 'true' && secrets.tailscale_provider_oauth_client_id || '' }}
           TAILSCALE_OAUTH_CLIENT_SECRET: ${{ steps.facts.outputs.tailscale_enabled == 'true' && secrets.tailscale_provider_oauth_secret || '' }}
@@ -603,7 +603,7 @@ jobs:
       - name: Snapshot the ECS services
         if: ${{ !cancelled() && inputs.mode == 'apply' && inputs.ecs_stack_path != '' && steps.generate.outcome == 'success' }}
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/ecs-service-health@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/ecs-service-health@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           mode: snapshot
           ecs_stack_path: ${{ inputs.ecs_stack_path }}
@@ -617,7 +617,7 @@ jobs:
       - name: Renew the OCI session before destroy
         if: inputs.cloud == 'oci' && inputs.mode == 'destroy'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/refresh-oci-session@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/refresh-oci-session@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           mode: once
           oidc_domain_url: ${{ inputs.oci_domain_url }}
@@ -627,7 +627,7 @@ jobs:
       - name: Select the units to destroy, in destroy order
         id: select-destroy
         if: inputs.mode == 'destroy'
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -639,7 +639,7 @@ jobs:
       - name: Empty the ECR repositories the destroy removes
         if: inputs.mode == 'destroy' && inputs.empty_ecr_repositories && env.HAS_AWS_ROLE == 'true'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/empty-ecr-repositories@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/empty-ecr-repositories@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           working_directory: ${{ inputs.working_directory }}
           aws_region: ${{ inputs.aws_region }}
@@ -648,7 +648,7 @@ jobs:
       - name: Destroy
         id: destroy
         if: inputs.mode == 'destroy'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         env:
           TAILSCALE_OAUTH_CLIENT_ID: ${{ steps.facts.outputs.tailscale_enabled == 'true' && secrets.tailscale_provider_oauth_client_id || '' }}
           TAILSCALE_OAUTH_CLIENT_SECRET: ${{ steps.facts.outputs.tailscale_enabled == 'true' && secrets.tailscale_provider_oauth_secret || '' }}
@@ -709,7 +709,7 @@ jobs:
       - name: Renew the OCI session before the compartment report
         if: ${{ !cancelled() && inputs.cloud == 'oci' && inputs.mode == 'destroy' }}
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/refresh-oci-session@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/refresh-oci-session@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           mode: once
           oidc_domain_url: ${{ inputs.oci_domain_url }}
@@ -721,7 +721,7 @@ jobs:
       - name: Report what the environment compartment still holds
         if: ${{ !cancelled() && inputs.cloud == 'oci' && inputs.mode == 'destroy' && steps.generate.outcome == 'success' }}
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/compartment-report-oci@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/compartment-report-oci@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           compartment_ocid: ${{ steps.facts.outputs.compartment_ocid }}
           compartment_name: ${{ steps.facts.outputs.compartment_name }}
@@ -735,7 +735,7 @@ jobs:
       - name: Ask ECS why a service did not settle
         if: failure() && inputs.ecs_stack_path != '' && (steps.fresh.outputs.change_failed == 'true' || steps.destroy.outputs.change_failed == 'true')
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/ecs-service-health@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/ecs-service-health@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           mode: diagnostics
           ecs_stack_path: ${{ inputs.ecs_stack_path }}
@@ -749,7 +749,7 @@ jobs:
         id: store_receiver
         if: success() && inputs.mode == 'apply' && env.HAS_RECEIVER_TOKEN == 'true' && inputs.receiver_secret_id != '' && inputs.cloud != 'oci'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/receiver-token@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/receiver-token@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           token: ${{ secrets.runestra_receiver_token }}
           secret_id: ${{ inputs.receiver_secret_id }}
@@ -759,7 +759,7 @@ jobs:
         id: store_registry
         if: success() && inputs.mode == 'apply' && env.HAS_REGISTRY_AUTH == 'true' && inputs.registry_secret_id != '' && inputs.cloud != 'oci'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/registry-credential@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/registry-credential@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -771,7 +771,7 @@ jobs:
         id: store_receiver_oci
         if: success() && inputs.mode == 'apply' && inputs.cloud == 'oci' && env.HAS_RECEIVER_TOKEN == 'true' && inputs.receiver_secret_id != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/receiver-token-oci@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/receiver-token-oci@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           token: ${{ secrets.runestra_receiver_token }}
           secret_name: ${{ inputs.receiver_secret_id }}
@@ -785,7 +785,7 @@ jobs:
         id: store_registry_oci
         if: success() && inputs.mode == 'apply' && inputs.cloud == 'oci' && env.HAS_REGISTRY_AUTH == 'true' && inputs.registry_secret_id != ''
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/registry-credential-oci@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/registry-credential-oci@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           client_id: ${{ secrets.runestra_client_id }}
           client_secret: ${{ secrets.runestra_client_secret }}
@@ -798,13 +798,13 @@ jobs:
       - name: Install kubectl for the force-sync
         if: success() && inputs.mode == 'apply' && inputs.cloud == 'aws' && inputs.eks_stack_path != '' && (contains(fromJSON('["created","updated"]'), format('{0}{1}', steps.store_registry.outputs.result, steps.store_registry_oci.outputs.result)) || contains(fromJSON('["created","updated"]'), format('{0}{1}', steps.store_receiver.outputs.result, steps.store_receiver_oci.outputs.result)))
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/setup-kubectl@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/setup-kubectl@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
 
       # Best effort: a failed sync never fails the apply. → docs/terragrunt-apply-fresh.md
       - name: Force-sync the External Secrets
         if: success() && inputs.mode == 'apply' && (inputs.cloud == 'oci' || (inputs.cloud == 'aws' && inputs.eks_stack_path != '')) && (contains(fromJSON('["created","updated"]'), format('{0}{1}', steps.store_registry.outputs.result, steps.store_registry_oci.outputs.result)) || contains(fromJSON('["created","updated"]'), format('{0}{1}', steps.store_receiver.outputs.result, steps.store_receiver_oci.outputs.result)))
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/force-sync-secrets@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/force-sync-secrets@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           cloud: ${{ inputs.cloud }}
           cluster_name: ${{ steps.facts.outputs.cluster_name }}
@@ -817,6 +817,6 @@ jobs:
       - name: Report the OCI session refreshes
         if: always() && inputs.cloud == 'oci'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/refresh-oci-session@f9021cfe40cd07357f323c37bad407e231087f66
+        uses: naviteq/github-actions/.github/actions/refresh-oci-session@7f40baf5d55299a1bc6df362f83707d7c97b2a8f
         with:
           mode: report
