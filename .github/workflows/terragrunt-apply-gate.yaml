@@ -169,7 +169,7 @@ jobs:
 
       - name: Find the merged pull request and its plans
         id: find
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@b766d218f8c5abb8d9113af33c8fdbc053c21c00
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
         with:
           command: find
           sha: ${{ github.sha }}
@@ -191,7 +191,7 @@ jobs:
       - name: Read the apply profiles
         id: config
         if: steps.find.outputs.artifact_id != '' && inputs.config_file != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@b766d218f8c5abb8d9113af33c8fdbc053c21c00
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
         with:
           config_file: ${{ inputs.config_file }}
           mode: apply
@@ -214,14 +214,14 @@ jobs:
         id: apply-profiles
         if: steps.config.outcome == 'success'
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@b766d218f8c5abb8d9113af33c8fdbc053c21c00
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
         with:
           profiles: ${{ steps.config.outputs.profiles }}
           units: ${{ steps.planned.outputs.units }}
 
       - name: Open the approval issue, or say why there is none
         id: decide
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@b766d218f8c5abb8d9113af33c8fdbc053c21c00
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-gate@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
         with:
           command: decide
           sha: ${{ github.sha }}
@@ -254,7 +254,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@b766d218f8c5abb8d9113af33c8fdbc053c21c00
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -263,7 +263,7 @@ jobs:
 
       - name: Resolve the registry token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@b766d218f8c5abb8d9113af33c8fdbc053c21c00
+        uses: naviteq/github-actions/.github/actions/registry-token@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
         with:
           token: ${{ secrets.runestra_registry_token }}
           client_id: ${{ secrets.runestra_client_id }}
@@ -272,7 +272,7 @@ jobs:
       # → docs/terragrunt-provider-mirror.md
       - name: Send provider downloads through the mirror
         if: inputs.provider_mirror_url != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-provider-mirror@b766d218f8c5abb8d9113af33c8fdbc053c21c00
+        uses: naviteq/github-actions/.github/actions/terragrunt-provider-mirror@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
         with:
           url: ${{ inputs.provider_mirror_url }}
           ca_file: ${{ inputs.provider_mirror_ca_file }}
@@ -287,7 +287,7 @@ jobs:
 
       - name: Warm the provider cache from the lock files
         if: steps.provider-cache.outputs.cache-hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@b766d218f8c5abb8d9113af33c8fdbc053c21c00
+        uses: naviteq/github-actions/.github/actions/terragrunt-warm-providers@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
         with:
           working_directory: ${{ inputs.working_directory }}
           engine: ${{ inputs.engine }}
