@@ -49,7 +49,7 @@ jobs:
 
       # → see docs/security-scan.md § Gitleaks binary
       - name: Ensure Gitleaks
-        uses: naviteq/github-actions/.github/actions/ensure-tool@9b6fa0b506462852c27d833f3cb1e0809d4444a0
+        uses: naviteq/github-actions/.github/actions/ensure-tool@83345fac9c629a50a8b2fb4fc0f9cd3a174282f1
         with:
           tool: gitleaks
           version: ${{ env.GITLEAKS_VERSION }}

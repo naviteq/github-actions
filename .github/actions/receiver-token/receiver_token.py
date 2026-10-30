@@ -79,6 +79,17 @@ def summary(line: str) -> None:
         pass
 
 
+def set_output(name: str, value: str) -> None:
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as file:
+            file.write(f"{name}={value}\n")
+    except OSError:
+        pass
+
+
 def main() -> int:
     token = os.environ.get("RECEIVER_TOKEN", "")
     secret_id = os.environ.get("SECRET_ID", "")
@@ -94,6 +105,7 @@ def main() -> int:
         if put(token, secret_id):
             print("Receiver token stored", flush=True)
             summary("Receiver token stored")
+            set_output("result", "updated")
         else:
             warn("Receiver token was not stored: Secrets Manager refused the write; "
                  "the entry is created by the environment's Terraform")

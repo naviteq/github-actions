@@ -219,6 +219,7 @@ class EventSink:
         self._shed_count = 0
         self._failure = ""
         self._status = 0
+        self._error = ""
         self._batch_size = max(batch_size, 1)
         self._flush_seconds = flush_seconds
         self._audience = audience
@@ -334,19 +335,21 @@ class EventSink:
     def _try_post(self, batch: list[tuple[str, bytes]]) -> bool:
         try:
             return self._post(_body(batch))
-        except Exception:
-            self._failure, self._status = "error", 0
+        except Exception as exc:
+            self._failure, self._status, self._error = "error", 0, type(exc).__name__
             return False
 
     def _loss(self) -> tuple[str, str]:
         if self._failure == "refused":
             return "refused", f"the Console refused them with HTTP {self._status}"
         if self._failure == "unbound":
-            return "dropped", "the run is not bound on the Console"
-        return "dropped", "posting failed unexpectedly"
+            return "dropped", f"the run is not bound on the Console ({self._status_text()})"
+        return "dropped", f"posting failed unexpectedly ({self._status_text()})"
 
     def _status_text(self) -> str:
-        return f"last HTTP {self._status}" if self._status else "no response"
+        if self._status:
+            return f"last HTTP {self._status}"
+        return f"no response, last error {self._error}" if self._error else "no response"
 
     def _hold(self, entries: list[tuple[str, bytes]]) -> None:
         self._buffer[:0] = entries
@@ -397,9 +400,12 @@ class EventSink:
                 req = urllib.request.Request(self._endpoint, data=body, method="POST", headers={
                     "Authorization": f"Bearer {self._bearer()}", "Content-Type": "application/x-ndjson"})
                 status, _ = _request(req)
-            except (urllib.error.URLError, OSError, http.client.HTTPException, RuntimeError, ValueError):
+            except (urllib.error.URLError, OSError, http.client.HTTPException, RuntimeError, ValueError) as exc:
                 status = 0
+                self._error = type(exc).__name__
             self._status = status
+            if status:
+                self._error = ""
             if 200 <= status < 300:
                 self._not_found_since = None
                 return True
