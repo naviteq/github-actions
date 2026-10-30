@@ -23,7 +23,6 @@ import sys
 AWS_TIMEOUT = 120
 GLOBAL_REGION = "us-east-1"
 PAGE_SIZE = "1000"
-OCI_DEFAULT_BUCKET = "runestra-terraform-states"
 OCI_DEFAULT_REGION = "us-ashburn-1"
 LOCK_QUERY = "{keys: Contents[?ends_with(Key, '.tflock')].Key, next: NextToken}"
 
@@ -110,13 +109,17 @@ def delete(bucket: str, region: str, key: str, endpoint: str = "") -> bool:
     return result is not None and result.returncode == 0
 
 
-def sweep(bucket: str, region: str, prefix: str, endpoint: str = "") -> tuple[int, int]:
-    """Delete the bucket's locks under the prefix; returns (found, removed)."""
+def sweep(bucket: str, region: str, prefix: str, endpoint: str = "", required: bool = False) -> tuple[int, int] | None:
+    """Delete the bucket's locks under the prefix; returns (found, removed), None after a warning. A missing `required` bucket warns."""
     try:
-        keys = list_locks(bucket, region, prefix, endpoint) or []
+        listed = list_locks(bucket, region, prefix, endpoint)
     except Refused as error:
         warn(f"Stale state locks were not cleared: {error}")
-        return 0, 0
+        return None
+    if listed is None and required:
+        warn(f"Stale state locks were not cleared: bucket {bucket} does not exist")
+        return None
+    keys = listed or []
     removed = 0
     for key in keys:
         if delete(bucket, region, key, endpoint):
@@ -134,9 +137,15 @@ def main_oci(prefix: str) -> None:
         warn("Stale state locks were not cleared: no OCI namespace or no state key")
         return
     region = os.environ.get("OCI_STATE_BUCKET_REGION", "").strip() or OCI_DEFAULT_REGION
-    bucket = os.environ.get("OCI_STATE_BUCKET", "").strip() or OCI_DEFAULT_BUCKET
+    bucket = os.environ.get("OCI_STATE_BUCKET", "").strip()
+    if not bucket:
+        warn("Stale state locks were not cleared: no OCI state bucket (OCI_STATE_BUCKET)")
+        return
     endpoint = f"https://{namespace}.compat.objectstorage.{region}.oraclecloud.com"
-    found, removed = sweep(bucket, region, prefix, endpoint)
+    swept = sweep(bucket, region, prefix, endpoint, required=True)
+    if swept is None:
+        return
+    found, removed = swept
     if found:
         report(f"{removed} stale state locks removed under {prefix}.")
     else:
@@ -158,8 +167,8 @@ def main() -> int:
         if owner is None:
             warn("Stale state locks were not cleared: could not read the AWS account")
             return 0
-        found, removed = sweep(f"{owner}-{region}-terraform-states", region, prefix)
-        found_global, removed_global = sweep(f"{owner}-global-terraform-states", GLOBAL_REGION, prefix)
+        found, removed = sweep(f"{owner}-{region}-terraform-states", region, prefix) or (0, 0)
+        found_global, removed_global = sweep(f"{owner}-global-terraform-states", GLOBAL_REGION, prefix) or (0, 0)
         if found + found_global:
             report(f"{removed + removed_global} stale state locks removed under {prefix}.")
         else:
