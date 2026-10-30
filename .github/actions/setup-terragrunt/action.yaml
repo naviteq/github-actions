@@ -84,14 +84,14 @@ runs:
     # Keeps a binary the runner image bakes at the pinned version, installs into $RUNNER_TEMP/bin otherwise.
     - name: Ensure the engine
       id: engine
-      uses: naviteq/github-actions/.github/actions/ensure-tool@ca1fc05797b2f4be304f3a233519d30839d5b2a3
+      uses: naviteq/github-actions/.github/actions/ensure-tool@9175c899b57f7e0d8e446f72fa4dd9de30805ade
       with:
         tool: ${{ inputs.engine }}
         version: ${{ steps.resolve.outputs.opentofu }}${{ steps.resolve.outputs.terraform }}
 
     - name: Ensure Terragrunt
       id: terragrunt
-      uses: naviteq/github-actions/.github/actions/ensure-tool@ca1fc05797b2f4be304f3a233519d30839d5b2a3
+      uses: naviteq/github-actions/.github/actions/ensure-tool@9175c899b57f7e0d8e446f72fa4dd9de30805ade
       with:
         tool: terragrunt
         version: ${{ steps.resolve.outputs.terragrunt }}
