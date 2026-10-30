@@ -36,7 +36,7 @@ runs:
         echo "version=${version}" >> "$GITHUB_OUTPUT"
 
     - name: Ensure oci-cli ${{ steps.resolve.outputs.version }}
-      uses: naviteq/github-actions/.github/actions/ensure-tool@4d72fb0bc55d4113691e39825fac777817b7f2e8
+      uses: naviteq/github-actions/.github/actions/ensure-tool@ca1fc05797b2f4be304f3a233519d30839d5b2a3
       with:
         tool: oci-cli
         version: ${{ steps.resolve.outputs.version }}

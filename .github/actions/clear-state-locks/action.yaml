@@ -21,6 +21,14 @@ inputs:
     description: aws or oci
     required: false
     default: aws
+  oci_state_bucket:
+    description: With cloud oci, the connection's state bucket; empty falls back to OCI_STATE_BUCKET in the job env
+    required: false
+    default: ""
+  oci_state_bucket_region:
+    description: With cloud oci, the region of that bucket; empty falls back to OCI_STATE_BUCKET_REGION in the job env
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -32,4 +40,6 @@ runs:
         WORKING_DIRECTORY: ${{ inputs.working_directory }}
         AWS_REGION: ${{ inputs.aws_region }}
         CLOUD: ${{ inputs.cloud }}
+        OCI_STATE_BUCKET: ${{ inputs.oci_state_bucket || env.OCI_STATE_BUCKET }}
+        OCI_STATE_BUCKET_REGION: ${{ inputs.oci_state_bucket_region || env.OCI_STATE_BUCKET_REGION }}
       run: python3 "${ACTION_PATH}/clear_state_locks.py"
