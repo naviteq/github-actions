@@ -252,7 +252,7 @@ jobs:
       - name: Check the approval comment
         id: approval
         if: inputs.approval == 'issue'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           command: approval
           approvers: ${{ inputs.approvers || vars.TERRAGRUNT_APPLY_APPROVERS }}
@@ -315,7 +315,7 @@ jobs:
       # → docs/terragrunt-plan.md#config-file
       - name: Read the config file
         id: config
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           config_file: ${{ inputs.config_file }}
           mode: apply
@@ -355,7 +355,7 @@ jobs:
 
       - name: Check the plans against the approval
         id: plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           command: plans
           metadata: ${{ runner.temp }}/terragrunt-plans/metadata.json
@@ -369,7 +369,7 @@ jobs:
 
       - name: Match the units to credential profiles
         id: profiles
-        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-plan-profiles@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           profiles: ${{ steps.config.outputs.profiles }}
           units: ${{ steps.plans.outputs.units }}
@@ -446,14 +446,14 @@ jobs:
       # → see docs/console-integration.md
       - name: Brokered catalog token from the Console
         if: inputs.console_url != ''
-        uses: naviteq/github-actions/.github/actions/catalog-token@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/catalog-token@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
           console_run_id: ${{ inputs.console_run_id }}
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -480,7 +480,7 @@ jobs:
 
       - name: Resolve the registry token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/registry-token@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           token: ${{ secrets.runestra_registry_token }}
           client_id: ${{ secrets.runestra_client_id }}
@@ -519,7 +519,7 @@ jobs:
       # The OIDC subject carries the profile's Environment, which the tenancy's trust rule matches. → docs/terragrunt-plan.md
       - name: Configure OCI credentials and remote-state access
         if: matrix.leg.oci_region != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           region: ${{ matrix.leg.oci_region }}
           oidc_domain_url: ${{ secrets.oci_oidc_domain_url }}
@@ -532,7 +532,7 @@ jobs:
       # → docs/terragrunt-provider-mirror.md
       - name: Send provider downloads through the mirror
         if: inputs.provider_mirror_url != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-provider-mirror@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-provider-mirror@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           url: ${{ inputs.provider_mirror_url }}
           ca_file: ${{ inputs.provider_mirror_ca_file }}
@@ -576,7 +576,7 @@ jobs:
 
       # Every unit before anything is applied, so a later unit cannot see an earlier apply.
       - name: Re-plan and compare with the saved plans
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           command: run
           phase: check
@@ -641,14 +641,14 @@ jobs:
       # → see docs/console-integration.md
       - name: Brokered catalog token from the Console
         if: inputs.console_url != ''
-        uses: naviteq/github-actions/.github/actions/catalog-token@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/catalog-token@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           console_url: ${{ inputs.console_url }}
           console_audience: ${{ inputs.console_audience }}
           console_run_id: ${{ inputs.console_run_id }}
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -675,7 +675,7 @@ jobs:
 
       - name: Resolve the registry token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/registry-token@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           token: ${{ secrets.runestra_registry_token }}
           client_id: ${{ secrets.runestra_client_id }}
@@ -714,7 +714,7 @@ jobs:
       # The OIDC subject carries the profile's Environment, which the tenancy's trust rule matches. → docs/terragrunt-plan.md
       - name: Configure OCI credentials and remote-state access
         if: matrix.leg.oci_region != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-oci-session@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           region: ${{ matrix.leg.oci_region }}
           oidc_domain_url: ${{ secrets.oci_oidc_domain_url }}
@@ -727,7 +727,7 @@ jobs:
       # → docs/terragrunt-provider-mirror.md
       - name: Send provider downloads through the mirror
         if: inputs.provider_mirror_url != ''
-        uses: naviteq/github-actions/.github/actions/terragrunt-provider-mirror@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-provider-mirror@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           url: ${{ inputs.provider_mirror_url }}
           ca_file: ${{ inputs.provider_mirror_ca_file }}
@@ -772,7 +772,7 @@ jobs:
       # A checksum-pinned release binary: a plan file carries state values in clear.
       - name: Ensure age
         if: needs.verify.outputs.destroy != 'true'
-        uses: naviteq/github-actions/.github/actions/ensure-tool@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/ensure-tool@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           tool: age
           version: 1.3.2
@@ -800,7 +800,7 @@ jobs:
 
       # For a destroy, `destroy` per unit instead of the plan files. → docs/terragrunt-destroy.md
       - name: Apply the saved plans, or destroy the units
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           command: run
           phase: apply
@@ -814,7 +814,7 @@ jobs:
 
       - name: Prove a second plan changes nothing
         if: inputs.verify_clean && needs.verify.outputs.destroy != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@33bb1c30a9a799708a2aec0fafcaba03f4ca6059
+        uses: naviteq/github-actions/.github/actions/terragrunt-apply-units@e81c0452d66031c1468cdb0769cc63120d57ff45
         with:
           command: run
           phase: clean
