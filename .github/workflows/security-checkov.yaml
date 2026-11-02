@@ -369,7 +369,7 @@ jobs:
       # Native CLI, not bridgecrewio/checkov-action: that one pulls a 188 MB image per job → see docs/security-scan.md
       - name: Set up Checkov
         if: ${{ inputs.full_scan || steps.resolved.outputs.has_changes == 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-checkov@666cf255dcc7f8eb416a5047f020828fc476c70f
+        uses: naviteq/github-actions/.github/actions/setup-checkov@7536446d47d43e453ccf896fd3b8682cf8d77da4
         with:
           version: ${{ inputs.checkov_version }}
 

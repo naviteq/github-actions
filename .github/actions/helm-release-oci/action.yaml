@@ -98,7 +98,7 @@ runs:
   steps:
     # → see docs/helm-release-oci.md
     - name: Ensure Helm
-      uses: naviteq/github-actions/.github/actions/ensure-tool@666cf255dcc7f8eb416a5047f020828fc476c70f
+      uses: naviteq/github-actions/.github/actions/ensure-tool@7536446d47d43e453ccf896fd3b8682cf8d77da4
       with:
         tool: helm
         version: 4.3.0
