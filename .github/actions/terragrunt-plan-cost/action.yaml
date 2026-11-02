@@ -23,7 +23,7 @@ runs:
     # A checksum-pinned release binary: infracost/actions is not on the org allowlist.
     - name: Ensure Infracost
       id: infracost
-      uses: naviteq/github-actions/.github/actions/ensure-tool@e81c0452d66031c1468cdb0769cc63120d57ff45
+      uses: naviteq/github-actions/.github/actions/ensure-tool@666cf255dcc7f8eb416a5047f020828fc476c70f
       with:
         tool: infracost
         version: 0.10.46

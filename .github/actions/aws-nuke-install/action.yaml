@@ -35,7 +35,7 @@ runs:
 
     - name: Ensure aws-nuke
       id: ensure
-      uses: naviteq/github-actions/.github/actions/ensure-tool@e81c0452d66031c1468cdb0769cc63120d57ff45
+      uses: naviteq/github-actions/.github/actions/ensure-tool@666cf255dcc7f8eb416a5047f020828fc476c70f
       with:
         tool: aws-nuke
         version: ${{ inputs.version }}
