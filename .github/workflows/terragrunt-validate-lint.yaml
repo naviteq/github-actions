@@ -172,7 +172,7 @@ jobs:
       # → docs/terragrunt-plan.md#config-file
       - name: Read the config file
         id: config
-        uses: naviteq/github-actions/.github/actions/terragrunt-config@7536446d47d43e453ccf896fd3b8682cf8d77da4
+        uses: naviteq/github-actions/.github/actions/terragrunt-config@3279a90d677f26e41bd3d911eb0a8c5dbd236f74
         with:
           config_file: ${{ inputs.config_file }}
           mode: plan
@@ -202,7 +202,7 @@ jobs:
           done
 
       - name: Install Terragrunt and the engine
-        uses: naviteq/github-actions/.github/actions/setup-terragrunt@7536446d47d43e453ccf896fd3b8682cf8d77da4
+        uses: naviteq/github-actions/.github/actions/setup-terragrunt@3279a90d677f26e41bd3d911eb0a8c5dbd236f74
         with:
           engine: ${{ inputs.engine }}
           terragrunt_version: ${{ inputs.terragrunt_version }}
@@ -229,7 +229,7 @@ jobs:
 
       - name: Resolve the registry token
         if: env.HAS_REGISTRY_AUTH == 'true'
-        uses: naviteq/github-actions/.github/actions/registry-token@7536446d47d43e453ccf896fd3b8682cf8d77da4
+        uses: naviteq/github-actions/.github/actions/registry-token@3279a90d677f26e41bd3d911eb0a8c5dbd236f74
         with:
           token: ${{ secrets.runestra_registry_token }}
           client_id: ${{ secrets.runestra_client_id }}
@@ -287,7 +287,7 @@ jobs:
 
       - name: Ensure tflint
         if: inputs.tflint
-        uses: naviteq/github-actions/.github/actions/ensure-tool@7536446d47d43e453ccf896fd3b8682cf8d77da4
+        uses: naviteq/github-actions/.github/actions/ensure-tool@3279a90d677f26e41bd3d911eb0a8c5dbd236f74
         with:
           tool: tflint
           version: ${{ steps.tflint-version.outputs.version }}
@@ -353,7 +353,7 @@ jobs:
         id: units
         if: inputs.validate_inputs
         continue-on-error: true
-        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@7536446d47d43e453ccf896fd3b8682cf8d77da4
+        uses: naviteq/github-actions/.github/actions/terragrunt-select-units@3279a90d677f26e41bd3d911eb0a8c5dbd236f74
         with:
           working_directory: ${{ inputs.working_directory }}
           filter: ${{ inputs.filter }}
@@ -363,7 +363,7 @@ jobs:
       - name: Restore the module sources
         id: module-cache
         if: inputs.validate_inputs && inputs.module_cache
-        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@7536446d47d43e453ccf896fd3b8682cf8d77da4
+        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@3279a90d677f26e41bd3d911eb0a8c5dbd236f74
         with:
           mode: restore
           working_directory: ${{ inputs.working_directory }}
@@ -399,7 +399,7 @@ jobs:
         if: >-
           inputs.validate_inputs && inputs.module_cache && env.SAVE_CACHE == 'true'
           && steps.module-cache.outputs.cache_hit != 'true'
-        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@7536446d47d43e453ccf896fd3b8682cf8d77da4
+        uses: naviteq/github-actions/.github/actions/terragrunt-module-cache@3279a90d677f26e41bd3d911eb0a8c5dbd236f74
         with:
           mode: save
           working_directory: ${{ inputs.working_directory }}
