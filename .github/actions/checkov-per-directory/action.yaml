@@ -1,0 +1,41 @@
+---
+name: Checkov per directory
+description: >
+  Run checkov once per top-level subdirectory of a scan root, plus once for the files
+  directly in it, and merge the CLI and SARIF reports. Finding paths and baseline
+  matching stay relative to the scan root. Expects checkov on PATH.
+
+inputs:
+  directory:
+    description: Scan root, relative to the working directory
+    required: false
+    default: "."
+  arguments:
+    description: Checkov arguments shared by every pass, one per line, without -d and --output-file-path
+    required: false
+    default: ""
+  report:
+    description: Path of the merged CLI report
+    required: false
+    default: checkov-report.txt
+  sarif:
+    description: Path of the merged SARIF report
+    required: false
+    default: results.sarif
+
+runs:
+  using: composite
+  steps:
+    - name: Run checkov per top-level directory
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        DIRECTORY: ${{ inputs.directory }}
+        ARGUMENTS: ${{ inputs.arguments }}
+        REPORT: ${{ inputs.report }}
+        SARIF: ${{ inputs.sarif }}
+      run: |
+        set -uo pipefail
+        mapfile -t args < <(sed '/^$/d' <<<"${ARGUMENTS}")
+        python3 "${ACTION_PATH}/checkov_per_directory.py" \
+          --directory "${DIRECTORY}" --report "${REPORT}" --sarif "${SARIF}" -- "${args[@]}"

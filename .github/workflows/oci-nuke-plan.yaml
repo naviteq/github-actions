@@ -399,7 +399,7 @@ jobs:
       - name: Install oci-nuke
         if: ${{ steps.pause.outputs.skip != 'true' && steps.baked_probe.outputs.baked != 'true' }}
         # The public mirror: any org can resolve it, and any token reads its release. → see docs/oci-nuke.md
-        uses: naviteq/oci-nuke@ad7988a3b826a070113e4d3a5247b037ccbd0e21 # v3.1.0
+        uses: naviteq/oci-nuke@8f94dbf8e9a2b893fd9c31f65897571caedc6a25 # v3.1.1
         with:
           # The SHA pins the action's code; `version` picks the release it installs.
           version: ${{ inputs.oci_nuke_version }}

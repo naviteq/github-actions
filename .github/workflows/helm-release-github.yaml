@@ -120,7 +120,7 @@ jobs:
 
       - name: Login to GitHub Registry
         if: ${{ inputs.push_chart }}
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ inputs.ghcr_registry }}
           username: ${{ github.actor }}
@@ -128,7 +128,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@b9045e655c3472f384d04463d5ce4193960323d6
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@cbe1e29411e9bd3f2044ee804f8c8293873c480d
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ghcr_registry }}
