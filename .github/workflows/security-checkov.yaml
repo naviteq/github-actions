@@ -374,7 +374,7 @@ jobs:
       # Native CLI, not bridgecrewio/checkov-action: that one pulls a 188 MB image per job → see docs/security-scan.md
       - name: Set up Checkov
         if: ${{ inputs.full_scan || steps.resolved.outputs.has_changes == 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-checkov@64803febcc9d03f6be88a131bd27b6f0cb7230f4
+        uses: naviteq/github-actions/.github/actions/setup-checkov@3cef6420792b82bea10aa77638f24823b443fd57
         with:
           version: ${{ inputs.checkov_version }}
 
@@ -424,7 +424,7 @@ jobs:
       # Memory tracks one directory, not the whole tree → see docs/security-scan.md
       - name: Run Checkov per top-level directory
         if: ${{ inputs.full_scan && inputs.full_scan_per_directory }}
-        uses: naviteq/github-actions/.github/actions/checkov-per-directory@64803febcc9d03f6be88a131bd27b6f0cb7230f4
+        uses: naviteq/github-actions/.github/actions/checkov-per-directory@3cef6420792b82bea10aa77638f24823b443fd57
         with:
           directory: ${{ env.CHECKOV_DIRECTORY }}
           arguments: ${{ steps.checkov.outputs.args }}
