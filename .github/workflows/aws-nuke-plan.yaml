@@ -61,7 +61,7 @@ on:
         type: string
         required: false
         # renovate: datasource=github-releases depName=ekristen/aws-nuke
-        default: 3.68.3
+        default: 3.69.1
       aws_cli_version:
         description: AWS CLI v2 version, exact and pinned so every run uses the same CLI. Matches the version the self-hosted runner image bakes, which skips the download.
         type: string
@@ -275,7 +275,7 @@ jobs:
 
       - name: Ensure AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/ensure-tool@b9045e655c3472f384d04463d5ce4193960323d6
+        uses: naviteq/github-actions/.github/actions/ensure-tool@4919be31eb0104906cee6c0ab9d712172ec936ea
         with:
           tool: aws
           version: ${{ inputs.aws_cli_version }}
@@ -362,7 +362,7 @@ jobs:
 
       - name: Ensure aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/ensure-tool@b9045e655c3472f384d04463d5ce4193960323d6
+        uses: naviteq/github-actions/.github/actions/ensure-tool@4919be31eb0104906cee6c0ab9d712172ec936ea
         with:
           tool: aws-nuke
           version: ${{ inputs.aws_nuke_version }}
@@ -415,7 +415,7 @@ jobs:
             select(type == "object") |
             select(.msg // "" | test("would remove"; "i")) |
             [
-              (.region // .Region // ""),
+              (.region // .Region // .owner // ""),
               (.type // .ResourceType // ""),
               (.name // .id // .ID // .ResourceID // "")
             ] | @tsv
@@ -665,7 +665,7 @@ jobs:
             if [[ "${AUTO_APPROVE_ALLOWED}" == "true" ]]; then
               echo "### Auto-approve"
               echo ""
-              echo "The plan bot will post \`/approve nuke-${RUN_ID}\` on this issue. The consumer's apply trampoline picks that up via \`issue_comment\` and runs the apply with the same safety checks (STS verification, regions allowlist, hash drift, in-progress marker, SNS audit event) used for human-approved runs. The CODEOWNERS check is skipped only because this issue carries the \`nuke:auto-approve=true\` marker AND the account is on \`NUKE_AUTO_APPROVE_ACCOUNTS\` — both are re-validated at apply time."
+              echo "The plan bot will post \`/approve nuke-${RUN_ID}\` on this issue. The consumer's apply trampoline picks that up via \`issue_comment\` and runs the apply with the same safety checks (STS verification, regions allowlist, plan hash, approved-set check, in-progress marker, SNS audit event) used for human-approved runs. The CODEOWNERS check is skipped only because this issue carries the \`nuke:auto-approve=true\` marker AND the account is on \`NUKE_AUTO_APPROVE_ACCOUNTS\` — both are re-validated at apply time."
             else
               echo "### To approve"
               echo ""
@@ -677,7 +677,7 @@ jobs:
               echo ""
               echo "- Ambiguous text (\"approved\", \"lgtm\", \"Approved!\") will be rejected."
               echo "- Your handle must appear in the consumer repo's CODEOWNERS on the default branch."
-              echo "- If the resource set changes between plan and approval, apply will refuse on hash mismatch."
+              echo "- Apply deletes only what this plan lists. If the account would lose anything else, apply refuses and asks for a re-plan."
               echo "- Title prefix \`nuke:pending\` (and this comment) are load-bearing — do not edit."
             fi
           } > suffix.md
