@@ -50,6 +50,11 @@ on:
         required: false
         type: boolean
         default: false
+      full_scan_per_directory:
+        description: With full_scan, run one Checkov process per top-level subdirectory of directory, plus one for its root files, and merge the reports. Bounds peak memory on a large monorepo; finding paths and baseline matching stay relative to directory.
+        required: false
+        type: boolean
+        default: false
       base_ref:
         description: Base ref (commit SHA, branch, or tag) to diff against when computing changed files. Defaults to the repository's default branch.
         required: false
@@ -75,7 +80,7 @@ on:
         required: false
         type: string
         # renovate: datasource=pypi depName=checkov
-        default: 3.4.2
+        default: 3.4.5
       download_artifact:
         description: Artifact to download into the workspace before scanning. Used to scan another job's output.
         required: false
@@ -105,7 +110,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: checkov-security-${{ github.workflow }}-${{ github.ref }}-${{ inputs.framework || 'all' }}-${{ inputs.full_scan || 'false' }}-${{ inputs.base_ref || 'default' }}-${{ inputs.head_ref || 'default' }}-${{ inputs.submodules != '' && inputs.submodules || (vars.DEFAULT_ORG_SUBMODULES || 'false') }}-${{ inputs.runner }}
+  group: checkov-security-${{ github.workflow }}-${{ github.ref }}-${{ inputs.framework || 'all' }}-${{ inputs.full_scan || 'false' }}-${{ inputs.full_scan_per_directory || 'false' }}-${{ inputs.base_ref || 'default' }}-${{ inputs.head_ref || 'default' }}-${{ inputs.submodules != '' && inputs.submodules || (vars.DEFAULT_ORG_SUBMODULES || 'false') }}-${{ inputs.runner }}
   cancel-in-progress: true
 
 jobs:
@@ -369,15 +374,17 @@ jobs:
       # Native CLI, not bridgecrewio/checkov-action: that one pulls a 188 MB image per job → see docs/security-scan.md
       - name: Set up Checkov
         if: ${{ inputs.full_scan || steps.resolved.outputs.has_changes == 'true' }}
-        uses: naviteq/github-actions/.github/actions/setup-checkov@b9045e655c3472f384d04463d5ce4193960323d6
+        uses: naviteq/github-actions/.github/actions/setup-checkov@aba408236f6be117b4d53dfe6ab109b5825d8084
         with:
           version: ${{ inputs.checkov_version }}
 
       - name: Run Checkov
+        id: checkov
         if: ${{ inputs.full_scan || steps.resolved.outputs.has_changes == 'true' }}
         shell: bash
         env:
           CHECKOV_FILES: ${{ !inputs.full_scan && steps.resolved.outputs.files || '' }}
+          PER_DIRECTORY: ${{ inputs.full_scan && inputs.full_scan_per_directory }}
         run: |
           set -uo pipefail
           trap 'echo "::endgroup::"' EXIT
@@ -388,7 +395,7 @@ jobs:
           if [[ -n "${CHECKOV_FILES}" ]]; then
             IFS=',' read -r -a files <<<"${CHECKOV_FILES}"
             args+=(-f "${files[@]}")
-          else
+          elif [[ "${PER_DIRECTORY}" != "true" ]]; then
             args+=(-d "${CHECKOV_DIRECTORY}")
           fi
           read -r -a frameworks <<<"${CHECKOV_FRAMEWORK//,/ }"
@@ -399,15 +406,28 @@ jobs:
           for c in "${skips[@]}"; do c="${c// /}"; [[ -n "${c}" ]] && args+=(--skip-check "${c}"); done
           [[ -n "${CHECKOV_CONFIG_FILE}" ]] && args+=(--config-file "${CHECKOV_CONFIG_FILE}")
           [[ "${CHECKOV_SOFT_FAIL}" == "true" ]] && args+=(--soft-fail)
-          args+=(--compact --quiet --output cli --output sarif --output-file-path "checkov-report.txt,results.sarif")
+          args+=(--compact --quiet --output cli --output sarif)
           printf 'checkov'; printf ' %q' "${args[@]}"; printf '\n'
           echo "::endgroup::"
 
+          if [[ "${PER_DIRECTORY}" == "true" ]]; then
+            printf 'args<<CHECKOV_ARGS\n%s\nCHECKOV_ARGS\n' "$(printf '%s\n' "${args[@]}")" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
           echo "::group::Run Checkov"
-          checkov "${args[@]}"
+          checkov "${args[@]}" --output-file-path "checkov-report.txt,results.sarif"
           rc=$?
           echo "::endgroup::"
           exit "${rc}"
+
+      # Memory tracks one directory, not the whole tree → see docs/security-scan.md
+      - name: Run Checkov per top-level directory
+        if: ${{ inputs.full_scan && inputs.full_scan_per_directory }}
+        uses: naviteq/github-actions/.github/actions/checkov-per-directory@aba408236f6be117b4d53dfe6ab109b5825d8084
+        with:
+          directory: ${{ env.CHECKOV_DIRECTORY }}
+          arguments: ${{ steps.checkov.outputs.args }}
 
       - name: Write summary
         if: always()
@@ -451,7 +471,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: ${{ always() && inputs.upload_sarif && hashFiles('results.sarif') != '' }}
         with:
           sarif_file: results.sarif

@@ -75,7 +75,7 @@ on:
         type: string
         required: false
         # renovate: datasource=github-releases depName=ekristen/aws-nuke
-        default: 3.68.3
+        default: 3.69.1
       aws_cli_version:
         description: AWS CLI v2 version, exact and pinned so every run uses the same CLI. Matches the version the self-hosted runner image bakes, which skips the download.
         type: string
@@ -440,7 +440,7 @@ jobs:
 
       - name: Ensure AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/ensure-tool@b9045e655c3472f384d04463d5ce4193960323d6
+        uses: naviteq/github-actions/.github/actions/ensure-tool@aba408236f6be117b4d53dfe6ab109b5825d8084
         with:
           tool: aws
           version: ${{ inputs.aws_cli_version }}
@@ -565,7 +565,7 @@ jobs:
 
       - name: Ensure aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/ensure-tool@b9045e655c3472f384d04463d5ce4193960323d6
+        uses: naviteq/github-actions/.github/actions/ensure-tool@aba408236f6be117b4d53dfe6ab109b5825d8084
         with:
           tool: aws-nuke
           version: ${{ inputs.aws_nuke_version }}
@@ -589,17 +589,44 @@ jobs:
           set +e
           trap 'echo "::endgroup::"' EXIT
 
+          # Apply may delete only what the approved plan listed: scans see its
+          # types alone, and each pass is checked first. → see docs/aws-nuke.md
+          approved=plan/resource-set.txt
+          scope=()
+          while IFS= read -r type; do
+            scope+=(--include "${type}")
+          done < <(cut -f2 "${approved}" | grep -v '^$' | sort -u)
+          if [[ "${#scope[@]}" -eq 0 ]]; then
+            echo "::error::${approved} lists no resource types; refusing an unscoped run." >&2
+            echo "nuke_exit_code=1" >> "$GITHUB_OUTPUT"
+            echo "nuke_failure_reason=Refused: the approved plan lists no resources." >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
           args=(run
             --config "${NUKE_CONFIG}"
-            --no-dry-run
             --no-prompt
             --log-level info
-            --feature-flag filter-groups)
+            --feature-flag filter-groups
+            "${scope[@]}")
           # Filtered lines are most of the output and bury the failures that end
           # a run. → see docs/aws-nuke.md
           if [[ "${QUIET}" == "true" ]]; then
             args+=(--quiet)
           fi
+
+          # Dry-runs the account and prints, as region<TAB>type<TAB>name, each
+          # resource it would delete that the plan did not list.
+          unapproved_resources() {
+            aws-nuke "${args[@]}" --log-format json > nuke-check.json 2> nuke-check.log || return 2
+            jq -rR 'fromjson? | select(type == "object")
+                | select(.msg // "" | test("would remove"; "i"))
+                | [(.region // .Region // .owner // ""), (.type // .ResourceType // ""),
+                   (.name // .id // .ID // .ResourceID // "")] | @tsv' nuke-check.json \
+              | awk -F'\t' 'NR == FNR { ok[$0] = 1; next }
+                  NF == 3 && $2 != "" && $3 != "" && !(($0 in ok) || (("\t" $2 "\t" $3) in ok))' \
+                  "${approved}" -
+          }
 
           # True when every error aws-nuke gave up on is AWS still releasing a
           # dependency, which a later pass clears. → see docs/aws-nuke.md
@@ -613,12 +640,35 @@ jobs:
           }
 
           : > nuke-apply.log
+          : > nuke-attempt.log
+          refusal=""
           attempt=1
           while :; do
+            echo "::group::Check the live account against the approved plan, attempt ${attempt}/${MAX_ATTEMPTS}"
+            extra="$(unapproved_resources)"
+            check_rc=$?
+            if [[ "${check_rc}" -ne 0 ]]; then
+              cat nuke-check.log
+              refusal="Refused before attempt ${attempt}: the dry-run that checks the live account against the approved plan failed (exit ${check_rc}), so nothing was deleted in this attempt."
+            elif [[ -n "${extra}" ]]; then
+              count="$(wc -l <<<"${extra}" | tr -d ' ')"
+              listed="$(awk -F'\t' '{ printf "%s%s %s (%s)", (NR > 1 ? ", " : ""), $2, $3, $1 }' <<<"${extra}")"
+              refusal="Refused before attempt ${attempt}: ${count} resource(s) in the account are not in the approved plan, so nothing was deleted in this attempt. Re-plan to review them: ${listed}"
+            fi
+            if [[ -n "${refusal}" ]]; then
+              echo "::error::${refusal}" >&2
+              { echo "${refusal}"; printf '%s\n' "${extra}"; } >> nuke-apply.log
+              rc=1
+              echo "::endgroup::"
+              break
+            fi
+            echo "Every resource the account would lose is in the approved plan."
+            echo "::endgroup::"
+
             echo "::group::Run aws-nuke with --no-dry-run (destructive), attempt ${attempt}/${MAX_ATTEMPTS}"
             # stdbuf line-buffers so a long destructive run does not look stuck in
             # the log; tee keeps each attempt for the retry check and the artifact.
-            stdbuf -oL -eL aws-nuke "${args[@]}" \
+            stdbuf -oL -eL aws-nuke "${args[@]}" --no-dry-run \
               2>&1 | tee nuke-attempt.log
             rc=${PIPESTATUS[0]}
             cat nuke-attempt.log >> nuke-apply.log
@@ -638,7 +688,9 @@ jobs:
           # aws-nuke prints why it stopped last, after its logrus output; the
           # SDK's `status code: …` trailer names no cause. → see docs/aws-nuke.md
           reason=""
-          if [[ "${rc}" -ne 0 ]]; then
+          if [[ -n "${refusal}" ]]; then
+            reason="$(cut -c1-900 <<<"${refusal}")"
+          elif [[ "${rc}" -ne 0 ]]; then
             reason="$(grep -vE '^(time=|[[:space:]]*$|[[:space:]]*status code: )' nuke-attempt.log | tail -n1 | tr -d '\r' | cut -c1-900)"
           fi
           echo "nuke_failure_reason=${reason}" >> "$GITHUB_OUTPUT"
