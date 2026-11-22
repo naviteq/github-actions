@@ -275,7 +275,7 @@ jobs:
         name: Login to Amazon ECR
         if: inputs.aws_region != '' && (inputs.docker_push || inputs.cache_backend == 'registry')
         id: ecr
-        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+        uses: aws-actions/amazon-ecr-login@7290e214a610b32bc0eef81748948b6d466a8783 # v2.2.0
       ## GHCR
       - &ghcr_login
         name: Login to GitHub Container Registry
@@ -494,7 +494,7 @@ jobs:
       - name: Mint a GitHub App token for the build
         id: app_token
         if: ${{ env.MINT_APP_TOKEN == 'true' }}
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         with:
           client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
           private-key: ${{ secrets.github_app_key }}
@@ -647,7 +647,7 @@ jobs:
           ${{ always() && steps.check_slack_webhook.outputs.has_webhook == 'true'
           && (job.status != 'success' || (inputs.slack_notify_on_success && env.DOCKER_BUILD_PUBLISHES == 'true')) }}
         continue-on-error: true
-        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4
+        uses: slackapi/slack-github-action@0bc3581177d9a0f8d555e07689384b376528e8fa # v4
         with:
           webhook: ${{ secrets.slack_webhook }}
           webhook-type: incoming-webhook

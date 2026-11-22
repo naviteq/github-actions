@@ -13,6 +13,7 @@ actions only. → docs/terragrunt-plan.md
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import subprocess
@@ -25,6 +26,8 @@ QUIET_ENV = {"INFRACOST_ENABLE_CLOUD": "false", "INFRACOST_ENABLE_CLOUD_UPLOAD":
              "INFRACOST_ENABLE_DASHBOARD": "false", "INFRACOST_SKIP_UPDATE_CHECK": "true",
              "INFRACOST_NO_COLOR": "true"}
 TOP = 5
+# Free by AWS pricing, so a type Infracost has not learned yet is a zero, not unknown.
+FREE_TYPES = ("aws_iam_*",)
 
 
 def money(value: object) -> float | None:
@@ -36,6 +39,9 @@ def summarise(output: dict) -> dict:
     projects = output.get("projects") or []
     supported = sum((p.get("summary") or {}).get("totalSupportedResources", 0) for p in projects)
     unsupported = sum((p.get("summary") or {}).get("totalUnsupportedResources", 0) for p in projects)
+    unsupported -= sum(count for p in projects
+                       for kind, count in ((p.get("summary") or {}).get("unsupportedResourceCounts") or {}).items()
+                       if any(fnmatch.fnmatchcase(kind, free) for free in FREE_TYPES))
     currency = output.get("currency") or "USD"
     # Free resources (IAM, random) cost a true zero; resources Infracost cannot price (OCI) are unknown.
     if not supported and unsupported:

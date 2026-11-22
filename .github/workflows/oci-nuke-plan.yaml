@@ -959,7 +959,7 @@ jobs:
       - name: Generate a GitHub App token for auto-approve
         id: app_token
         if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' && steps.auto_approve.outputs.auto_approve_allowed == 'true' }}
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         with:
           client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
           private-key: ${{ secrets.github_app_key }}
