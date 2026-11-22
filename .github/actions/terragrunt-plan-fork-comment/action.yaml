@@ -120,7 +120,7 @@ runs:
     - name: Render the comment and the Slack message
       id: result
       if: steps.find.outputs.pr != ''
-      uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@4919be31eb0104906cee6c0ab9d712172ec936ea
+      uses: naviteq/github-actions/.github/actions/terragrunt-plan-result@edc24951064d8bec7fb010a350167745f64224a8
       with:
         report_in: ${{ runner.temp }}/terragrunt-plan-fork-report
         context_json: >-
@@ -160,7 +160,7 @@ runs:
         steps.find.outputs.pr != '' && inputs.slack_notify == 'true' && inputs.slack_webhook != ''
         && (steps.result.outputs.quiet != 'true' || inputs.report_no_changes == 'true')
       continue-on-error: true
-      uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4
+      uses: slackapi/slack-github-action@0bc3581177d9a0f8d555e07689384b376528e8fa # v4
       with:
         errors: true
         webhook: ${{ inputs.slack_webhook }}
