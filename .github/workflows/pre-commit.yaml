@@ -113,7 +113,7 @@ jobs:
       # No setup-python: a baked pre-commit runs on the image's own Python. → docs/pre-commit.md
       - name: Ensure pre-commit ${{ inputs.pre_commit_version }}
         id: ensure
-        uses: naviteq/github-actions/.github/actions/ensure-tool@5e033014f051b4a78f480ac8fa3784c450854abb
+        uses: naviteq/github-actions/.github/actions/ensure-tool@bc18a5c4d11c15b939b8e61740b2a60f572238c1
         with:
           tool: pre-commit
           version: ${{ inputs.pre_commit_version }}
