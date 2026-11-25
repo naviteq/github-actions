@@ -1,0 +1,56 @@
+---
+name: Force-sync External Secrets
+description: >
+  After a store step wrote a secret the cluster's External Secrets already synced, annotate the
+  dependent ExternalSecrets with force-sync so they read the new value at once instead of at their
+  next refresh. Best effort: a missing kubectl, an unreachable API server or a refused annotation
+  warns and the step never fails.
+
+inputs:
+  cloud:
+    description: aws (EKS) or oci (OKE)
+    required: true
+  cluster_name:
+    description: EKS cluster name; unused for oci
+    required: false
+    default: ""
+  region:
+    description: Cloud region of the cluster
+    required: true
+  kube_endpoint:
+    description: OKE endpoint kind, PUBLIC_ENDPOINT or PRIVATE_ENDPOINT; unused for aws
+    required: false
+    default: PRIVATE_ENDPOINT
+  oke_unit_dir:
+    description: Directory of the oke unit whose cluster_id output names the OKE cluster; unused for aws
+    required: false
+    default: ""
+  external_secrets:
+    description: ExternalSecret names to sync, space or newline separated; empty does nothing
+    required: false
+    default: ""
+  namespace:
+    description: Namespace of the ExternalSecrets
+    required: false
+    default: argo
+  wait_seconds:
+    description: How long to wait for an ExternalSecret to exist before giving up on it
+    required: false
+    default: "180"
+
+runs:
+  using: composite
+  steps:
+    - name: Force-sync the External Secrets
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        CLOUD: ${{ inputs.cloud }}
+        CLUSTER_NAME: ${{ inputs.cluster_name }}
+        REGION: ${{ inputs.region }}
+        KUBE_ENDPOINT: ${{ inputs.kube_endpoint }}
+        OKE_UNIT_DIR: ${{ inputs.oke_unit_dir }}
+        EXTERNAL_SECRETS: ${{ inputs.external_secrets }}
+        NAMESPACE: ${{ inputs.namespace }}
+        WAIT_SECONDS: ${{ inputs.wait_seconds }}
+      run: python3 "${ACTION_PATH}/force_sync_secrets.py"

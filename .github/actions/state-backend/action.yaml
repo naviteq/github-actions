@@ -1,0 +1,48 @@
+---
+name: State backend
+description: >
+  Set up an environment's hardened AWS state backend before its first apply: fetch the catalog at
+  the environment's commit, run its scripts/state-backend.sh with a machine report, and post the
+  run phase and what the script found for each unit to the Runestra Console. Fails exactly when the
+  script fails.
+
+inputs:
+  working_directory:
+    description: Environment directory holding the state-backend units, relative to the repository root
+    required: true
+  catalog_sha:
+    description: The catalog commit the environment was rendered from, as 40 lowercase hex characters
+    required: false
+    default: ""
+  console_url:
+    description: Console origin, https only; empty posts no events
+    required: false
+    default: ""
+  console_audience:
+    description: Audience of the Actions OIDC token the Console accepts
+    required: false
+    default: ""
+  console_run_id:
+    description: Console run id, as the dispatch passed it
+    required: false
+    default: ""
+
+outputs:
+  bootstrap_dir:
+    description: Directory the script keeps its bootstrap state in; upload it after a failure
+    value: ${{ steps.state_backend.outputs.bootstrap_dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up the state backend
+      id: state_backend
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        CATALOG_SHA: ${{ inputs.catalog_sha }}
+        CONSOLE_URL: ${{ inputs.console_url }}
+        CONSOLE_AUDIENCE: ${{ inputs.console_audience }}
+        CONSOLE_RUN_ID: ${{ inputs.console_run_id }}
+      run: python3 "${ACTION_PATH}/state_backend.py"

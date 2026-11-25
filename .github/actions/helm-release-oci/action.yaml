@@ -24,6 +24,10 @@ inputs:
     description: Optional branch name for bump commit target (defaults to current ref name)
     required: false
     default: ""
+  dependency_update:
+    description: Run helm dependency update before lint and package; "false" packages the dependencies already in charts/
+    required: false
+    default: "true"
   lint_enabled:
     description: Run helm lint before package
     required: false
@@ -94,7 +98,7 @@ runs:
   steps:
     # → see docs/helm-release-oci.md
     - name: Ensure Helm
-      uses: naviteq/github-actions/.github/actions/ensure-tool@03038ee09f925b785a79eb72b9e2d29c5857153a
+      uses: naviteq/github-actions/.github/actions/ensure-tool@f5358ffcdc510aa530d73fa11803b59b743b843c
       with:
         tool: helm
         version: 4.3.0
@@ -117,6 +121,7 @@ runs:
         fi
 
     - name: Update Helm dependencies
+      if: ${{ inputs.dependency_update == 'true' }}
       shell: bash
       working-directory: ${{ inputs.chart_path }}
       run: helm dependency update
@@ -217,7 +222,7 @@ runs:
     # Intentional: version bump commit runs only when chart push is enabled.
     - name: Commit file to branch
       if: ${{ inputs.push_chart == 'true' && inputs.bump_version_in_git == 'true' }}
-      uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7
+      uses: stefanzweifel/git-auto-commit-action@d0b01107b5db882071f96de5dd4b54961ea93f4c # v7
       with:
         branch: ${{ inputs.bump_version_git_branch != '' && inputs.bump_version_git_branch || github.ref_name }}
         commit_user_name: ${{ inputs.commit_user_name != '' && inputs.commit_user_name || inputs.commiter_user_name }}

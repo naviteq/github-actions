@@ -26,6 +26,8 @@ from pathlib import Path
 COMMENT_LIMIT = 60000
 SLACK_UNITS = 20
 COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
+# Imports, moves and forgets: no count shows them, but the apply must run. → docs/terragrunt-plan.md
+STATE_KEY = "state_changes"
 SIGN = {"create": "+", "update": "!", "replace": "-/+", "delete": "-"}
 REPORT_FILES = ("*.counts.json", "*.resources.json", "*.costs.json")
 # Only these facts come from a fork's bundle; who and where are the base repository's.
@@ -116,7 +118,7 @@ def merge_resources(counts_dir: Path) -> dict[str, list[dict[str, str]]]:
 
 
 def has_changes(rows: list[dict]) -> bool:
-    return any(row.get(key) for row in rows for key in COUNT_KEYS)
+    return any(changes(row) for row in rows)
 
 
 def join_manifests(plans_dir: Path) -> list[list[str]]:
@@ -138,7 +140,7 @@ def metadata(context: dict, rows: list[dict], manifest: list[list[str]], skipped
     resources = resources or {}
     units = [
         {"unit": row["unit"], "profile": row.get("profile", ""), "file": files.get(row["unit"], ""),
-         "changeset": row.get("changeset", ""), **{key: row.get(key, 0) for key in COUNT_KEYS},
+         "changeset": row.get("changeset", ""), **{key: row.get(key, 0) for key in (*COUNT_KEYS, STATE_KEY)},
          "resources": resources.get(row["unit"], []), **({"cost": row["cost"]} if "cost" in row else {})}
         for row in rows if not row.get("deleted") and not row.get("error") and not row.get("kept")
     ]
@@ -164,7 +166,7 @@ def noun(key: str, count: int) -> str:
 
 
 def changes(row: dict) -> bool:
-    return any(row.get(key) for key in COUNT_KEYS)
+    return any(row.get(key) for key in (*COUNT_KEYS, STATE_KEY))
 
 
 def totals(rows: list[dict]) -> dict[str, int]:
@@ -207,7 +209,8 @@ def _status(rows: list[dict]) -> tuple[str, str]:
 def totals_line(rows: list[dict]) -> str:
     sums = totals(rows)
     parts = [f"**{SYMBOL[key]}{sums[key]}** {noun(key, sums[key])}" for key in COUNT_KEYS if sums[key]]
-    return " · ".join(parts)
+    moved = sum(int(row.get(STATE_KEY) or 0) for row in rows if not row.get("error"))
+    return " · ".join(parts + ([f"**{moved}** to import, move or forget"] if moved else []))
 
 
 def _resources(count: int) -> str:

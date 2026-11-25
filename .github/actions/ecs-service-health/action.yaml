@@ -1,0 +1,57 @@
+---
+name: ECS service health
+description: >
+  Post the facts of every ECS service in an environment's cluster (status, task counts, rollout,
+  target health, the answer of each published name) to the Runestra Console, or, in diagnostics
+  mode, ECS's own account of why services did not settle. Raw facts only; the step never fails.
+
+inputs:
+  mode:
+    description: snapshot posts the services' facts; diagnostics posts ECS events and stopped tasks per service
+    required: false
+    default: snapshot
+  ecs_stack_path:
+    description: Path of the generated ECS stack from the repository root, such as terragrunt/dev/eu-central-1/ecs
+    required: false
+    default: ""
+  aws_region:
+    description: AWS region of the cluster and its state bucket; empty falls back to AWS_DEFAULT_REGION
+    required: false
+    default: ""
+  settle_seconds:
+    description: Seconds to wait for rollouts and target health to settle before the snapshot; 0 reads once
+    required: false
+    default: "0"
+  phase:
+    description: Phase name to report as started and completed; also marks a health check, which posts a missing cluster
+    required: false
+    default: ""
+  console_url:
+    description: Console origin, https only; empty turns the action into a no-op
+    required: false
+    default: ""
+  console_audience:
+    description: Audience of the Actions OIDC token the Console accepts
+    required: false
+    default: ""
+  console_run_id:
+    description: Console run id, as the dispatch passed it
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Report the ECS services to the Console
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        MODE: ${{ inputs.mode }}
+        ECS_STACK_PATH: ${{ inputs.ecs_stack_path }}
+        AWS_REGION: ${{ inputs.aws_region }}
+        SETTLE_SECONDS: ${{ inputs.settle_seconds }}
+        PHASE: ${{ inputs.phase }}
+        CONSOLE_URL: ${{ inputs.console_url }}
+        CONSOLE_AUDIENCE: ${{ inputs.console_audience }}
+        CONSOLE_RUN_ID: ${{ inputs.console_run_id }}
+      run: python3 "${ACTION_PATH}/ecs_service_health.py"

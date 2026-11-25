@@ -1,0 +1,723 @@
+---
+name: GCP Nuke / Plan
+# Plan phase: dry-run every project under the config's accounts, plus an optional folder sweep,
+# into one audit issue. The apply phase is a separate run fired by an approval comment. → see docs/gcp-nuke.md
+on:
+  workflow_call:
+    inputs:
+      workload_identity_provider:
+        description: >-
+          Full resource name of the Workload Identity provider, projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>.
+          The job authenticates as the federated principal itself, with no service account.
+        type: string
+        required: true
+      plan_environment:
+        description: >-
+          GitHub Environment this job runs under. It lands in the OIDC token, so the pool's
+          bindings can give the plan a read-only principal of its own.
+        type: string
+        required: true
+      nuke_config_path:
+        description: Path to the gcp-nuke config file, relative to the caller repository's root. Every project under its accounts is a target.
+        type: string
+        required: true
+      regions_allowlist:
+        description: >-
+          Explicit allowlist of regions the config may target, newline- or comma-separated.
+          Validated against the config's regions: block; global counts as a region.
+        type: string
+        required: true
+      sweep_folder_id:
+        description: >-
+          Numeric ID of a folder whose leftover projects are planned for deletion as Project rows,
+          through Cloud Resource Manager. Empty turns the sweep off.
+        type: string
+        required: false
+        default: ""
+      sweep_min_age_hours:
+        description: A project in the sweep folder younger than this is left alone, so a test still running keeps its project.
+        type: number
+        required: false
+        default: 3
+      quiet:
+        description: Pass --quiet to gcp-nuke, dropping the log line of everything a filter kept. Turn it off to debug a filter.
+        type: boolean
+        required: false
+        default: true
+      paused:
+        description: Pause switch. vars.NUKE_FREEZE pauses every nuke workflow in the org.
+        type: boolean
+        required: false
+        default: false
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
+      gcp_nuke_version:
+        description: gcp-nuke release version, exact, so plan and apply scan with the same binary.
+        type: string
+        required: false
+        # renovate: datasource=github-releases depName=ekristen/gcp-nuke
+        default: 1.13.4
+      artifact_retention_days:
+        description: Plan artifact retention in days. Must outlive the approval gap between plan and apply.
+        type: number
+        required: false
+        default: 90
+      auto_approve:
+        description: >-
+          Opt in to a bot-posted approval. Takes effect only when every target project, and the
+          sweep folder as folders/<id>, is on vars.NUKE_AUTO_APPROVE_PROJECTS. → see docs/gcp-nuke.md
+        type: boolean
+        required: false
+        default: false
+      assignee_resolution:
+        description: Newline-separated `owner-label-value=github-handle` map, matched against the owner label of the resources the plan would remove.
+        type: string
+        required: false
+        default: ""
+      default_assignee:
+        description: Fallback GitHub handle when no label mapping matches.
+        type: string
+        required: false
+        default: ""
+    secrets:
+      github_app_id:
+        description: Optional, deprecated in favour of github_client_id. GitHub App ID that posts the auto-approve comment.
+        required: false
+      github_client_id:
+        description: GitHub App client ID. Required with github_app_key when auto_approve is on, because a GITHUB_TOKEN comment fires no issue_comment workflow.
+        required: false
+      github_app_key:
+        description: Private key of the App named by github_client_id or github_app_id.
+        required: false
+    outputs:
+      issue_number:
+        description: The audit issue number, when one was created.
+        value: ${{ jobs.plan.outputs.issue_number }}
+      resource_set_hash:
+        description: SHA-256 of the planned resource set.
+        value: ${{ jobs.plan.outputs.resource_set_hash }}
+      artifact_name:
+        description: Name of the uploaded plan artifact.
+        value: ${{ jobs.plan.outputs.artifact_name }}
+      empty_plan:
+        description: '"true" when the dry run found nothing to remove. No issue is opened.'
+        value: ${{ jobs.plan.outputs.empty_plan }}
+      auto_approve_allowed:
+        description: '"true" when auto-approve was requested, every target is on NUKE_AUTO_APPROVE_PROJECTS, and the App is wired.'
+        value: ${{ jobs.plan.outputs.auto_approve_allowed }}
+
+permissions: {}
+
+jobs:
+  plan:
+    name: gcp-nuke plan (dry run)
+    environment: ${{ inputs.plan_environment }}
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    timeout-minutes: 90
+    outputs:
+      issue_number: ${{ steps.create_issue.outputs.issue_number }}
+      resource_set_hash: ${{ steps.hash.outputs.resource_set_hash }}
+      artifact_name: ${{ steps.upload_meta.outputs.artifact_name }}
+      empty_plan: ${{ steps.extract.outputs.empty_plan }}
+      auto_approve_allowed: ${{ steps.auto_approve.outputs.auto_approve_allowed }}
+    steps:
+      - name: Honor pause switch
+        id: pause
+        env:
+          PAUSED_INPUT: ${{ inputs.paused }}
+          NUKE_FREEZE: ${{ vars.NUKE_FREEZE }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Evaluate pause switch and freeze flag"
+          if [[ "${PAUSED_INPUT}" == "true" || "${NUKE_FREEZE,,}" == "true" ]]; then
+            echo "::notice::gcp-nuke plan paused (paused=${PAUSED_INPUT}, NUKE_FREEZE=${NUKE_FREEZE}). Exiting." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout consumer repository
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Locate the scope helper
+        id: scope
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: naviteq/github-actions/.github/actions/gcp-nuke-scope@f5358ffcdc510aa530d73fa11803b59b743b843c
+
+      - name: Resolve targets and production guard
+        id: targets
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          SCOPE: ${{ steps.scope.outputs.script }}
+          NUKE_CONFIG: ${{ inputs.nuke_config_path }}
+          SWEEP_FOLDER_ID: ${{ inputs.sweep_folder_id }}
+          PROD_PROJECTS: ${{ vars.RUNESTRA_PROD_PROJECTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Read the config's accounts and blocklist"
+          if [[ ! -f "${NUKE_CONFIG}" ]]; then
+            echo "::error::nuke_config_path '${NUKE_CONFIG}' not found in the caller repository." >&2
+            exit 1
+          fi
+          if ! yq --version 2>&1 | grep -q mikefarah; then
+            echo "::error::mikefarah yq is required on the runner to read the gcp-nuke config." >&2
+            exit 1
+          fi
+          yq -o=json '.' "${NUKE_CONFIG}" > "${RUNNER_TEMP}/gcp-nuke-config.json"
+          yq -r '.blocklist // [] | .[]' "${NUKE_CONFIG}" > blocklist.txt
+          echo "::endgroup::"
+
+          echo "::group::Refuse blocklisted and production targets"
+          # gcp-nuke never reads its blocklist, so the helper is the only check there is. → see docs/gcp-nuke.md
+          python3 "${SCOPE}" targets --config-json "${RUNNER_TEMP}/gcp-nuke-config.json" \
+            --prod-projects "${PROD_PROJECTS:-}" > targets.txt
+          echo "targets_csv=$(paste -sd ',' targets.txt)" >> "$GITHUB_OUTPUT"
+          sed 's/^/target: /' targets.txt
+          declared="$(printf '%s' "${PROD_PROJECTS:-}" | tr -d '[:space:]')"
+          if [[ -z "${declared}" ]]; then
+            echo "prod_enforced=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::RUNESTRA_PROD_PROJECTS is unset, so the production-project guard cannot enforce. Plan continues because it deletes nothing, but auto-approve is refused and apply refuses outright. Set it to the production project IDs, or to the literal 'none'."
+          else
+            echo "prod_enforced=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Check the sweep folder"
+          if [[ -n "${SWEEP_FOLDER_ID}" && ! "${SWEEP_FOLDER_ID}" =~ ^[0-9]+$ ]]; then
+            echo "::error::sweep_folder_id must be the numeric folder ID, got '${SWEEP_FOLDER_ID}'." >&2
+            exit 1
+          fi
+          echo "sweep=${SWEEP_FOLDER_ID:-none}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate config regions against allowlist
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          NUKE_CONFIG: ${{ inputs.nuke_config_path }}
+          REGIONS_ALLOWLIST: ${{ inputs.regions_allowlist }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Compare the config's regions with the allowlist"
+          mapfile -t allow < <(printf '%s\n' "${REGIONS_ALLOWLIST}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' | sort -u)
+          if (( ${#allow[@]} == 0 )); then
+            echo "::error::regions_allowlist is empty. Explicit regions are required." >&2
+            exit 1
+          fi
+          mapfile -t config_regions < <(yq -r '.regions // [] | .[]' "${NUKE_CONFIG}" | grep -v '^$' | sort -u)
+          if (( ${#config_regions[@]} == 0 )); then
+            echo "::error::the config has no regions: block; explicit regions are required." >&2
+            exit 1
+          fi
+          for r in "${config_regions[@]}"; do
+            if [[ "${r}" == "all" ]]; then
+              echo "::error::regions: all is not allowed; list the regions explicitly." >&2
+              exit 1
+            fi
+            ok=0
+            for a in "${allow[@]}"; do
+              if [[ "${r}" == "${a}" ]]; then ok=1; break; fi
+            done
+            if (( ok == 0 )); then
+              echo "::error::Config region '${r}' is not in regions_allowlist." >&2
+              exit 1
+            fi
+          done
+          printf '%s\n' "${config_regions[@]}" > regions.txt
+          echo "Validated $(wc -l < regions.txt | tr -d ' ') region(s) against the allowlist."
+
+      - name: Resolve auto-approve eligibility
+        id: auto_approve
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          SCOPE: ${{ steps.scope.outputs.script }}
+          AUTO_APPROVE_INPUT: ${{ inputs.auto_approve }}
+          AUTO_APPROVE_PROJECTS: ${{ vars.NUKE_AUTO_APPROVE_PROJECTS }}
+          PROD_PROJECTS: ${{ vars.RUNESTRA_PROD_PROJECTS }}
+          SWEEP_FOLDER_ID: ${{ inputs.sweep_folder_id }}
+          APP_CONFIGURED: ${{ (secrets.github_client_id != '' || secrets.github_app_id != '') && secrets.github_app_key != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Resolve auto-approve eligibility against the allowlist"
+          allowed="$(python3 "${SCOPE}" auto-approve --requested "${AUTO_APPROVE_INPUT}" --targets-file targets.txt \
+            --sweep-folder "${SWEEP_FOLDER_ID}" --allowlist "${AUTO_APPROVE_PROJECTS:-}" \
+            --prod-projects "${PROD_PROJECTS:-}" --app-configured "${APP_CONFIGURED}")"
+          echo "auto_approve_allowed=${allowed}" >> "$GITHUB_OUTPUT"
+
+      - name: Cron jitter
+        if: ${{ steps.pause.outputs.skip != 'true' && github.event_name == 'schedule' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Apply cron jitter to stagger scheduled runs"
+          jitter=$(( RANDOM % 120 ))
+          echo "Sleeping ${jitter}s to spread scheduled runs."
+          sleep "${jitter}"
+
+      - name: Ensure gcp-nuke
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: naviteq/github-actions/.github/actions/ensure-tool@f5358ffcdc510aa530d73fa11803b59b743b843c
+        with:
+          tool: gcp-nuke
+          version: ${{ inputs.gcp_nuke_version }}
+
+      - name: Check gcloud is on the runner
+        if: ${{ steps.pause.outputs.skip != 'true' && inputs.sweep_folder_id != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Check gcloud for the folder sweep"
+          if ! command -v gcloud > /dev/null 2>&1; then
+            echo "::error::gcloud is not on PATH; the folder sweep lists projects with it. Use a runner image that bakes the Google Cloud CLI." >&2
+            exit 1
+          fi
+          gcloud --version | head -n1
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ inputs.workload_identity_provider }}
+          create_credentials_file: true
+
+      - name: Run gcp-nuke dry run per project
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        env:
+          SCOPE: ${{ steps.scope.outputs.script }}
+          NUKE_CONFIG: ${{ inputs.nuke_config_path }}
+          QUIET: ${{ inputs.quiet }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          mkdir -p scans
+          gcp-nuke --version 2>&1 | head -n1 > gcp-nuke-version.txt
+          : > resource-set.unsorted
+          : > scan-errors.txt
+          failed=()
+          while IFS= read -r project; do
+            echo "::group::gcp-nuke dry run: ${project}"
+            args=(run --config "${NUKE_CONFIG}" --project-id "${project}"
+              --no-prompt --prompt-delay 3 --log-format json)
+            if [[ "${QUIET}" == "true" ]]; then
+              args+=(--quiet)
+            fi
+            # Quota goes to the swept project: gRPC clients otherwise bill the credentials' own. → see docs/gcp-nuke.md
+            GOOGLE_CLOUD_QUOTA_PROJECT="${project}" stdbuf -oL -eL gcp-nuke "${args[@]}" \
+              > "scans/${project}.json" 2> "scans/${project}.log"
+            rc=$?
+            cat "scans/${project}.log" >&2
+            if (( rc != 0 )); then
+              echo "::error::gcp-nuke exited ${rc} on ${project}; it was not scanned." >&2
+              tail -n 5 "scans/${project}.json" >&2
+              failed+=("${project}")
+              echo "::endgroup::"
+              continue
+            fi
+            if ! python3 "${SCOPE}" extract --project "${project}" --log "scans/${project}.json" >> resource-set.unsorted; then
+              failed+=("${project}")
+            fi
+            python3 "${SCOPE}" errors --log "scans/${project}.json" | sed "s|^|${project}: |" >> scan-errors.txt
+            echo "::endgroup::"
+          done < targets.txt
+          while IFS= read -r line; do
+            echo "::warning::gcp-nuke could not list part of ${line}"
+          done < scan-errors.txt
+          if (( ${#failed[@]} > 0 )); then
+            echo "::error::No plan without a full scan; failed: ${failed[*]}" >&2
+            exit 1
+          fi
+
+      - name: Plan the folder sweep
+        if: ${{ steps.pause.outputs.skip != 'true' && inputs.sweep_folder_id != '' }}
+        env:
+          SCOPE: ${{ steps.scope.outputs.script }}
+          SWEEP_FOLDER_ID: ${{ inputs.sweep_folder_id }}
+          MIN_AGE_HOURS: ${{ inputs.sweep_min_age_hours }}
+          PROD_PROJECTS: ${{ vars.RUNESTRA_PROD_PROJECTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::List the projects in folders/${SWEEP_FOLDER_ID}"
+          gcloud projects list \
+            --filter="parent.type=folder AND parent.id=${SWEEP_FOLDER_ID}" \
+            --format=json > folder-projects.json
+          echo "$(jq length folder-projects.json) project(s) in the folder"
+          echo "::endgroup::"
+
+          echo "::group::Select the leftovers older than ${MIN_AGE_HOURS}h"
+          # A project named anywhere in the config is never a leftover, wherever it lives.
+          # A production project inside the folder fails the plan rather than being skipped quietly.
+          python3 "${SCOPE}" sweep --projects-json folder-projects.json --folder "${SWEEP_FOLDER_ID}" \
+            --min-age-hours "${MIN_AGE_HOURS}" --protect "$(paste -sd ',' targets.txt)" \
+            --protect "$(paste -sd ',' blocklist.txt)" --prod-projects "${PROD_PROJECTS:-}" > sweep-rows.txt
+          tee -a resource-set.unsorted < sweep-rows.txt
+
+      - name: Extract resource set
+        id: extract
+        if: ${{ steps.pause.outputs.skip != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Sort the resource set and count it"
+          LC_ALL=C sort -u resource-set.unsorted > resource-set.txt
+          count="$(wc -l < resource-set.txt | tr -d ' ')"
+          echo "resource_count=${count}" >> "$GITHUB_OUTPUT"
+          if [[ "${count}" == "0" && -s scan-errors.txt ]]; then
+            # Nothing found while something could not be listed is not a clean project. → see docs/gcp-nuke.md
+            echo "::error::The plan is empty, but gcp-nuke could not list $(wc -l < scan-errors.txt | tr -d ' ') resource type(s); see scan-errors.txt." >&2
+            exit 1
+          fi
+          if [[ "${count}" == "0" ]]; then
+            echo "empty_plan=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "## gcp-nuke plan"
+              echo ""
+              echo "Nothing to remove. No issue created."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "empty_plan=false" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+          echo "::group::Aggregate per project and type"
+          awk -F'\t' '{c[$1 " · " $3]++} END {for (k in c) print k "\t" c[k]}' resource-set.txt \
+            | LC_ALL=C sort > group-counts.tsv
+          echo "group_count=$(wc -l < group-counts.tsv | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Compute resource-set hash
+        id: hash
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(sha256sum resource-set.txt | awk '{print $1}')"
+          printf '%s\n' "${sha}" > resource-set.sha256
+          echo "resource_set_hash=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Hash: ${sha}"
+
+      - name: Upload plan artifact
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: gcp-nuke-plan-${{ github.run_id }}
+          path: |
+            scans/
+            resource-set.txt
+            resource-set.sha256
+            targets.txt
+            regions.txt
+            group-counts.tsv
+            scan-errors.txt
+            gcp-nuke-version.txt
+            folder-projects.json
+          retention-days: ${{ inputs.artifact_retention_days }}
+          if-no-files-found: error
+
+      - name: Capture artifact name
+        id: upload_meta
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        shell: bash
+        run: |
+          echo "artifact_name=gcp-nuke-plan-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+
+      - name: Re-entrancy check
+        id: reentrancy
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HASH: ${{ steps.hash.outputs.resource_set_hash }}
+          TARGETS: ${{ steps.targets.outputs.targets_csv }}
+          SWEEP: ${{ steps.targets.outputs.sweep }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Look for an open issue carrying the same resource set"
+          # The marker, not the title: a convincingly named issue cannot pass for a duplicate.
+          prefix="<!-- gcp-nuke:hash=${HASH} targets=${TARGETS} sweep=${SWEEP} run="
+          existing="$(gh issue list \
+            --repo "${{ github.repository }}" \
+            --label gcp-nuke:pending \
+            --state open \
+            --json number,body \
+            --jq ".[] | select(.body | contains(\"${prefix}\")) | .number" \
+            | head -n1)"
+          echo "existing_issue=${existing}" >> "$GITHUB_OUTPUT"
+
+      - name: Post re-run notice on existing issue
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ steps.reentrancy.outputs.existing_issue }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ARTIFACT: ${{ steps.upload_meta.outputs.artifact_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh issue comment "${ISSUE}" \
+            --repo "${{ github.repository }}" \
+            --body "Plan re-run produced the same resource set. Run: ${RUN_URL} (artifact: \`${ARTIFACT}\`)."
+
+      - name: Resolve assignees
+        id: assignees
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAP: ${{ inputs.assignee_resolution }}
+          DEFAULT: ${{ inputs.default_assignee }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Map owner labels of the planned resources to GitHub handles"
+          mapfile -t owners < <(cat scans/*.json 2>/dev/null | jq -rR '
+            fromjson? | select(type == "object") | select(.msg // "" | test("^would remove"))
+            | (.["prop:label:owner"] // .["prop:label:Owner"] // empty)' | sort -u | grep -v '^$' || true)
+          assignees=()
+          while IFS= read -r line; do
+            line="${line%%#*}"
+            line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            [[ -z "$line" ]] && continue
+            key="${line%%=*}"
+            val="${line#*=}"
+            for o in "${owners[@]:-}"; do
+              if [[ "$o" == "$key" ]]; then assignees+=("$val"); fi
+            done
+          done <<< "${MAP}"
+          if (( ${#assignees[@]} == 0 )) && [[ -n "${DEFAULT}" ]]; then
+            assignees+=("${DEFAULT}")
+          fi
+          if (( ${#assignees[@]} == 0 )); then
+            fallback="$(gh api "repos/${{ github.repository }}/collaborators?permission=maintain" --jq '.[0].login // empty' 2>/dev/null || true)"
+            if [[ -n "${fallback}" ]]; then assignees+=("${fallback}"); fi
+          fi
+          printf '%s\n' "${assignees[@]:-}" | grep -v '^$' | sort -u > assignees.txt || true
+          echo "assignees_csv=$(paste -sd ',' assignees.txt || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Render issue body
+        id: render
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          HASH: ${{ steps.hash.outputs.resource_set_hash }}
+          TARGETS: ${{ steps.targets.outputs.targets_csv }}
+          SWEEP: ${{ steps.targets.outputs.sweep }}
+          ARTIFACT: ${{ steps.upload_meta.outputs.artifact_name }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RESOURCE_COUNT: ${{ steps.extract.outputs.resource_count }}
+          GROUP_COUNT: ${{ steps.extract.outputs.group_count }}
+          AUTO_APPROVE_ALLOWED: ${{ steps.auto_approve.outputs.auto_approve_allowed }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Render the fixed head and tail of the issue"
+          regions_csv="$(paste -sd ',' regions.txt)"
+          # The markers, table, hash and approval line are never truncated: parse and apply read them.
+          GH_ISSUE_BODY_MAX=65536
+          effective_cap=$(( GH_ISSUE_BODY_MAX - 2048 ))
+          {
+            echo "<!-- gcp-nuke:hash=${HASH} targets=${TARGETS} sweep=${SWEEP} run=${RUN_ID} -->"
+            if [[ "${AUTO_APPROVE_ALLOWED}" == "true" ]]; then
+              # Apply re-resolves the allowlist too, so the marker alone grants nothing.
+              echo "<!-- gcp-nuke:auto-approve=true -->"
+            fi
+            echo ""
+            echo "## gcp-nuke plan pending approval"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Projects | \`${TARGETS}\` |"
+            echo "| Sweep folder | \`${SWEEP}\` |"
+            echo "| Regions | \`${regions_csv}\` |"
+            echo "| Resource count | \`${RESOURCE_COUNT}\` |"
+            echo "| Plan run | [${RUN_ID}](${RUN_URL}) |"
+            echo "| Artifact | \`${ARTIFACT}\` |"
+            echo ""
+            if [[ -s scan-errors.txt ]]; then
+              echo "> **Partial scan:** gcp-nuke could not list $(wc -l < scan-errors.txt | tr -d ' ') resource type(s); see \`scan-errors.txt\` in the artifact."
+              echo ""
+            fi
+            echo "### Resource-set SHA-256"
+            echo ""
+            echo "\`\`\`"
+            echo "${HASH}"
+            echo "\`\`\`"
+            echo ""
+            echo "### Resources by project and type"
+            echo ""
+            echo "**Total: ${RESOURCE_COUNT} resources in ${GROUP_COUNT} groups**"
+            echo ""
+          } > issue-body.md
+          {
+            echo ""
+            if [[ "${AUTO_APPROVE_ALLOWED}" == "true" ]]; then
+              echo "### Auto-approve"
+              echo ""
+              echo "Every target is on \`NUKE_AUTO_APPROVE_PROJECTS\`, so the plan bot posts \`/approve gcp-nuke-${RUN_ID}\` below. The apply re-checks the allowlist, the plan hash and the live projects against this plan before it deletes anything."
+            else
+              echo "### To approve"
+              echo ""
+              echo "Comment **exactly** the following on this issue:"
+              echo ""
+              echo "\`\`\`"
+              echo "/approve gcp-nuke-${RUN_ID}"
+              echo "\`\`\`"
+              echo ""
+              echo "- Your handle must appear in the consumer repo's CODEOWNERS on the default branch."
+              echo "- Apply deletes only what this plan lists. If a project would lose anything else, apply refuses and asks for a re-plan."
+            fi
+          } > suffix.md
+          budget=$(( effective_cap - $(wc -c < issue-body.md) - $(wc -c < suffix.md) - 512 ))
+          echo "::endgroup::"
+
+          echo "::group::Render the resource list within the body budget"
+          # The blank lines around <details> content are load-bearing: without them GitHub prints the bullets as text.
+          awk -F'\t' '{print $1 " · " $3 "\t" $2 "\t" $4}' resource-set.txt | LC_ALL=C sort \
+            | awk -F'\t' -v counts_file=group-counts.tsv -v budget="${budget}" -v rendered_file=rendered-count.txt '
+                BEGIN {
+                  while ((getline line < counts_file) > 0) { split(line, p, "\t"); counts[p[1]] = p[2] }
+                  prev = ""; used = 0; emitted = 0; truncated = 0; in_block = 0
+                }
+                function emit(line) {
+                  if (used + length(line) + 1 > budget) { truncated = 1; return 0 }
+                  print line; used += length(line) + 1; return 1
+                }
+                {
+                  if (truncated) next
+                  if ($1 != prev) {
+                    if (prev != "") { if (!emit("")) next; if (!emit("</details>")) next; in_block = 0; if (!emit("")) next }
+                    if (!emit("<details>")) next
+                    in_block = 1
+                    if (!emit("<summary><strong>" $1 "</strong> (" counts[$1] ")</summary>")) next
+                    if (!emit("")) next
+                    prev = $1
+                  }
+                  if (!emit("- `" $2 "` `" $3 "`")) next
+                  emitted++
+                }
+                END {
+                  if (in_block) { print ""; print "</details>" }
+                  print emitted > rendered_file
+                  print (truncated ? 1 : 0) >> rendered_file
+                }' > details.md
+          cat details.md >> issue-body.md
+          if [[ "$(sed -n '2p' rendered-count.txt)" == "1" ]]; then
+            {
+              echo ""
+              echo "> **Note:** the list is truncated to fit GitHub's issue size: $(sed -n '1p' rendered-count.txt) of ${RESOURCE_COUNT} shown. The full set is \`resource-set.txt\` in \`${ARTIFACT}\`."
+            } >> issue-body.md
+          fi
+          cat suffix.md >> issue-body.md
+          if (( $(wc -c < issue-body.md) > GH_ISSUE_BODY_MAX )); then
+            echo "::error::The rendered issue body exceeds GitHub's ${GH_ISSUE_BODY_MAX}-character limit." >&2
+            exit 1
+          fi
+          echo "title=gcp-nuke pending: ${RESOURCE_COUNT} resource(s) in $(wc -l < targets.txt | tr -d ' ') project(s), sweep=${SWEEP}, hash=${HASH:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure gcp-nuke labels exist
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Ensure the gcp-nuke labels exist in the consumer repository"
+          ensure_label() {
+            if gh label create "$1" --repo "${{ github.repository }}" --color "$2" --description "$3" 2>/dev/null; then
+              echo "Created label: $1"
+            elif gh label list --repo "${{ github.repository }}" --search "$1" --json name \
+                --jq ".[] | select(.name == \"$1\") | .name" | grep -qx "$1"; then
+              echo "Label already present: $1"
+            else
+              echo "::error::Failed to ensure label '$1' exists." >&2
+              return 1
+            fi
+          }
+          ensure_label "gcp-nuke:pending"  "FBCA04" "gcp-nuke: plan awaiting approval"
+          ensure_label "gcp-nuke:applying" "0E8A16" "gcp-nuke: apply in progress"
+          ensure_label "gcp-nuke:failed"   "B60205" "gcp-nuke: apply failed"
+
+      - name: Create audit issue
+        id: create_issue
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSIGNEES_CSV: ${{ steps.assignees.outputs.assignees_csv }}
+          ISSUE_TITLE: ${{ steps.render.outputs.title }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Open the audit issue"
+          extra=()
+          if [[ -n "${ASSIGNEES_CSV}" ]]; then
+            extra+=(--assignee "${ASSIGNEES_CSV}")
+          fi
+          url="$(gh issue create \
+            --repo "${{ github.repository }}" \
+            --label gcp-nuke:pending \
+            --title "${ISSUE_TITLE}" \
+            --body-file issue-body.md \
+            "${extra[@]}")"
+          echo "issue_number=${url##*/}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## gcp-nuke plan"
+            echo ""
+            echo "- Audit issue: ${url}"
+            echo "- Resource-set SHA-256: \`${{ steps.hash.outputs.resource_set_hash }}\`"
+            echo "- Artifact: \`gcp-nuke-plan-${{ github.run_id }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The bot comment takes the same path as a human approval; nothing is chained from here.
+      - name: Generate GitHub App token for auto-approve
+        id: app_token
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' && steps.auto_approve.outputs.auto_approve_allowed == 'true' }}
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
+        with:
+          client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
+          private-key: ${{ secrets.github_app_key }}
+
+      - name: Post auto-approve comment on audit issue
+        if: ${{ steps.pause.outputs.skip != 'true' && steps.extract.outputs.empty_plan != 'true' && steps.reentrancy.outputs.existing_issue == '' && steps.auto_approve.outputs.auto_approve_allowed == 'true' }}
+        env:
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          ISSUE: ${{ steps.create_issue.outputs.issue_number }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A GITHUB_TOKEN comment would be ignored by the consumer's issue_comment trampoline.
+          gh issue comment "${ISSUE}" --repo "${{ github.repository }}" --body "/approve gcp-nuke-${RUN_ID}"
+
+      - name: Upload the scans of a failed plan
+        if: ${{ failure() && steps.pause.outputs.skip != 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: gcp-nuke-plan-failed-${{ github.run_id }}
+          path: |
+            scans/
+            scan-errors.txt
+            gcp-nuke-version.txt
+          retention-days: 14
+          if-no-files-found: ignore

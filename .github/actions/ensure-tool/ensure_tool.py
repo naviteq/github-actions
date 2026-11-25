@@ -149,6 +149,12 @@ RECIPES: dict[str, Recipe] = {
         url=f"{GH}/ekristen/aws-nuke/releases/download/v{{version}}/aws-nuke-v{{version}}-linux-{{arch}}.tar.gz",
         checksums=f"{GH}/ekristen/aws-nuke/releases/download/v{{version}}/checksums.txt",
     ),
+    "gcp-nuke": Recipe(
+        probe=("gcp-nuke", "--version"),
+        pattern=rf"version {SEMVER}",
+        url=f"{GH}/ekristen/gcp-nuke/releases/download/v{{version}}/gcp-nuke-v{{version}}-linux-{{arch}}.tar.gz",
+        checksums=f"{GH}/ekristen/gcp-nuke/releases/download/v{{version}}/checksums.txt",
+    ),
     "kubectl": Recipe(
         probe=("kubectl", "version", "--client", "-o", "json"),
         pattern=rf'"gitVersion":\s*"{SEMVER}"',

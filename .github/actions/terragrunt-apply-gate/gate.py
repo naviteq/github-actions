@@ -17,13 +17,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 MARKER = "terragrunt-apply"
+MARKER_JSON = re.compile(r"<!-- terragrunt-apply: (\{.*?\}) -->")
 COUNT_KEYS = ("add", "change", "replace", "destroy", "outputs")
+
+
+def changing(unit: dict) -> bool:
+    """A count, or state_changes (imports, moves, forgets), absent from older metadata. → docs/terragrunt-plan.md"""
+    return any(unit.get(key) for key in COUNT_KEYS) or bool(unit.get("state_changes"))
 
 
 def gh(*args: str, payload: dict | None = None) -> object:
@@ -156,7 +163,9 @@ def table(units: list[dict]) -> list[str]:
 
 def totals_line(units: list[dict]) -> str:
     sums = {key: sum(int(u.get(key) or 0) for u in units) for key in COUNT_KEYS}
-    return " · ".join(f"**{SYMBOL[key]}{sums[key]}** {noun(key, sums[key])}" for key in COUNT_KEYS if sums[key])
+    moved = sum(int(u.get("state_changes") or 0) for u in units)
+    return " · ".join([f"**{SYMBOL[key]}{sums[key]}** {noun(key, sums[key])}" for key in COUNT_KEYS if sums[key]]
+                      + ([f"**{moved}** to import, move or forget"] if moved else []))
 
 
 ISSUE_LIMIT = 60000
@@ -223,15 +232,15 @@ def second_approver_reason(metadata: dict, threshold: float | None) -> str:
     """Why this apply needs a second approver; empty when one is enough. Unknown cost counts as over."""
     if threshold is None:
         return ""
-    changing = [u for u in metadata.get("units", []) if any(u.get(k) for k in COUNT_KEYS)]
-    if metadata.get("destroy") or not changing:
+    counted = [u for u in metadata.get("units", []) if any(u.get(k) for k in COUNT_KEYS)]
+    if metadata.get("destroy") or not counted:
         return ""
-    unpriced = [u["unit"] for u in changing if not (u.get("cost") or {}).get("estimate")]
+    unpriced = [u["unit"] for u in counted if not (u.get("cost") or {}).get("estimate")]
     if unpriced:
         return "these units have no cost estimate: " + ", ".join(f"`{u}`" for u in unpriced)
-    total = round(sum(float(u["cost"]["delta"]) for u in changing), 2)
+    total = round(sum(float(u["cost"]["delta"]) for u in counted), 2)
     if total > threshold:
-        currency = changing[0]["cost"].get("currency", "USD")
+        currency = counted[0]["cost"].get("currency", "USD")
         return (f"it adds {_money(total, currency, signed=True)} per month, more than the "
                 f"{_money(threshold, currency)} threshold")
     return ""
@@ -249,13 +258,12 @@ def apply_skipped(metadata: dict, lines: str) -> list[dict]:
         if len(parts) == 3 and parts[0].strip():
             reasons[parts[0].strip()] = parts[2].strip()
     return [{"unit": u["unit"], "reason": reasons[u["unit"]]} for u in metadata.get("units", [])
-            if u["unit"] in reasons and any(u.get(key) for key in COUNT_KEYS)]
+            if u["unit"] in reasons and changing(u)]
 
 
 def only_by_hand(metadata: dict, by_hand: list[dict] | None) -> bool:
     """Every changing unit is skipped for apply, so an approval could only be refused."""
-    return bool(by_hand) and len(by_hand or []) == sum(1 for u in metadata.get("units", [])
-                                                       if any(u.get(key) for key in COUNT_KEYS))
+    return bool(by_hand) and len(by_hand or []) == sum(1 for u in metadata.get("units", []) if changing(u))
 
 
 def _by_hand_list(skipped: list[dict]) -> str:
@@ -266,8 +274,8 @@ def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, 
                base_commit: str = "", second_approver_cost: float | None = None,
                by_hand: list[dict] | None = None) -> str:
     """The approval issue: what would change, who may approve, and the exact command."""
-    changing = [u for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
-    destroys = sum(int(u.get("destroy") or 0) + int(u.get("replace") or 0) for u in changing)
+    shown = [u for u in metadata["units"] if changing(u)]
+    destroys = sum(int(u.get("destroy") or 0) + int(u.get("replace") or 0) for u in shown)
     replanned = "source_pr" in marker
     pr = marker["source_pr"] if replanned else marker["pr"]
     planned = (f"Re-planned at `{marker['commit'][:7]}`, after the base moved under the PR's plan" if replanned
@@ -284,16 +292,16 @@ def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, 
                 "", *_approve_block("apply", marker["artifact_id"], approvers,
                                     second_approver_reason(metadata, second_approver_cost)), ""]
     lines = [f"<!-- {MARKER}: {json.dumps(marker, separators=(',', ':'))} -->", *head]
-    total = totals_line(changing)
+    total = totals_line(shown)
     if total:
         lines += [total, ""]
-    money_line = cost_line(changing)
+    money_line = cost_line(shown)
     if money_line:
         lines += [money_line, ""]
     if destroys:
         lines += ["> [!WARNING]", "> This apply destroys or replaces resources. Check the units marked ⚠️.", ""]
-    lines += [*table(changing), ""]
-    sections = changes_sections(changing, ISSUE_LIMIT - len("\n".join(lines)) - 2000, run_url)
+    lines += [*table(shown), ""]
+    sections = changes_sections(shown, ISSUE_LIMIT - len("\n".join(lines)) - 2000, run_url)
     if sections:
         lines += [sections]
     if metadata.get("deleted"):
@@ -318,7 +326,7 @@ def issue_body(metadata: dict, marker: dict, approvers: list[str], pr_url: str, 
 
 def destroy_body(metadata: dict, marker: dict, approvers: list[str], actor: str, run_url: str) -> str:
     """The destroy issue: what would go, what stays, who may approve, and the exact command."""
-    going = [u for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
+    going = [u for u in metadata["units"] if changing(u)]
     noun = "unit" if len(going) == 1 else "units"
     lines = [f"<!-- {MARKER}: {json.dumps(marker, separators=(',', ':'))} -->",
              f"## 🧨 Destroy waiting for approval: {len(going)} {noun}", "",
@@ -467,7 +475,7 @@ def cmd_decide(args: argparse.Namespace) -> int:
         comment_on_pr(args, pr, f"⛔ The plans of this pull request cannot be applied; see #{number}.")
         write_outputs(state="blocked", issue=number)
         return 1
-    if not any(any(u.get(key) for key in COUNT_KEYS) for u in metadata["units"]):
+    if not any(changing(u) for u in metadata["units"]):
         why = "only deletes units, whose destroy is a separate request" if metadata.get("deleted") else "had no changes"
         comment_on_pr(args, pr, f"✅ Merged. The plan {why}, so there is nothing to apply.")
         write_outputs(state="no-changes", issue="")
@@ -493,11 +501,41 @@ def cmd_decide(args: argparse.Namespace) -> int:
     return 0
 
 
+def superseded(issues: list[dict], plan_run_id: object, artifact_id: object) -> list[int]:
+    """Open apply issues of an earlier attempt of this plan run: a re-run deletes their artifact."""
+    found = []
+    for issue in issues:
+        match = MARKER_JSON.search(issue.get("body") or "")
+        marker = json.loads(match.group(1)) if match else {}
+        if marker.get("action", "apply") == "apply" and marker.get("plan_run_id") == plan_run_id \
+                and str(marker.get("artifact_id")) != str(artifact_id) and not issue.get("pull_request"):
+            found.append(issue["number"])
+    return sorted(found)
+
+
+def close_superseded(args: argparse.Namespace, metadata: dict, text: str) -> None:
+    """Close what an earlier attempt of this re-plan opened, so nobody approves a deleted artifact. → docs/terragrunt-replan.md"""
+    issues = gh(f"repos/{args.repo}/issues?labels={args.label}&state=open&per_page=100") or []
+    for number in superseded(issues, metadata["plan_run_id"], args.artifact_id):  # type: ignore[arg-type]
+        try:
+            gh(f"repos/{args.repo}/issues/{number}/labels/{args.label}:pending", "--method", "DELETE")
+        except subprocess.CalledProcessError:
+            pass
+        gh(f"repos/{args.repo}/issues/{number}/labels", "--method", "POST",
+           payload={"labels": [f"{args.label}:superseded"]})
+        gh(f"repos/{args.repo}/issues/{number}/comments", "--method", "POST", payload={"body": text})
+        gh(f"repos/{args.repo}/issues/{number}", "--method", "PATCH",
+           payload={"state": "closed", "state_reason": "not_planned"})
+        print(f"closed issue #{number}, superseded")
+
+
 def request_apply(args: argparse.Namespace, metadata: dict) -> int:
     """The approval issue for plans made again after the merge, since the base moved under the PR's."""
     pr = int(args.pr) if args.pr else None
+    rerun = "its plan run was run again, which replaced this issue's plan artifact"
     if not metadata.get("has_changes"):
         print("Nothing to apply: the re-plan changes nothing.")
+        close_superseded(args, metadata, f"⏭️ **Superseded:** {rerun}, and the new plan changes nothing.")
         if pr:
             comment_on_pr(args, pr, "✅ Planned again after the merge: nothing to apply.")
         write_outputs(state="no-changes", issue="")
@@ -513,6 +551,7 @@ def request_apply(args: argparse.Namespace, metadata: dict) -> int:
     title = f"PR #{pr} (re-planned)" if pr else f"{metadata['commit'][:7]} (re-planned)"
     if only_by_hand(metadata, by_hand):
         number = open_issue(args, f"Terragrunt apply by hand: {title}", body, "by-hand")
+        close_superseded(args, metadata, f"⏭️ **Superseded by #{number}:** {rerun}.")
         if pr:
             comment_on_pr(args, pr, f"✋ Planned again after the merge. CI does not apply its units; apply them by "
                           f"hand, see #{number}.")
@@ -520,6 +559,7 @@ def request_apply(args: argparse.Namespace, metadata: dict) -> int:
         return 0
     two = ("two-approvers",) if second_approver_reason(metadata, threshold) else ()
     number = open_issue(args, f"Terragrunt apply: {title}", body, "pending", two)
+    close_superseded(args, metadata, f"⏭️ **Superseded by #{number}:** {rerun}.")
     if pr:
         comment_on_pr(args, pr, f"🚦 Planned again after the merge. Applying waits for approval in #{number}.")
     write_outputs(state="pending", issue=number)
@@ -543,7 +583,7 @@ def cmd_request(args: argparse.Namespace) -> int:
               "tree": metadata["tree"], "working_directory": metadata["working_directory"]}
     run_url = f"{args.server_url}/{args.repo}/actions/runs/{metadata['plan_run_id']}"
     body = destroy_body(metadata, marker, approvers_of(args.approvers), args.actor, run_url)
-    going = [u["unit"] for u in metadata["units"] if any(u.get(key) for key in COUNT_KEYS)]
+    going = [u["unit"] for u in metadata["units"] if changing(u)]
     title = ", ".join(going[:3]) + (f" and {len(going) - 3} more" if len(going) > 3 else "")
     number = open_issue(args, f"Terragrunt destroy: {title}", body, "pending")
     write_outputs(state="pending", issue=number)

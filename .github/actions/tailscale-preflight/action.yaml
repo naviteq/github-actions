@@ -1,0 +1,78 @@
+name: Tailscale preflight
+description: >
+  Check, before Terragrunt starts, that the client's tailnet will accept this run: the OAuth clients
+  exchange tokens, the join tag and the router's exact tags can be minted, and, when the router token
+  can read the policy, the grant and the route approval are there. The step exits 0 on every answer
+  and reports one closed code; no secret, token or minted key is ever printed.
+
+inputs:
+  join_client_id:
+    description: OAuth client ID of the join client; required when needs_tailnet is true
+    required: false
+    default: ""
+  join_secret:
+    description: OAuth client secret of the join client; required when needs_tailnet is true
+    required: false
+    default: ""
+  router_client_id:
+    description: OAuth client ID of the router client; required when tailscale_enabled is true
+    required: false
+    default: ""
+  router_secret:
+    description: OAuth client secret of the router client; required when tailscale_enabled is true
+    required: false
+    default: ""
+  needs_tailnet:
+    description: "true when the control plane is private and the run must join the tailnet"
+    required: false
+    default: "false"
+  tailscale_enabled:
+    description: "true when the environment runs the subnet router unit"
+    required: false
+    default: "false"
+  join_tag:
+    description: Tag the run's node joins with
+    required: false
+    default: tag:github
+  router_tags:
+    description: The router's tags, space separated, in module order such as "tag:non-production tag:aws tag:acme-dev"
+    required: false
+    default: ""
+  network_cidr:
+    description: The environment's network range the router advertises
+    required: false
+    default: ""
+  api_port:
+    description: Port of the private API server the grant must open
+    required: false
+    default: "443"
+
+outputs:
+  result:
+    description: pass, fail or skipped
+    value: ${{ steps.check.outputs.result }}
+  code:
+    description: One of the closed tailscale_acl codes when result is fail, else empty
+    value: ${{ steps.check.outputs.code }}
+  policy_checked:
+    description: "true when the router token could read the policy and the grant and route checks ran"
+    value: ${{ steps.check.outputs.policy_checked }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the tailnet
+      id: check
+      shell: bash
+      env:
+        INPUT_JOIN_CLIENT_ID: ${{ inputs.join_client_id }}
+        INPUT_JOIN_SECRET: ${{ inputs.join_secret }}
+        INPUT_ROUTER_CLIENT_ID: ${{ inputs.router_client_id }}
+        INPUT_ROUTER_SECRET: ${{ inputs.router_secret }}
+        INPUT_NEEDS_TAILNET: ${{ inputs.needs_tailnet }}
+        INPUT_TAILSCALE_ENABLED: ${{ inputs.tailscale_enabled }}
+        INPUT_JOIN_TAG: ${{ inputs.join_tag }}
+        INPUT_ROUTER_TAGS: ${{ inputs.router_tags }}
+        INPUT_NETWORK_CIDR: ${{ inputs.network_cidr }}
+        INPUT_API_PORT: ${{ inputs.api_port }}
+      run: python3 -I "$GITHUB_ACTION_PATH/tailscale_preflight.py"

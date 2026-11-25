@@ -126,7 +126,7 @@ jobs:
 
       - name: Log in to container registry
         if: ${{ inputs.scan_type == 'image' && inputs.registry != '' && inputs.registry_username != '' && env.REGISTRY_PASSWORD != '' }}
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ inputs.registry }}
           username: ${{ inputs.registry_username }}
@@ -199,7 +199,7 @@ jobs:
 
       - name: Upload SARIF to GitHub Security
         if: ${{ always() && hashFiles('trivy-report.sarif') != '' && inputs.upload_sarif }}
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
         with:
           sarif_file: trivy-report.sarif
 

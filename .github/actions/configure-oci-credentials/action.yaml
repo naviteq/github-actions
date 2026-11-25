@@ -223,6 +223,8 @@ runs:
         chmod 600 "${HOME}/.oci/config"
         {
           echo "OCI_CLI_AUTH=security_token"
+          # refresh-oci-session renews the token file here. → see docs/configure-oci-credentials.md
+          echo "OCI_SESSION_DIR=${session_dir}"
           # The oracle/oci provider reads <home>/.oci/config, and <home> is TF_HOME_OVERRIDE
           # or the passwd entry -- not $HOME. → see docs/configure-oci-credentials.md
           echo "TF_HOME_OVERRIDE=${HOME}"

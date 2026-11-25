@@ -28,6 +28,7 @@ PLAN_LINE = re.compile(
     r"\[(?P<unit>[^\]]+)\].*Plan: (?P<add>\d+) to add, (?P<change>\d+) to change, (?P<destroy>\d+) to destroy"
 )
 NO_CHANGES = re.compile(r"\[(?P<unit>[^\]]+)\].*No changes\.")
+LOCK_ERROR = re.compile(r"\[(?P<unit>[^\]]+)\].*Error acquiring the state lock")
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -47,6 +48,13 @@ def count_actions(plan: dict) -> dict[str, int]:
         elif actions == ["delete"]:
             counts["destroy"] += 1
     return counts
+
+
+def state_changes(plan: dict) -> int:
+    """Resources the plan imports, moves or forgets: no count shows them, but the apply changes state.
+    Same as terragrunt-apply-units', which applies a unit that has any."""
+    return sum(1 for c in plan.get("resource_changes") or [] if c.get("previous_address")
+               or (c.get("change") or {}).get("importing") or "forget" in (c.get("change") or {}).get("actions", []))
 
 
 def action_of(actions: list[str]) -> str | None:
@@ -383,6 +391,16 @@ def destroy_counts(log: str, deleted: list[str]) -> dict[str, dict[str, int]]:
     return found
 
 
+def locked_out(log: str, units: list[str]) -> set[str]:
+    """Units whose engine gave up waiting for the state lock, from `[unit] ... Error acquiring the state lock` lines."""
+    named = {match["unit"] for match in map(LOCK_ERROR.search, ANSI.sub("", log).splitlines()) if match}
+    return {unit for unit in units if any(name == unit or name.endswith("/" + unit) for name in named)}
+
+
+def read_log(path: str) -> str:
+    return Path(path).read_text(encoding="utf-8", errors="replace") if path and Path(path).is_file() else ""
+
+
 def table(rows: list[dict]) -> str:
     lines = ["| Unit | Add | Change | Replace | Destroy | Outputs |", "|---|---|---|---|---|---|"]
     for row in rows:
@@ -408,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--units", default="")
     parser.add_argument("--deleted", default="")
     parser.add_argument("--destroy-log", default="")
+    parser.add_argument("--plan-log", default="", help="Log of the units' plan run, read for state locks not acquired")
     parser.add_argument("--kept", default="", help="Units a destroy run left out for prevent_destroy, one per line")
     parser.add_argument("--resources-file", default="", help="Write each unit's changed addresses, actions and diffs here")
     parser.add_argument("--mask", default="\n".join(DEFAULT_MASK),
@@ -426,13 +445,14 @@ def main(argv: list[str] | None = None) -> int:
     plans: list[str] = []
     detail: dict[str, list[dict[str, str]]] = {}
     kept = set(_lines(args.kept))
+    lock_failed = locked_out(read_log(args.plan_log), _lines(args.units))
     for unit in _lines(args.units):
         if unit in kept:
             rows.append({"unit": unit, "kept": True})
             continue
         plan_file = find_plan(root / unit)
         if plan_file is None:
-            rows.append({"unit": unit, "error": "no plan file"})
+            rows.append({"unit": unit, "error": "state lock not acquired" if unit in lock_failed else "no plan file"})
             continue
         shown = subprocess.run(
             [args.engine, "show", "-json", plan_file.name],
@@ -449,18 +469,21 @@ def main(argv: list[str] | None = None) -> int:
             continue
         changed = diffs(plan, patterns) if not secret(unit) else {}
         detail[unit] = [{**found, "lines": changed.get(found["address"], [])} for found in resources(plan)]
-        rows.append({"unit": unit, **count_actions(plan), "changeset": changeset(resources(plan))})
+        rows.append({"unit": unit, **count_actions(plan), "state_changes": state_changes(plan),
+                     "changeset": changeset(resources(plan))})
         plans.append(f"{unit}\t{plan_file}")
 
     deleted = _lines(args.deleted)
-    log_file = Path(args.destroy_log) if args.destroy_log else None
-    log = log_file.read_text(encoding="utf-8") if log_file and log_file.is_file() else ""
+    log = read_log(args.destroy_log)
     found = destroy_counts(log, deleted)
+    lock_failed = locked_out(log, deleted)
     for unit in deleted:
-        rows.append({"unit": unit, "deleted": True, **found.get(unit, {"error": "no destroy plan"})})
+        error = "state lock not acquired" if unit in lock_failed else "no destroy plan"
+        rows.append({"unit": unit, "deleted": True, **found.get(unit, {"error": error})})
 
     failed = [row["unit"] for row in rows if row.get("error")]
-    has_changes = any(row.get(key) for row in rows for key in ("add", "change", "replace", "destroy", "outputs"))
+    has_changes = any(row.get(key) for row in rows
+                      for key in ("add", "change", "replace", "destroy", "outputs", "state_changes"))
     report = table(rows)
     print(report, end="")
 

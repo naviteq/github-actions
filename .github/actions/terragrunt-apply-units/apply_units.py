@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import functools
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -47,7 +48,7 @@ def action_of(actions: list[str]) -> str | None:
 
 
 def resources(plan: dict) -> list[dict[str, str]]:
-    """Same as terragrunt-plan-report's: address and action per changing resource and root output."""
+    """Same as terragrunt-plan-report's: address and action per changing resource and root output, and each resource's type."""
     found = []
     for name, change in (plan.get("output_changes") or {}).items():
         action = action_of(change.get("actions", []))
@@ -56,7 +57,7 @@ def resources(plan: dict) -> list[dict[str, str]]:
     for change in plan.get("resource_changes") or []:
         action = action_of(change.get("change", {}).get("actions", []))
         if action:
-            found.append({"address": change.get("address", ""), "action": action})
+            found.append({"address": change.get("address", ""), "action": action, "type": change.get("type") or ""})
     return sorted(found, key=lambda r: r["address"])
 
 
@@ -64,6 +65,11 @@ def state_changes(plan: dict) -> int:
     """Resources the plan imports, moves or forgets: no count shows them, but the apply changes state."""
     return sum(1 for c in plan.get("resource_changes") or [] if c.get("previous_address")
                or (c.get("change") or {}).get("importing") or "forget" in (c.get("change") or {}).get("actions", []))
+
+
+def changing(unit: dict) -> bool:
+    """A saved plan's unit to apply: a count, or state_changes, absent from older metadata. → docs/terragrunt-plan.md"""
+    return any(unit.get(k) for k in COUNT_KEYS) or bool(unit.get("state_changes"))
 
 
 def changeset(found: list[dict[str, str]]) -> str:
@@ -126,19 +132,31 @@ def check_plans(metadata: dict, marker: dict | None, artifact: dict | None, comm
 
 def check_policy(expect: dict) -> None:
     """Typos in a policy fail before anything is planned."""
-    known = {"allow_replace", "allow_destroy", "units", "require_changes", "max_monthly_cost_delta"}
+    known = {"allow_replace", "allow_replace_types", "allow_destroy", "units", "require_changes",
+             "max_monthly_cost_delta"}
     unknown = sorted(set(expect) - known)
     if unknown:
         raise Refused(f"expect has unknown keys: {', '.join(unknown)}")
+    types = expect.get("allow_replace_types", [])
+    if not isinstance(types, list) or not all(isinstance(kind, str) and kind.strip() for kind in types):
+        raise Refused("expect.allow_replace_types must be a list of resource type names")
     for name, counts in (expect.get("units") or {}).items():
         bad = sorted(set(counts) - set(COUNT_KEYS))
         if bad:
             raise Refused(f"expect.units.{name} has unknown counts: {', '.join(bad)}")
 
 
+def replaces_listed_types(unit: dict, expect: dict) -> bool:
+    """Whether allow_replace_types names the type of every resource the unit replaces; a row without types is unknown."""
+    allowed = set(expect.get("allow_replace_types") or ())
+    types = unit.get("replaced_types")
+    return bool(allowed) and isinstance(types, list) and len(types) == unit.get("replace") \
+        and all(kind and kind in allowed for kind in types)
+
+
 def unit_violation(unit: dict, expect: dict) -> str:
     """Why one unit's counts break the policy; empty when they do not."""
-    if unit.get("replace") and not expect.get("allow_replace", False):
+    if unit.get("replace") and not expect.get("allow_replace", False) and not replaces_listed_types(unit, expect):
         return f"{unit['unit']} would replace {unit['replace']} resources and allow_replace is off"
     if unit.get("destroy") and not expect.get("allow_destroy", False):
         return f"{unit['unit']} would destroy {unit['destroy']} resources and allow_destroy is off"
@@ -225,44 +243,98 @@ def find_newest(unit_dir: Path, name: str) -> Path | None:
     return found[-1] if found else None
 
 
+LOCK_ERROR = "Error acquiring the state lock"
+
+
+def lock_timeout() -> str:
+    """lock_timeout under the state_lock input; empty leaves every command line as it was. → docs/terragrunt-apply.md"""
+    if os.environ.get("STATE_LOCK", "").strip().lower() != "true":
+        return ""
+    return os.environ.get("LOCK_TIMEOUT", "").strip() or "5m"
+
+
+def plan_lock() -> list[str]:
+    """For a plan that applies nothing: unlocked, or locked with a bounded wait under state_lock."""
+    timeout = lock_timeout()
+    return ["-lock=true", f"-lock-timeout={timeout}"] if timeout else ["-lock=false"]
+
+
+def write_lock() -> list[str]:
+    """For an apply, a destroy or the plan they run: the engine's own locking, with a bounded wait under state_lock."""
+    timeout = lock_timeout()
+    return [f"-lock-timeout={timeout}"] if timeout else []
+
+
 def terragrunt(unit_dir: Path, *args: str) -> int:
+    """One command in one unit; a state lock it could not take refuses here, so every caller names the lock."""
     print(f"::group::{unit_dir}: {' '.join(args)}", flush=True)
-    code = subprocess.run(["terragrunt", "run", "--non-interactive", "--", *args], cwd=unit_dir, check=False).returncode
+    process = subprocess.Popen(["terragrunt", "run", "--non-interactive", "--", *args], cwd=unit_dir,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    assert process.stdout is not None
+    locked_out = False
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        locked_out = locked_out or LOCK_ERROR in line
+    code = process.wait()
     print("::endgroup::", flush=True)
+    if code != 0 and locked_out:
+        waited = f" within {lock_timeout()}" if lock_timeout() else ""
+        raise Refused(f"{unit_dir}: the state lock was not acquired{waited}, something else holds it. Nothing was "
+                      "force-unlocked, and no unit after it was touched")
     return code
 
 
+def converged(plan: dict) -> bool:
+    """A plan with nothing left to do: no resource, output or state change. → docs/terragrunt-apply.md"""
+    return not resources(plan) and not state_changes(plan)
+
+
+def shown_plan(root: Path, unit: str, name: str, engine: str) -> dict:
+    """The plan a unit just saved as name, as the engine shows it."""
+    plan_file = find_newest(root / unit, name)
+    if plan_file is None:
+        raise Refused(f"{unit} left no plan to compare")
+    shown = subprocess.run([engine, "show", "-json", plan_file.name], cwd=plan_file.parent,
+                           capture_output=True, text=True, check=True)
+    return json.loads(shown.stdout)
+
+
 def run_check(root: Path, units: list[dict], engine: str, destroy: bool = False) -> None:
-    """Re-plan every unit before anything is applied or destroyed; any difference is drift."""
+    """Re-plan every unit before anything is applied or destroyed; any difference is drift, unless nothing is left to do."""
     drifted = []
     for unit in units:
         unit_dir = root / unit["unit"]
         mode = ["-destroy"] if destroy else []
-        if terragrunt(unit_dir, "plan", *mode, "-lock=false", "-input=false", "-out=tfplan-check") != 0:
+        if terragrunt(unit_dir, "plan", *mode, *plan_lock(), "-input=false", "-out=tfplan-check") != 0:
             raise Refused(f"{unit['unit']} could not be planned again")
-        plan_file = find_newest(unit_dir, "tfplan-check")
-        if plan_file is None:
-            raise Refused(f"{unit['unit']} left no plan to compare")
-        shown = subprocess.run([engine, "show", "-json", plan_file.name], cwd=plan_file.parent,
-                               capture_output=True, text=True, check=True)
-        now = changeset(resources(json.loads(shown.stdout)))
-        print(f"{unit['unit']}: {'unchanged' if now == unit['changeset'] else 'DRIFTED'} since the plan")
-        if now != unit["changeset"]:
+        plan = shown_plan(root, unit["unit"], "tfplan-check", engine)
+        now = changeset(resources(plan))
+        if now == unit["changeset"]:
+            print(f"{unit['unit']}: unchanged since the plan")
+        elif converged(plan):
+            print(f"{unit['unit']}: already applied, nothing left to do")
+        else:
+            print(f"{unit['unit']}: DRIFTED since the plan")
             drifted.append(unit["unit"])
     if drifted:
         raise Refused("these units would now change differently than planned: " + ", ".join(drifted)
                       + ". Re-plan them")
 
 
-def run_apply(root: Path, units: list[dict], plans_dir: Path) -> None:
+def run_apply(root: Path, units: list[dict], plans_dir: Path, engine: str) -> None:
     for unit in units:
         plan_file = plans_dir / unit["file"].removesuffix(".age")
         if not plan_file.is_file():
             raise Refused(f"{unit['unit']} has no decrypted plan at {plan_file}")
         # A saved plan never refreshes, so files written at plan time (an archive_file zip) are missing on this runner.
-        if terragrunt(root / unit["unit"], "plan", "-refresh-only", "-lock=false", "-input=false") != 0:
-            raise Refused(f"{unit['unit']} could not be refreshed before its apply; the units after it were not touched")
-        if terragrunt(root / unit["unit"], "apply", "-input=false", str(plan_file.resolve())) != 0:
+        # A full plan, not -refresh-only: that one plans no creates, so a not-yet-created resource reads as null.
+        if terragrunt(root / unit["unit"], "plan", *plan_lock(), "-input=false", "-out=tfplan-pre") != 0:
+            raise Refused(f"{unit['unit']} could not be planned before its apply; the units after it were not touched")
+        # Its saved plan would fail as stale. → docs/terragrunt-apply.md
+        if converged(shown_plan(root, unit["unit"], "tfplan-pre", engine)):
+            print(f"{unit['unit']}: already applied, skipped")
+            continue
+        if terragrunt(root / unit["unit"], "apply", *write_lock(), "-input=false", str(plan_file.resolve())) != 0:
             raise Refused(f"{unit['unit']} failed to apply; the units after it were not touched")
         print(f"{unit['unit']}: applied")
 
@@ -270,7 +342,7 @@ def run_apply(root: Path, units: list[dict], plans_dir: Path) -> None:
 def run_destroy(root: Path, units: list[dict]) -> None:
     """In the order planned, dependents first; `destroy`, not the plan file, so destroy hooks run."""
     for unit in units:
-        if terragrunt(root / unit["unit"], "destroy", "-auto-approve", "-input=false") != 0:
+        if terragrunt(root / unit["unit"], "destroy", "-auto-approve", *write_lock(), "-input=false") != 0:
             raise Refused(f"{unit['unit']} failed to destroy; the units after it were not touched")
         print(f"{unit['unit']}: destroyed")
 
@@ -279,13 +351,19 @@ def run_clean(root: Path, units: list[dict]) -> None:
     """After an automatic apply, a second plan must change nothing."""
     dirty = []
     for unit in units:
-        code = terragrunt(root / unit["unit"], "plan", "-lock=false", "-input=false", "-detailed-exitcode")
+        code = terragrunt(root / unit["unit"], "plan", *plan_lock(), "-input=false", "-detailed-exitcode")
         if code == 2:
             dirty.append(unit["unit"])
         elif code != 0:
             raise Refused(f"{unit['unit']} could not be planned after the apply")
     if dirty:
         raise Refused("still not converged after the apply: " + ", ".join(dirty))
+
+
+def plan_row(unit: str, found: list[dict[str, str]]) -> dict:
+    """A unit's counts and, when it replaces resources, their types for allow_replace_types."""
+    replaced = [r.get("type", "") for r in found if r["action"] == "replace" and not r["address"].startswith("output.")]
+    return {"unit": unit, **counts_of(found), **({"replaced_types": sorted(replaced)} if replaced else {})}
 
 
 def counts_of(found: list[dict[str, str]]) -> dict[str, int]:
@@ -373,10 +451,12 @@ def reporting(sink: object) -> bool:
     return bool(getattr(sink, "enabled", False))
 
 
-def dag_units(root: Path, order: list[str]) -> list[str]:
-    """The selected units in `terragrunt find --dag --json` order, relative to root; any it did not list follow."""
+def dag_units(root: Path, order: list[str], queue_as: str = "") -> list[str]:
+    """The selected units in `terragrunt find --dag --json` order (or `--queue-construct-as`), relative to root; any it
+    did not list follow."""
+    sort = ["--queue-construct-as", queue_as] if queue_as else ["--dag"]
     try:
-        found = subprocess.run(["terragrunt", "find", "--dag", "--json"], cwd=root.resolve(),
+        found = subprocess.run(["terragrunt", "find", *sort, "--json"], cwd=root.resolve(),
                                capture_output=True, text=True, check=True).stdout
         paths = [os.path.normpath(r["path"]) for r in json.loads(found) if r.get("type") == "unit"]
     except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError):
@@ -403,6 +483,9 @@ TERRAGRUNT_PREFIX = re.compile(r"^\s*(?:(?:\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+)?(?P<s
 BOX_GUTTER = re.compile(r"^\s*([\u2577\u2502\u2575])\s?")
 ERROR_LINE = re.compile(r"\s*Error:")
 DIAGNOSTIC = re.compile(r"\s*(?:Error|Warning):")
+INIT_TAG = re.compile(r"^\s*(?:\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+)?INFO\s+(?:tofu|terraform):")
+INIT_SOURCE = re.compile(r"^\s*(?:\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+)?INFO\s+Downloading Terraform configurations from ")
+COMMAND_WORD = re.compile(r"[a-z][a-z0-9-]{0,31}")
 ERROR_EXCERPT_MAX_LINES = 100
 
 
@@ -419,10 +502,12 @@ def split_prefix(text: str) -> tuple[str, str]:
 
 
 class ErrorExcerptCollector:
-    """The first error block of a command's output, for the failed-unit event. → docs/console-integration.md"""
+    """Every error block of a command's output, for the failed-unit event. → docs/console-integration.md"""
 
     def __init__(self) -> None:
         self._lines: list[str] = []
+        self._blocks: list[list[str]] = []
+        self._banked = ""
         self._size = 0
         self._count = 0
         self._overflow = False
@@ -459,13 +544,23 @@ class ErrorExcerptCollector:
                 self._state = "native"
                 self._add(text.strip())
         elif self._state == "boxed":
-            self._boxed(boxed, content)
+            if self._boxed(boxed, content):
+                self._resume(source, boxed, text, content)
         elif self._state == "plain":
-            self._plain(source, text)
+            if self._plain(source, text):
+                self._resume(source, boxed, text, content)
         else:
             self._native(source, text)
 
+    def _resume(self, source: str, boxed: bool, text: str, content: str) -> None:
+        """The line that ended a block may open the next one."""
+        if self._state == "waiting":
+            self._start(source, boxed, text, content)
+
     def _start(self, source: str, boxed: bool, text: str, content: str) -> None:
+        if self._banked and source == "ERROR" and not boxed and text.strip():
+            self._state = "done"  # Terragrunt's own message restates the blocks already banked
+            return
         if ERROR_LINE.match(content):
             self._state, self._source = ("boxed" if boxed else "plain"), source
             self._add(content if boxed else text)
@@ -473,20 +568,22 @@ class ErrorExcerptCollector:
             self._state = "native"
             self._add(text.strip())
 
-    def _boxed(self, boxed: bool, content: str) -> None:
+    def _boxed(self, boxed: bool, content: str) -> bool:
         if not boxed:
             self._end()
-            return
+            return True
         self._add(content)
+        return False
 
-    def _plain(self, source: str, content: str) -> None:
+    def _plain(self, source: str, content: str) -> bool:
         """Ends at the next diagnostic, another log source or two blank lines: no-color output has single ones."""
         blank = not content.strip()
         if source != self._source or DIAGNOSTIC.match(content) or (blank and self._blank):
             self._end()
-            return
+            return True
         self._blank = blank
         self._add(content)
+        return False
 
     def _native(self, source: str, content: str) -> None:
         """Terragrunt's own message: `error occurred:` up to its last `* ` item, any other one up to the next log line."""
@@ -513,8 +610,14 @@ class ErrorExcerptCollector:
             self._fallback = (self._lines, self._overflow)
             self._lines, self._size, self._count, self._overflow = [], 0, 0, False
             self._state = "seeking"
-        else:
-            self._state = "done"
+            return
+        if self._lines:
+            self._blocks.append(self._lines)
+            self._count += 1  # the blank line that joins it to the next block
+            self._size += 1
+        self._banked = self._banked or ("native" if self._state == "native" else "diagnostic")
+        self._lines, self._mode, self._pending, self._blank = [], "", 0, False
+        self._state = "done" if self._banked == "native" else "waiting"
 
     def _add(self, content: str) -> None:
         if self._state == "done":
@@ -523,6 +626,8 @@ class ErrorExcerptCollector:
         if self._size >= 2 * ERROR_EXCERPT_CAP or self._count > ERROR_EXCERPT_MAX_LINES:
             self._overflow = True
             self._end()
+            if self._state == "waiting":
+                self._state = "done"
             return
         self._lines.append(content.rstrip())
         self._size += len(content.encode("utf-8", "replace")) + 1
@@ -530,10 +635,14 @@ class ErrorExcerptCollector:
     def result(self, mask: object = None) -> tuple[str, bool] | None:
         """The masked, capped text and whether it was cut; None when there was no error block."""
         try:
-            lines, overflow = (self._lines, self._overflow) if self._lines else self._fallback or ([], False)
-            if self._broken or not lines:
+            blocks = self._blocks + ([self._lines] if self._lines and not self._broken else [])
+            overflow = self._overflow or self._broken
+            if not blocks and not self._broken:
+                lines, overflow = self._fallback or ([], False)
+                blocks = [lines] if lines else []
+            if not blocks:
                 return None
-            text = "\n".join(lines).rstrip()
+            text = "\n\n".join("\n".join(block).rstrip() for block in blocks)
             if callable(mask):
                 text = mask(text)
             raw = text.encode("utf-8", "replace")
@@ -542,21 +651,56 @@ class ErrorExcerptCollector:
             return None
 
 
+def command_of(args: tuple[str, ...]) -> str | None:
+    """The engine command a streamed() call invokes (its first non-flag word), or None outside COMMAND_WORD."""
+    word = next((arg for arg in args if not arg.startswith("-")), "")
+    return word if COMMAND_WORD.fullmatch(word) else None
+
+
+def line_command(line: str, command: str | None) -> str | None:
+    """`init` for terragrunt's auto-init output, else the invoked command. → docs/console-integration.md"""
+    if command is None:
+        return None
+    plain = ANSI_SEQUENCE.sub("", line)
+    return "init" if INIT_TAG.match(plain) or INIT_SOURCE.match(plain) else command
+
+
+STALE_PLAN = "Saved plan is stale"
+MAX_REPLANS = 2
+
+
+class StaleWatch:
+    """Whether a run's output said the saved plan went stale. → docs/terragrunt-apply-fresh.md"""
+
+    def __init__(self) -> None:
+        self.seen = False
+
+    def feed(self, line: str) -> None:
+        self.seen = self.seen or STALE_PLAN in line
+
+
 def streamed(unit: str, cwd: Path, *args: str, sink: object = None, log_lines: bool = False,
-             collector: ErrorExcerptCollector | None = None) -> int:
-    """terragrunt run in one unit, its output prefixed so parallel units stay readable."""
+             collector: ErrorExcerptCollector | None = None, env: dict[str, str] | None = None,
+             watch: StaleWatch | None = None) -> int:
+    """terragrunt run in one unit, its output prefixed so parallel units stay readable; env adds to this call only."""
     process = subprocess.Popen(["terragrunt", "run", "--non-interactive", "--", *args], cwd=cwd,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               env={**os.environ, **env} if env else None)
     assert process.stdout is not None
+    command = command_of(args)
     for line in process.stdout:
         with _PRINT:
             print(f"[{unit}] {line}", end="", flush=True)
         if collector is not None:
             collector.feed(line)
+        if watch is not None:
+            watch.feed(line)
         if log_lines and reporting(sink) and line.strip():
             masked = sink.mask(line.rstrip("\r\n")) if hasattr(sink, "mask") else line.rstrip("\r\n")
             text = masked.encode("utf-8", "replace")[:LOG_LINE_CAP].decode("utf-8", "ignore")
-            emit(sink, "log.line", {"stream": "stdout", "level": "info", "text": text})
+            payload = {"stream": "stdout", "level": "info", "text": text, "unit": unit}
+            tag = line_command(line, command)
+            emit(sink, "log.line", {**payload, "command": tag} if tag else payload)
     return process.wait()
 
 
@@ -643,11 +787,26 @@ def excerpt_row(collector: ErrorExcerptCollector | None, sink: object) -> dict:
 
 def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object = None,
                 log_lines: bool = False) -> dict:
+    """fresh_attempt, planned again (checks included) when the apply says its saved plan is stale, at most MAX_REPLANS times."""
+    for replans in range(MAX_REPLANS + 1):
+        watch = StaleWatch()
+        row = fresh_attempt(root, unit, expect, engine, sink, log_lines, watch)
+        if row["outcome"] != "apply failed" or not watch.seen:
+            return row
+        if replans == MAX_REPLANS:
+            print(f"[{unit}] saved plan still stale after {MAX_REPLANS} re-plans, giving up", flush=True)
+            return row
+        print(f"[{unit}] saved plan is stale, re-planning (re-plan {replans + 1} of {MAX_REPLANS})", flush=True)
+    return row
+
+
+def fresh_attempt(root: Path, unit: str, expect: dict, engine: str, sink: object, log_lines: bool,
+                  watch: StaleWatch) -> dict:
     """Plan one unit now, check the plan against the policy, then apply exactly that plan."""
     unit_dir = root / unit
     collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
-    if streamed(unit, unit_dir, "plan", "-input=false", "-out=tfplan-fresh", sink=sink, log_lines=log_lines,
-                collector=collector) != 0:
+    if streamed(unit, unit_dir, "plan", *write_lock(), "-input=false", "-out=tfplan-fresh", sink=sink,
+                log_lines=log_lines, collector=collector) != 0:
         return {"unit": unit, "outcome": "plan failed", **excerpt_row(collector, sink)}
     plan_file = find_newest(unit_dir, "tfplan-fresh")
     if plan_file is None:
@@ -655,7 +814,7 @@ def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object =
     shown = subprocess.run([engine, "show", "-json", plan_file.name], cwd=plan_file.parent,
                            capture_output=True, text=True, check=True)
     plan = json.loads(shown.stdout)
-    row = {"unit": unit, **counts_of(resources(plan))}
+    row = plan_row(unit, resources(plan))
     violation = unit_violation(row, expect)
     if violation:
         return {**row, "outcome": "refused", "reason": violation}
@@ -664,13 +823,13 @@ def fresh_steps(root: Path, unit: str, expect: dict, engine: str, sink: object =
     collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
     if reporting(sink) and supports_json_into(engine):
         with ResourceProgress(unit, sink) as progress:
-            code = streamed(unit, unit_dir, "apply", "-input=false", f"-json-into={progress.path}",
-                            str(plan_file.resolve()), sink=sink, log_lines=log_lines, collector=collector)
+            code = streamed(unit, unit_dir, "apply", *write_lock(), "-input=false", f"-json-into={progress.path}",
+                            str(plan_file.resolve()), sink=sink, log_lines=log_lines, collector=collector, watch=watch)
     elif reporting(sink):
-        code = streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve()), sink=sink,
-                        log_lines=log_lines, collector=collector)
+        code = streamed(unit, unit_dir, "apply", *write_lock(), "-input=false", str(plan_file.resolve()), sink=sink,
+                        log_lines=log_lines, collector=collector, watch=watch)
     else:
-        code = streamed(unit, unit_dir, "apply", "-input=false", str(plan_file.resolve()))
+        code = streamed(unit, unit_dir, "apply", *write_lock(), "-input=false", str(plan_file.resolve()), watch=watch)
     if code != 0:
         return {**row, "outcome": "apply failed", **excerpt_row(collector, sink)}
     return {**row, "outcome": "applied"}
@@ -702,6 +861,78 @@ def fresh_unit(root: Path, unit: str, expect: dict, engine: str, sink: object = 
     return row
 
 
+HOOK_REPORT_VARIABLE = "RUNESTRA_HOOK_REPORT_FILE"
+HOOK_REPORT_MAX_LINES = 32
+HOOK_REPORT_MAX_LINE_BYTES = 8192
+HOOK_REPORT_MAX_ITEMS = 200
+_HOOK_REPORTS = itertools.count(1)
+_HOOK_REPORTS_LOCK = threading.Lock()
+
+
+def hook_report_path() -> Path | None:
+    """A report file of its own for one destroy invocation (parallel units share the process environment); None when
+    the directory cannot be made, so a report problem never stops the destroy."""
+    with _HOOK_REPORTS_LOCK:
+        number = next(_HOOK_REPORTS)
+    directory = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()) / "runestra-hook-reports"
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{number}.ndjson").unlink(missing_ok=True)
+    except OSError:
+        return None
+    return directory / f"{number}.ndjson"
+
+
+def hook_items(value: object) -> list[dict[str, str]] | None:
+    if not isinstance(value, list) or len(value) > HOOK_REPORT_MAX_ITEMS:
+        return None
+    if not all(isinstance(i, dict) and isinstance(i.get("kind"), str) and isinstance(i.get("id"), str) for i in value):
+        return None
+    return [{"kind": item["kind"], "id": item["id"]} for item in value]
+
+
+def hook_report(raw: bytes) -> dict | None:
+    """One report line as the event payload without `unit`; None unless it is exactly the documented shape."""
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(body, dict) or type(body.get("version")) is not int or body["version"] != 1:
+        return None
+    removed, remaining = hook_items(body.get("removed")), hook_items(body.get("remaining"))
+    reason, truncated = body.get("skipped_reason", 0), body.get("truncated", False)
+    if not isinstance(body.get("hook"), str) or removed is None or remaining is None \
+            or not (reason is None or isinstance(reason, str)) or not isinstance(truncated, bool):
+        return None
+    report = {"hook": body["hook"], "removed": removed, "remaining": remaining, "skipped_reason": reason}
+    return {**report, "truncated": truncated} if "truncated" in body else report
+
+
+def read_hook_reports(path: Path) -> tuple[list[dict], int]:
+    """The valid reports in the file and how many lines were dropped; reads at most the capped lines and bytes."""
+    reports: list[dict] = []
+    dropped = seen = 0
+    try:
+        handle = open(path, "rb")
+    except FileNotFoundError:
+        return [], 0
+    with handle:
+        while raw := handle.readline(HOOK_REPORT_MAX_LINE_BYTES + 1):
+            oversized = len(raw) > HOOK_REPORT_MAX_LINE_BYTES and not raw.endswith(b"\n")
+            rest = raw if oversized else b"\n"
+            while rest and not rest.endswith(b"\n"):
+                rest = handle.readline(1 << 16)
+            if not oversized and not raw.strip():
+                continue
+            seen += 1
+            report = None if oversized or seen > HOOK_REPORT_MAX_LINES else hook_report(raw)
+            if report is None:
+                dropped += 1
+            else:
+                reports.append(report)
+    return reports, dropped
+
+
 def is_protected(unit_dir: Path) -> bool:
     """Whether the unit sets prevent_destroy, which makes Terragrunt refuse to plan its destruction."""
     rendered = subprocess.run(["terragrunt", "render", "--json", "--non-interactive"], cwd=unit_dir,
@@ -712,13 +943,16 @@ def is_protected(unit_dir: Path) -> bool:
         return False
 
 
-def destroy_unit(root: Path, unit: str, expect: dict, engine: str) -> dict:
+def destroy_unit(root: Path, unit: str, expect: dict, engine: str, sink: object = None,
+                 log_lines: bool = False) -> dict:
     """Plan one unit's destruction, check it, then destroy: applying the saved plan would skip `destroy` hooks."""
     unit_dir = root / unit
-    if streamed(unit, unit_dir, "plan", "-destroy", "-input=false", "-out=tfplan-destroy") != 0:
+    collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
+    if streamed(unit, unit_dir, "plan", "-destroy", *write_lock(), "-input=false", "-out=tfplan-destroy", sink=sink,
+                log_lines=log_lines, collector=collector) != 0:
         if is_protected(unit_dir):
             return {"unit": unit, "outcome": "protected", "reason": "protected by prevent_destroy"}
-        return {"unit": unit, "outcome": "plan failed"}
+        return {"unit": unit, "outcome": "plan failed", **excerpt_row(collector, sink)}
     plan_file = find_newest(unit_dir, "tfplan-destroy")
     if plan_file is None:
         return {"unit": unit, "outcome": "left no plan"}
@@ -730,12 +964,66 @@ def destroy_unit(root: Path, unit: str, expect: dict, engine: str) -> dict:
         return {**row, "outcome": "refused", "reason": violation}
     if not any(row[key] for key in COUNT_KEYS):
         return {**row, "outcome": "unchanged"}
-    if streamed(unit, unit_dir, "destroy", "-auto-approve", "-input=false") != 0:
-        return {**row, "outcome": "destroy failed"}
+    collector = ErrorExcerptCollector() if reporting(sink) and log_lines else None
+    report_file = hook_report_path() if reporting(sink) else None
+    try:
+        code = streamed(unit, unit_dir, "destroy", "-auto-approve", *write_lock(), "-input=false", sink=sink,
+                        log_lines=log_lines, collector=collector,
+                        env={HOOK_REPORT_VARIABLE: str(report_file)} if report_file else None)
+    finally:
+        if report_file is not None:
+            forward_hook_reports(unit, report_file, sink)
+    if code != 0:
+        return {**row, "outcome": "destroy failed", **excerpt_row(collector, sink)}
     return {**row, "outcome": "destroyed"}
 
 
-PHASES = {"fresh": (fresh_unit, "applied", "apply"), "destroy": (destroy_unit, "destroyed", "destroy")}
+def forward_hook_reports(unit: str, path: Path, sink: object) -> None:
+    """Each valid report as teardown.hook.reported; never raises, and the file is gone afterwards."""
+    try:
+        reports, dropped = read_hook_reports(path)
+        for report in reports:
+            emit(sink, "teardown.hook.reported", {"unit": unit, **report})
+        if dropped:
+            with _PRINT:
+                print(f"::warning title=Teardown hook reports::{unit}: dropped {dropped} report lines that were "
+                      "malformed or over the caps", flush=True)
+    except Exception:
+        pass
+    finally:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+DESTROY_FAILURES = {"plan failed": ("plan_failed", "plan_failed"), "left no plan": ("plan_failed", "left_no_plan"),
+                    "refused": ("expectation_violated", "refused"), "destroy failed": ("destroy_failed", "destroy_failed")}
+
+
+def destroy_unit_reported(root: Path, unit: str, expect: dict, engine: str, sink: object = None,
+                          log_lines: bool = False) -> dict:
+    """destroy_unit, reporting the unit's start and end from its own result row; the row keeps its spaced outcome."""
+    emit(sink, "terragrunt.unit.started", {"unit": unit})
+    try:
+        row = destroy_unit(root, unit, expect, engine, sink, log_lines)
+    except Exception:
+        emit(sink, "terragrunt.unit.failed", {"unit": unit, "reason": "plan_failed", "outcome": "plan_failed"})
+        raise
+    excerpt = row.pop("excerpt", None)
+    if row["outcome"] in ("destroyed", "unchanged", "protected"):
+        emit(sink, "terragrunt.unit.completed", {"unit": unit, "destroy": row.get("destroy", 0),
+                                                 "outcome": row["outcome"]})
+    else:
+        reason, outcome = DESTROY_FAILURES.get(row["outcome"], ("plan_failed", "plan_failed"))
+        failed = {"unit": unit, "reason": reason, "outcome": outcome}
+        if isinstance(excerpt, dict):
+            failed |= {"error_excerpt": excerpt["text"], "error_excerpt_shortened": excerpt["shortened"]}
+        emit(sink, "terragrunt.unit.failed", failed)
+    return row
+
+
+PHASES = {"fresh": (fresh_unit, "applied", "apply"), "destroy": (destroy_unit_reported, "destroyed", "destroy")}
 
 
 def dependencies_of(unit: str, deps: dict[str, set[str]]) -> set[str]:
@@ -750,11 +1038,50 @@ def dependencies_of(unit: str, deps: dict[str, set[str]]) -> set[str]:
 
 
 APPLY_PHASE = "Apply the stack"
+DESTROY_PHASE = "Destroy the stack"
 SETTLED = {"applied", "destroyed", "unchanged", "protected", "kept"}
+CHANGE_FAILURES = {"apply failed", "destroy failed"}
+
+
+GLOBAL_REGION = "us-east-1"
+
+
+def key_missing(region_dir: str) -> bool:
+    """Whether `alias/terraform-states-<dir>` is plainly absent; any other answer reads as present."""
+    region = GLOBAL_REGION if region_dir == "global" else region_dir
+    args = ["aws", "kms", "describe-key", "--key-id", f"alias/terraform-states-{region_dir}",
+            "--region", region, "--query", "KeyMetadata.KeyId", "--output", "text"]
+    try:
+        done = subprocess.run(args, capture_output=True, text=True, check=False, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode != 0 and "NotFoundException" in done.stderr
+
+
+def unsettled_units(order: list[str]) -> frozenset[str]:
+    """Units of a region that never got its state key: they hold no state and their destroy cannot run."""
+    missing: dict[str, bool] = {}
+    found = set()
+    for unit in order:
+        parts = unit.split("/")
+        if len(parts) < 2 or parts[1] == "state-backend":
+            continue
+        if parts[0] not in missing:
+            missing[parts[0]] = key_missing(parts[0])
+        if missing[parts[0]]:
+            found.add(unit)
+    return frozenset(found)
+
+
+def absent_unit(unit: str, sink: object = None) -> dict:
+    """A destroy unit whose state backend was never set up holds no state, so there is nothing to remove."""
+    emit(sink, "terragrunt.unit.started", {"unit": unit})
+    emit(sink, "terragrunt.unit.completed", {"unit": unit, "destroy": 0, "outcome": "unchanged"})
+    return {"unit": unit, "outcome": "unchanged", "reason": "its state backend was never set up; nothing to remove"}
 
 
 def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: str, parallelism: int,
-               sink: object = None, log_lines: bool = False) -> list[dict]:
+               sink: object = None, log_lines: bool = False, absent: frozenset[str] = frozenset()) -> list[dict]:
     """Level by level, dependencies first for fresh and last for destroy; a level that fails anywhere is the last one run.
 
     Like `run --all destroy`, a destroy keeps every prevent_destroy unit and everything it depends on.
@@ -762,12 +1089,17 @@ def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: s
     check_policy(expect)
     if "max_monthly_cost_delta" in expect:
         raise Refused("max_monthly_cost_delta needs saved plans with a cost estimate; the fresh and destroy phases have none")
-    worker = PHASES[phase][0]
-    report = phase == "fresh" and reporting(sink)
+    inner = PHASES[phase][0]
+
+    def worker(root: Path, unit: str, *args: object, **kwargs: object) -> dict:
+        return absent_unit(unit, kwargs.get("sink")) if unit in absent else inner(root, unit, *args, **kwargs)
+
+    report = reporting(sink)
+    name = DESTROY_PHASE if phase == "destroy" else APPLY_PHASE
     started = time.monotonic()
     if report:
-        emit(sink, "run.phase.started", {"phase": APPLY_PHASE})
-        emit(sink, "run.units.seeded", {"units": dag_units(root, order)})
+        emit(sink, "run.phase.started", {"phase": name})
+        emit(sink, "run.units.seeded", {"units": dag_units(root, order, "destroy" if phase == "destroy" else "")})
     listing = subprocess.run(["terragrunt", "list", "--long", "--dependencies", "--queue-construct-as", PHASES[phase][2]],
                              cwd=root.resolve(), capture_output=True, text=True, check=True).stdout
     deps = parse_dependencies(listing, order)
@@ -775,8 +1107,10 @@ def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: s
     rows: list[dict] = []
     kept: dict[str, str] = {}
     for group in reversed(groups) if phase == "destroy" else groups:
-        rows.extend({"unit": unit, "outcome": "kept", "reason": f"a dependency of protected {kept[unit]}"}
-                    for unit in group if unit in kept)
+        for unit in (unit for unit in group if unit in kept):
+            rows.append({"unit": unit, "outcome": "kept", "reason": f"a dependency of protected {kept[unit]}"})
+            if report:
+                emit(sink, "terragrunt.unit.completed", {"unit": unit, "outcome": "kept", "kept_by": kept[unit]})
         todo = [unit for unit in group if unit not in kept]
         with ThreadPoolExecutor(max_workers=max(1, parallelism)) as pool:
             done = list(pool.map(lambda unit: worker(root, unit, expect, engine, sink=sink, log_lines=log_lines) if report
@@ -790,7 +1124,7 @@ def run_levels(phase: str, root: Path, order: list[str], expect: dict, engine: s
             break
     else:
         if report:
-            emit(sink, "run.phase.completed", {"phase": APPLY_PHASE, "elapsed_seconds": round(time.monotonic() - started)})
+            emit(sink, "run.phase.completed", {"phase": name, "elapsed_seconds": round(time.monotonic() - started)})
     return rows
 
 
@@ -847,6 +1181,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--working-directory", default=".")
     run.add_argument("--plans-dir", default="")
     run.add_argument("--engine", default="tofu")
+    run.add_argument("--skip-unsettled-state", action="store_true",
+                     help="Destroy: report units whose region has no state key as unchanged")
     args = parser.parse_args(argv)
 
     try:
@@ -860,13 +1196,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "run" and args.phase in PHASES:
             order = [line.strip() for line in args.units.splitlines() if line.strip()]
             expect = json.loads(args.expect_json or "{}")
-            sink = build_sink() if args.phase == "fresh" else None
+            sink = build_sink()
             try:
                 rows = run_levels(args.phase, Path(args.working_directory), order, expect, args.engine,
-                                  args.parallelism, sink=sink, log_lines=log_lines_wanted())
+                                  args.parallelism, sink=sink, log_lines=log_lines_wanted(),
+                                  absent=unsettled_units(order) if args.skip_unsettled_state else frozenset())
             finally:
                 if sink is not None:
                     sink.close()
+                    if callable(getattr(sink, "summary", None)):
+                        print(f"::notice title=console-events::{sink.summary()}", flush=True)
             report = levels_report(args.phase, rows, order)
             print(report, end="")
             if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -874,7 +1213,8 @@ def main(argv: list[str] | None = None) -> int:
                     out.write(report)
             outcome = PHASES[args.phase][1]
             applied = [row["unit"] for row in rows if row["outcome"] == outcome]
-            write_outputs(changes=json.dumps(rows, separators=(",", ":")))
+            write_outputs(changes=json.dumps(rows, separators=(",", ":")),
+                          change_failed=str(any(row["outcome"] in CHANGE_FAILURES for row in rows)).lower())
             if os.environ.get("GITHUB_OUTPUT"):
                 with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
                     out.write(f"{outcome}<<APPLY_UNITS_EOF\n" + "".join(u + "\n" for u in applied) + "APPLY_UNITS_EOF\n")
@@ -910,7 +1250,7 @@ def main(argv: list[str] | None = None) -> int:
                     return 0
                 if why:
                     print(f"Two approvers needed and given: {', '.join('@' + login for login in seen)}")
-            units = [u["unit"] for u in metadata["units"] if any(u.get(k) for k in COUNT_KEYS)]
+            units = [u["unit"] for u in metadata["units"] if changing(u)]
             verb = "destroy" if metadata.get("destroy") else "apply"
             print(f"{len(units)} units to {verb}: {', '.join(units) or 'none'}")
             write_outputs(has_changes=str(bool(units)).lower(), destroy=str(bool(metadata.get("destroy"))).lower())
@@ -919,15 +1259,14 @@ def main(argv: list[str] | None = None) -> int:
                     out.write("units<<APPLY_UNITS_EOF\n" + "".join(u + "\n" for u in units) + "APPLY_UNITS_EOF\n")
             return 0
         wanted = {line.strip() for line in args.units.splitlines() if line.strip()}
-        units = [u for u in metadata["units"] if any(u.get(k) for k in COUNT_KEYS)
-                 and (not wanted or u["unit"] in wanted)]
+        units = [u for u in metadata["units"] if changing(u) and (not wanted or u["unit"] in wanted)]
         root = Path(args.working_directory)
         if args.phase == "check":
             run_check(root, units, args.engine, bool(metadata.get("destroy")))
         elif args.phase == "apply" and metadata.get("destroy"):
             run_destroy(root, units)
         elif args.phase == "apply":
-            run_apply(root, units, Path(args.plans_dir))
+            run_apply(root, units, Path(args.plans_dir), args.engine)
         else:
             run_clean(root, units)
         return 0

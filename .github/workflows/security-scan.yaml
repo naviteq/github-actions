@@ -133,6 +133,11 @@ on:
         required: false
         type: boolean
         default: false
+      checkov_full_scan_per_directory:
+        description: With checkov_full_scan, run one Checkov process per top-level subdirectory of checkov_directory and merge the reports, so peak memory tracks the largest directory.
+        required: false
+        type: boolean
+        default: false
       checkov_base_ref:
         description: Base ref (commit SHA, branch, or tag) Checkov diffs against. When empty, falls back to origin/<default-branch>.
         required: false
@@ -163,7 +168,7 @@ on:
         required: false
         type: string
         # renovate: datasource=pypi depName=checkov
-        default: 3.3.29
+        default: 3.4.11
       download_artifact:
         description: Artifact downloaded into the workspace before scanning. Used to scan another job's output.
         required: false
@@ -300,6 +305,7 @@ jobs:
       check: ${{ inputs.checkov_check }}
       skip_check: ${{ inputs.checkov_skip_check }}
       full_scan: ${{ inputs.checkov_full_scan }}
+      full_scan_per_directory: ${{ inputs.checkov_full_scan_per_directory }}
       base_ref: ${{ inputs.checkov_base_ref }}
       head_ref: ${{ inputs.checkov_head_ref }}
       submodules: ${{ inputs.checkov_submodules }}

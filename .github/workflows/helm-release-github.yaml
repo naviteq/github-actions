@@ -31,6 +31,11 @@ on:
         type: string
         required: false
         default: ""
+      dependency_update:
+        description: Run helm dependency update before lint and package; false packages the dependencies already in charts/
+        type: boolean
+        required: false
+        default: true
       lint_enabled:
         description: Run helm lint before package
         type: boolean
@@ -101,7 +106,7 @@ jobs:
     steps:
       - name: Generate GitHub App token
         if: ${{ inputs.push_chart && inputs.bump_version_in_git }}
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         id: app-token
         with:
           client-id: ${{ secrets.github_client_id || secrets.github_app_id }}
@@ -115,7 +120,7 @@ jobs:
 
       - name: Login to GitHub Registry
         if: ${{ inputs.push_chart }}
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ${{ inputs.ghcr_registry }}
           username: ${{ github.actor }}
@@ -123,7 +128,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@03038ee09f925b785a79eb72b9e2d29c5857153a
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@f5358ffcdc510aa530d73fa11803b59b743b843c
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.ghcr_registry }}
@@ -131,6 +136,7 @@ jobs:
           push_chart: ${{ inputs.push_chart }}
           bump_version_in_git: ${{ inputs.bump_version_in_git }}
           bump_version_git_branch: ${{ inputs.bump_version_git_branch }}
+          dependency_update: ${{ inputs.dependency_update }}
           lint_enabled: ${{ inputs.lint_enabled }}
           lint_values_file: ${{ inputs.lint_values_file }}
           chart_version: ${{ inputs.chart_version }}
