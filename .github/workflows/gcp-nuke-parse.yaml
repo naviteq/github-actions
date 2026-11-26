@@ -1,0 +1,90 @@
+---
+name: GCP Nuke / Parse approval comment
+# Plumbing for the consumer's issue_comment trampoline; gcp-nuke-apply.yaml re-validates
+# every value emitted here. → see docs/gcp-nuke.md
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: GitHub Actions runner to use. Supports a single label or a JSON array of labels.
+        type: string
+        required: false
+        default: ubuntu-24.04
+    outputs:
+      matched:
+        description: '"true" when the comment is a well-formed approval and the audit issue carries the gcp-nuke marker. Gate the apply job on it.'
+        value: ${{ jobs.parse.outputs.matched }}
+      plan_run_id:
+        description: Plan run id from the `/approve gcp-nuke-<run-id>` comment, equal to the run the issue marker names.
+        value: ${{ jobs.parse.outputs.plan_run_id }}
+      resource_set_hash:
+        description: Resource-set SHA-256 from the issue marker. Re-checked against the plan artifact by gcp-nuke-apply.yaml.
+        value: ${{ jobs.parse.outputs.resource_set_hash }}
+      regions_allowlist:
+        description: Regions (CSV) from the issue table. Re-validated against the config by gcp-nuke-apply.yaml.
+        value: ${{ jobs.parse.outputs.regions_allowlist }}
+      targets:
+        description: Target projects (CSV) from the issue marker, for the trampoline to route on.
+        value: ${{ jobs.parse.outputs.targets }}
+      sweep_folder_id:
+        description: Sweep folder ID from the issue marker, empty when the plan swept no folder.
+        value: ${{ jobs.parse.outputs.sweep_folder_id }}
+
+permissions: {}
+
+jobs:
+  parse:
+    name: Parse approval comment
+    if: >-
+      github.event.issue.pull_request == null
+      && contains(github.event.issue.labels.*.name, 'gcp-nuke:pending')
+      && startsWith(github.event.comment.body, '/approve gcp-nuke-')
+    runs-on: ${{ startsWith(inputs.runner, '[') && fromJSON(inputs.runner) || (inputs.runner || 'ubuntu-24.04') }}
+    permissions:
+      issues: read
+    outputs:
+      matched: ${{ steps.match.outputs.matched }}
+      plan_run_id: ${{ steps.match.outputs.plan_run_id }}
+      resource_set_hash: ${{ steps.match.outputs.resource_set_hash }}
+      regions_allowlist: ${{ steps.match.outputs.regions_allowlist }}
+      targets: ${{ steps.match.outputs.targets }}
+      sweep_folder_id: ${{ steps.match.outputs.sweep_folder_id }}
+    steps:
+      - id: match
+        # The regexes pin the issue-body shape gcp-nuke-plan.yaml emits; change both together.
+        shell: bash
+        env:
+          BODY: ${{ github.event.comment.body }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          trap 'echo "::endgroup::"' EXIT
+          echo "::group::Parse the approval command"
+          if [[ "${BODY}" =~ ^/approve[[:space:]]+gcp-nuke-([0-9]+)$ ]]; then
+            plan_run_id="${BASH_REMATCH[1]}"
+            echo "plan_run_id=${plan_run_id}" >> "$GITHUB_OUTPUT"
+          else
+            echo "Comment does not match '/approve gcp-nuke-<id>'; not an approval."
+            echo "matched=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Read the marker and the regions row from the issue body"
+          if ! printf '%s\n' "${ISSUE_BODY}" | RUN="${plan_run_id}" perl -ne '
+            if (/^<!--\s*gcp-nuke:hash=([0-9a-f]{64})\s+targets=([A-Za-z0-9,._-]+)\s+sweep=([0-9]+|none)\s+run=([0-9]+)\s*-->$/) {
+              ($hash, $targets, $sweep, $run) = ($1, $2, $3, $4);
+            }
+            if (/^\|\s*Regions\s*\|\s*`([^`]+)`\s*\|$/) { $regions = $1; }
+            END {
+              exit 1 if !$hash || !$regions || $run ne $ENV{RUN};
+              $sweep = "" if $sweep eq "none";
+              print "resource_set_hash=$hash\nregions_allowlist=$regions\ntargets=$targets\nsweep_folder_id=$sweep\n";
+              print STDERR "hash=$hash targets=$targets sweep=$sweep regions=$regions\n";
+            }
+          ' >> "$GITHUB_OUTPUT"; then
+            echo "The issue carries no gcp-nuke marker for run ${plan_run_id}, or no regions row."
+            echo "matched=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "matched=true" >> "$GITHUB_OUTPUT"

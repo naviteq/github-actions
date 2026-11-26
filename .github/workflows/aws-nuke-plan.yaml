@@ -275,14 +275,14 @@ jobs:
 
       - name: Ensure AWS CLI v2
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/ensure-tool@edc24951064d8bec7fb010a350167745f64224a8
+        uses: naviteq/github-actions/.github/actions/ensure-tool@f68f9a02dc9151568613159579acd528a32d533b
         with:
           tool: aws
           version: ${{ inputs.aws_cli_version }}
 
       - name: Configure AWS credentials (OIDC)
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        uses: aws-actions/configure-aws-credentials@45666896f5d8e0f10ae255413f3a4cdd03bdc8f5 # v6.3.1
         with:
           role-to-assume: ${{ secrets.aws_iam_role }}
           role-session-name: github-${{ github.repository_id }}-${{ github.actor_id }}-nuke-plan
@@ -362,7 +362,7 @@ jobs:
 
       - name: Ensure aws-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/ensure-tool@edc24951064d8bec7fb010a350167745f64224a8
+        uses: naviteq/github-actions/.github/actions/ensure-tool@f68f9a02dc9151568613159579acd528a32d533b
         with:
           tool: aws-nuke
           version: ${{ inputs.aws_nuke_version }}
