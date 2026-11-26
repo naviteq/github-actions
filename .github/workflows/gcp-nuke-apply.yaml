@@ -204,7 +204,7 @@ jobs:
       - name: Locate the scope helper
         id: scope
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/gcp-nuke-scope@f68f9a02dc9151568613159579acd528a32d533b
+        uses: naviteq/github-actions/.github/actions/gcp-nuke-scope@67173cde63d640d2e77317c6dfad18b2e833a597
 
       - name: Re-resolve targets and production guard
         if: ${{ steps.pause.outputs.skip != 'true' }}
@@ -408,7 +408,7 @@ jobs:
 
       - name: Ensure gcp-nuke
         if: ${{ steps.pause.outputs.skip != 'true' }}
-        uses: naviteq/github-actions/.github/actions/ensure-tool@f68f9a02dc9151568613159579acd528a32d533b
+        uses: naviteq/github-actions/.github/actions/ensure-tool@67173cde63d640d2e77317c6dfad18b2e833a597
         with:
           tool: gcp-nuke
           version: ${{ inputs.gcp_nuke_version }}
