@@ -75,12 +75,21 @@ outputs:
   network_cidr:
     description: The VPC or VCN range, empty on ecs
     value: ${{ steps.facts.outputs.network_cidr }}
+  private_dns:
+    description: "true when the OKE stack file turns private DNS on, else false"
+    value: ${{ steps.facts.outputs.private_dns }}
+  dns_listener_cidr:
+    description: The subnet the private-DNS listener lands in (workers), empty unless private DNS is on
+    value: ${{ steps.facts.outputs.dns_listener_cidr }}
+  load_balancer_cidr:
+    description: The subnet the private load balancer lands in (pub_lb), empty unless private DNS is on
+    value: ${{ steps.facts.outputs.load_balancer_cidr }}
 
 runs:
   using: composite
   steps:
     - name: Ensure yq
-      uses: naviteq/github-actions/.github/actions/ensure-tool@c4e61362ecb820504d5a824e4008ffcbfc05a4d5
+      uses: naviteq/github-actions/.github/actions/ensure-tool@160459d26a911f0e8e0ee173da629a0bdb7a5283
       with:
         tool: yq
         version: 4.54.1

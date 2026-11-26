@@ -12,6 +12,8 @@ decisions, and the tests feed it JSON directly. → see docs/validate-oke.md
 from __future__ import annotations
 
 import argparse
+import ipaddress
+import itertools
 import json
 import os
 import re
@@ -19,6 +21,13 @@ import sys
 from pathlib import Path
 
 REVISION = re.compile(r'^(?P<lead>\s*project_repo_revision\s*=\s*)"(?P<value>[^"]*)"\s*$', re.MULTILINE)
+
+PRIVATE_DNS = re.compile(r"\bprivate_dns\s*=\s*\{\s*enabled\s*=\s*(?P<enabled>[^\s}#]+)")
+LOCALS = re.compile(r"^locals\s*\{\s*$", re.MULTILINE)
+SUBNET_CIDRS = re.compile(r"^\s*subnet_cidrs\s*=\s*\{\s*$", re.MULTILINE)
+SUBNET = re.compile(r'^\s*(?P<key>\w+)\s*=\s*"(?P<value>[^"]*)"')
+CIDRSUBNET = re.compile(r"^\$\{cidrsubnet\(local\.oci_oke_vcn_cidr,\s*(?P<newbits>\d+),\s*(?P<netnum>\d+)\)\}$")
+NO_PRIVATE_ENDPOINTS = {"private_dns": "false", "dns_listener_cidr": "", "load_balancer_cidr": ""}
 
 SOURCE_ITEM = re.compile(r'^(?P<indent> *)- +repoURL:')
 VALUES_REF = re.compile(r'^\s*ref: +values\s*$')
@@ -59,7 +68,76 @@ def facts(variables: dict, environment_path: str, cloud: str = "oci") -> dict[st
         "tier": variables.get("tier", ""),
     }
     resolved.update({"oci": _oci, "aws": _aws, "ecs": _ecs}[cloud](variables))
+    resolved.update(_private_endpoints(environment_path, resolved["network_cidr"]) if cloud == "oci"
+                    else NO_PRIVATE_ENDPOINTS)
     return resolved
+
+
+def _private_endpoints(environment_path: str, vcn_cidr: str) -> dict[str, str]:
+    """The subnets a private-DNS endpoint probe reaches, read from the stack file. → docs/validate-oke.md
+
+    The listener sits in `workers` and the private load balancer in `pub_lb`. Both are empty when
+    private DNS is off or a subnet cannot be read, so the grant checks skip rather than misjudge.
+    """
+    stack = Path(environment_path) / "terragrunt.stack.hcl"
+    text = stack.read_text() if stack.is_file() else ""
+    flag = PRIVATE_DNS.search(text)
+    enabled = _literal(flag.group("enabled"), text) if flag else "false"
+    if enabled is None:
+        print(f"::warning title=Endpoint grants not checked::{stack}: private_dns.enabled is "
+              f"{flag.group('enabled')}, neither true, false nor a local set to one", file=sys.stderr)
+    if enabled != "true":
+        return NO_PRIVATE_ENDPOINTS
+    subnets = _subnet_cidrs(text)
+    listener = _cidr(subnets.get("workers", ""), vcn_cidr)
+    balancer = _cidr(subnets.get("pub_lb", ""), vcn_cidr)
+    if not (listener and balancer):
+        print(f"::warning title=Endpoint grants not checked::{stack}: subnet_cidrs.workers and pub_lb "
+              "are not literal CIDRs or cidrsubnet(local.oci_oke_vcn_cidr, N, M)", file=sys.stderr)
+        listener = balancer = ""
+    return {"private_dns": "true", "dns_listener_cidr": listener, "load_balancer_cidr": balancer}
+
+
+def _literal(value: str, text: str) -> str | None:
+    """true or false, as written or through a `local.<name>` the stack's locals block sets; else None."""
+    if value in ("true", "false"):
+        return value
+    name = value.removeprefix("local.")
+    if name == value or not name.isidentifier():
+        return None
+    for block in LOCALS.finditer(text):
+        for line in text[block.end():].splitlines():
+            if line.strip() == "}" and not line.startswith(" "):
+                break
+            setting = re.match(rf"^\s*{name}\s*=\s*(true|false)\s*(#.*)?$", line)
+            if setting:
+                return setting.group(1)
+    return None
+
+
+def _subnet_cidrs(text: str) -> dict[str, str]:
+    """The raw values of the stack file's subnet_cidrs block, by key."""
+    opener = SUBNET_CIDRS.search(text)
+    found: dict[str, str] = {}
+    for line in text[opener.end():].splitlines() if opener else []:
+        if line.strip() == "}":
+            break
+        if entry := SUBNET.match(line):
+            found[entry.group("key")] = entry.group("value")
+    return found
+
+
+def _cidr(value: str, vcn_cidr: str) -> str:
+    """A literal CIDR, or the template's cidrsubnet() of the VCN evaluated; empty when neither."""
+    try:
+        carve = CIDRSUBNET.match(value)
+        if not carve:
+            return str(ipaddress.ip_network(value))
+        vcn = ipaddress.ip_network(vcn_cidr)
+        subnets = vcn.subnets(new_prefix=vcn.prefixlen + int(carve.group("newbits")))
+        return str(next(itertools.islice(subnets, int(carve.group("netnum")), None), ""))
+    except ValueError:
+        return ""
 
 
 def _oci(variables: dict) -> dict[str, str]:
