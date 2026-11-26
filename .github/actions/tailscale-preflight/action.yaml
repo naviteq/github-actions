@@ -2,7 +2,7 @@ name: Tailscale preflight
 description: >
   Check, before Terragrunt starts, that the client's tailnet will accept this run: the OAuth clients
   exchange tokens, the join tag and the router's exact tags can be minted, and, when the router token
-  can read the policy, the grant and the route approval are there. The step exits 0 on every answer
+  can read the policy, the grants and the route approval are there. The step exits 0 on every answer
   and reports one closed code; no secret, token or minted key is ever printed.
 
 inputs:
@@ -35,7 +35,9 @@ inputs:
     required: false
     default: tag:github
   router_tags:
-    description: The router's tags, space separated, in module order such as "tag:non-production tag:aws tag:acme-dev"
+    description: >
+      The router's tags, space separated, in module order such as "tag:non-production tag:aws tag:acme-dev";
+      empty skips the router mint and the route approval
     required: false
     default: ""
   network_cidr:
@@ -46,6 +48,14 @@ inputs:
     description: Port of the private API server the grant must open
     required: false
     default: "443"
+  dns_listener_cidr:
+    description: Subnet the private-DNS listener lands in; when set, the grant must open UDP and TCP 53 to it
+    required: false
+    default: ""
+  load_balancer_cidr:
+    description: Subnet the private load balancer lands in; when set, the grant must open TCP 80 and 443 to it
+    required: false
+    default: ""
 
 outputs:
   result:
@@ -75,4 +85,6 @@ runs:
         INPUT_ROUTER_TAGS: ${{ inputs.router_tags }}
         INPUT_NETWORK_CIDR: ${{ inputs.network_cidr }}
         INPUT_API_PORT: ${{ inputs.api_port }}
+        INPUT_DNS_LISTENER_CIDR: ${{ inputs.dns_listener_cidr }}
+        INPUT_LOAD_BALANCER_CIDR: ${{ inputs.load_balancer_cidr }}
       run: python3 -I "$GITHUB_ACTION_PATH/tailscale_preflight.py"

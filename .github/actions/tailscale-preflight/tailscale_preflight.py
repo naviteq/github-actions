@@ -2,7 +2,7 @@
 """Tell, before Terragrunt starts, whether the client's tailnet will accept this run and its router.
 
 Checks stop at the first failure: presence, token exchange, a key minted and deleted for the join
-tag and for the router's exact tags, then (only when the router token reads the policy) the grant
+tag and for the router's exact tags, then (only when the router token reads the policy) the grants
 and the route approval. Every Tailscale answer and transport failure exits 0 with result, code and
 policy_checked in GITHUB_OUTPUT; no secret, token or minted key is ever printed.
 → docs/tailscale-preflight.md
@@ -106,16 +106,36 @@ def mint_and_delete(token: str, tags: list[str], refused: str) -> None:
 
 def first_host(cidr: str) -> str:
     network = ipaddress.ip_network(cidr, strict=False)
-    return str(next(network.hosts(), network.network_address))
+    return str(next(iter(network.hosts()), network.network_address))
 
 
-def grant_allows(token: str, cidr: str, port: str) -> bool | None:
+def last_host(cidr: str) -> str:
+    network = ipaddress.ip_network(cidr, strict=False)
+    return str(network.broadcast_address - 1 if network.num_addresses > 2 else network.broadcast_address)
+
+
+def grant_allows(token: str, host: str, port: str, proto: str = "") -> bool | None:
     """True or False from acl/validate; None when the token cannot read the policy."""
-    tests = [{"src": "tag:github", "accept": [f"{first_host(cidr)}:{port}"]}]
-    status, body = request("POST", "/tailnet/-/acl/validate", token=token, body=tests)
+    test: dict[str, object] = {"src": "tag:github", "accept": [f"{host}:{port}"]}
+    if proto:
+        # Without proto a test passes on TCP or UDP, so a TCP-only grant would pass a DNS test.
+        test["proto"] = proto
+    status, body = request("POST", "/tailnet/-/acl/validate", token=token, body=[test])
     if status != 200:
         return None
     return not (isinstance(body, dict) and body.get("data"))
+
+
+def endpoint_tests(env: dict[str, str]) -> list[tuple[str, str, str]]:
+    """The private-DNS reach the endpoints check needs, as (host, proto, port). → docs/tailscale-preflight.md"""
+    tests: list[tuple[str, str, str]] = []
+    for name, ports in (("INPUT_DNS_LISTENER_CIDR", ("udp:53", "tcp:53")),
+                        ("INPUT_LOAD_BALANCER_CIDR", ("tcp:80", "tcp:443"))):
+        if cidr := env.get(name, ""):
+            # Both ends of the subnet: the address lands anywhere in it, so a grant on part of it fails.
+            for host in dict.fromkeys((first_host(cidr), last_host(cidr))):
+                tests += [(host, *port.split(":")) for port in ports]
+    return tests
 
 
 def route_approved(policy: object, cidr: str, tags: list[str]) -> bool:
@@ -132,18 +152,28 @@ def route_approved(policy: object, cidr: str, tags: list[str]) -> bool:
     return False
 
 
-def check_policy(token: str, needs_tailnet: bool, cidr: str, port: str, tags: list[str]) -> bool:
+def check_policy(token: str, needs_tailnet: bool, cidr: str, port: str, tags: list[str],
+                 endpoints: list[tuple[str, str, str]]) -> bool:
     """Run the optional checks; the return value is policy_checked."""
     status, policy = request("GET", "/tailnet/-/acl", token=token, accept="application/json")
     if status != 200:
         return False
     if needs_tailnet and cidr:
-        allowed = grant_allows(token, cidr, port)
+        allowed = grant_allows(token, first_host(cidr), port)
         if allowed is None:
             return False
         if not allowed:
             raise Stop("tailscale_grant_missing")
-    if cidr and not route_approved(policy, cidr, tags):
+    missing = []
+    for host, proto, endpoint_port in endpoints if needs_tailnet else []:
+        allowed = grant_allows(token, host, endpoint_port, proto)
+        if allowed is None:
+            return False
+        if not allowed:
+            missing.append(f"{host} {proto}:{endpoint_port}")
+    if missing:
+        raise Stop("tailscale_endpoint_grant_missing", "tag:github cannot reach " + ", ".join(missing))
+    if cidr and tags and not route_approved(policy, cidr, tags):
         raise Stop("tailscale_route_not_auto_approved")
     return True
 
@@ -157,6 +187,7 @@ def run(env: dict[str, str]) -> tuple[str, str, bool, list[str]]:
     join_pair = (env.get("INPUT_JOIN_CLIENT_ID", ""), env.get("INPUT_JOIN_SECRET", ""))
     router_pair = (env.get("INPUT_ROUTER_CLIENT_ID", ""), env.get("INPUT_ROUTER_SECRET", ""))
     tags = env.get("INPUT_ROUTER_TAGS", "").split()
+    endpoints = endpoint_tests(env)
     lines: list[str] = []
     try:
         if (needs and not all(join_pair)) or (router and not all(router_pair)):
@@ -168,12 +199,16 @@ def run(env: dict[str, str]) -> tuple[str, str, bool, list[str]]:
         if needs:
             mint_and_delete(join_token, [env.get("INPUT_JOIN_TAG") or "tag:github"], "tailscale_join_tag_refused")
             lines.append("Join key tag: pass")
-        if router:
+        if router and tags:
             mint_and_delete(router_token, tags, "tailscale_router_tags_refused")
             lines.append("Router key tags: pass")
+        elif router:
+            lines.append("Router key tags: not tested (no tags given), nor the route approval")
         checked = router and check_policy(router_token, needs, env.get("INPUT_NETWORK_CIDR", ""),
-                                          env.get("INPUT_API_PORT") or "443", tags)
+                                          env.get("INPUT_API_PORT") or "443", tags, endpoints)
         lines.append("Policy checks: " + ("pass" if checked else "not run (the router cannot read the policy)"))
+        if checked and needs and endpoints:
+            lines.append("Endpoint grants: pass (" + ", ".join(f"{h} {p}:{n}" for h, p, n in endpoints) + ")")
         return "pass", "", bool(checked), lines
     except Stop as stop:
         lines.append(f"Failed: {stop.code}")
