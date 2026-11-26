@@ -1,0 +1,23 @@
+---
+name: gcp-nuke scope
+description: >
+  Names the helper gcp-nuke-plan and gcp-nuke-apply run between their gcloud and gcp-nuke
+  calls: target resolution, resource-set extraction, the approved-set check and the folder
+  sweep selection. It runs nothing itself; later steps call the script it names.
+
+outputs:
+  script:
+    description: Absolute path of gcp_nuke_scope.py, run with python3
+    value: ${{ steps.locate.outputs.script }}
+
+runs:
+  using: composite
+  steps:
+    - name: Locate gcp_nuke_scope.py
+      id: locate
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        echo "script=${ACTION_PATH}/gcp_nuke_scope.py" >> "$GITHUB_OUTPUT"

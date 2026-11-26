@@ -8,7 +8,7 @@ description: >
 inputs:
   tool:
     description: >
-      Tool to ensure: age, aws, aws-nuke, boilerplate, conftest, ct, gitleaks, helm, infracost,
+      Tool to ensure: age, aws, aws-nuke, boilerplate, conftest, ct, gcp-nuke, gitleaks, helm, infracost,
       kind, kubeconform, kubectl, oci-cli, pre-commit, promtool, pyflakes, shellcheck, task,
       terraform, terraform-docs, terragrunt, tflint, tfsec, tofu or yq
     required: true

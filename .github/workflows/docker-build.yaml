@@ -265,7 +265,7 @@ jobs:
       ## AWS
       - &aws_credentials
         name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        uses: aws-actions/configure-aws-credentials@45666896f5d8e0f10ae255413f3a4cdd03bdc8f5 # v6.3.1
         if: inputs.aws_region != '' && (inputs.docker_push || inputs.cache_backend == 'registry')
         with:
           role-to-assume: ${{ secrets.aws_iam_role }}
