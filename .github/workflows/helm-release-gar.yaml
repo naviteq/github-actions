@@ -149,7 +149,7 @@ jobs:
 
       - name: Run OCI core
         id: core
-        uses: naviteq/github-actions/.github/actions/helm-release-oci@ae771b3e86dd350a45ba78ce07fbd4aeb7014380
+        uses: naviteq/github-actions/.github/actions/helm-release-oci@4576b29786615d0cf0baa0fc4109f95a8b165461
         with:
           chart_path: ${{ inputs.chart_path }}
           oci_registry: ${{ inputs.gar_registry }}
